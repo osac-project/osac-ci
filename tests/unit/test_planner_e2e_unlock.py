@@ -4,7 +4,7 @@ import pytest
 import yaml
 from helpers import HEAD, ROOT, snap, with_check
 
-from osac_ci.model import LabelEvent, Review, State
+from osac_ci.model import JobStatus, LabelEvent, Review, State
 from osac_ci.planner import plan
 from osac_ci.policy import Policy, PolicyError, parse_policy
 
@@ -148,3 +148,31 @@ def test_a_finished_gate_needs_no_unlock() -> None:
     p = e2e(any_of=["coderabbit-approval"])
     assert plan(snap(p, labels=JIRA), p).state is State.READY_TO_ENQUEUE  # green gates: unchanged behavior
     assert with_check(p, gates(p)[0], None)
+
+
+def test_an_open_change_request_gets_its_own_next_action_not_the_signal_list() -> None:
+    p = e2e(any_of=["coderabbit-approval"])
+    blocked = Review("carol", "CHANGES_REQUESTED", "User", "2026-10-01T11:00:00Z", 3, HEAD)
+    v = plan(snap(p, labels=JIRA, reviews=(CR, blocked), check_runs=without_gates(p)), p)
+    assert v.state is State.AWAITING_E2E_SIGNAL
+    assert v.next_action == "address the requested changes; the reviewer approves again or dismisses their review"
+    assert v.who_must_act == "author and the reviewer who requested changes"
+    assert "approval" not in v.next_action.replace("approves", "")  # an approval cannot unlock it now
+    assert {e.code for e in v.jobs if e.status is JobStatus.WAITING and e.detail.startswith("waiting:")} == {
+        "changes-requested"
+    }
+
+
+def test_a_missing_signal_keeps_the_signal_next_action_and_its_own_code() -> None:
+    p = e2e(any_of=["coderabbit-approval"])
+    v = plan(snap(p, labels=JIRA, check_runs=without_gates(p)), p)
+    assert v.next_action == "get a CodeRabbit approval on the current commit"
+    assert {e.code for e in v.jobs if e.detail.startswith("waiting:")} == {"needs-signal"}
+
+
+def test_the_legacy_ladder_is_untouched_by_the_reason_codes() -> None:
+    legacy = with_sections(merge={"required_labels": ["jira/valid-reference"]})  # legacy ladder, no unlock section
+    v = plan(snap(legacy, labels=JIRA, check_runs=without_gates(legacy)), legacy)
+    assert v.state is State.AWAITING_E2E_SIGNAL
+    assert v.next_action == "get /lgtm, /e2e-ready, or a CodeRabbit approval on the current head"
+    assert {e.code for e in v.jobs} == {""}

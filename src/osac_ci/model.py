@@ -109,6 +109,7 @@ class JobEntry:
     check: str
     status: JobStatus
     detail: str
+    code: str = ""  # machine-readable reason for a waiting E2E job (see rules/readiness.py), "" otherwise
 
 
 @dataclass(frozen=True)

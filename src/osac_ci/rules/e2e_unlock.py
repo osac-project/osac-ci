@@ -22,7 +22,7 @@ from collections.abc import Collection
 from osac_ci.model import Snapshot
 from osac_ci.policy import Approval, E2EUnlock
 from osac_ci.rules import approval, readiness
-from osac_ci.rules.readiness import Readiness
+from osac_ci.rules.readiness import CODE_CHANGES_REQUESTED, CODE_NEEDS_SIGNAL, Readiness
 
 _WORDS = {
     "human-approval": "a human approval of the current changes",
@@ -54,7 +54,7 @@ def decide(
     approval_policy: Approval | None,
 ) -> Readiness:
     if unlock.block_on_changes_requested and readiness.human_has_changes_requested(snapshot.reviews):
-        return Readiness(False, "waiting: human CHANGES_REQUESTED still open")
+        return Readiness(False, "waiting: human CHANGES_REQUESTED still open", CODE_CHANGES_REQUESTED)
 
     found = approval.approvers(snapshot, approval_policy or Approval()) if "human-approval" in signals else None
     denied = ""
@@ -80,4 +80,4 @@ def decide(
             why.append(f"CodeRabbit approved an older commit {latest.commit_id[:7]}")
     if denied:
         why.append(denied)
-    return Readiness(False, "waiting: " + "; ".join(why))
+    return Readiness(False, "waiting: " + "; ".join(why), CODE_NEEDS_SIGNAL)
