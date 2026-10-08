@@ -33,7 +33,7 @@ packages = ["src/osac_ci"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["tests"]
+pythonpath = ["tests", "tests/contract"]
 addopts = "-ra --strict-markers"
 markers = [
     "unit: pure unit tests, no I/O",

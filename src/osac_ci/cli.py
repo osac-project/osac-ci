@@ -1,24 +1,30 @@
-"""Command line: validate a policy and explain a PR from a snapshot file.
+"""Command line: validate a policy and explain PRs.
 
     osac-ci policy check policy/osac.yml
     osac-ci explain --policy policy/osac.yml --snapshot snapshot.json [--mode pr|queue]
+    GH_TOKEN=... osac-ci explain-pr --policy policy/osac.yml --repo osac-project/osac --number 1438
 
-`explain` is read-only and offline. It is the slice 0 "explainer": it turns a recorded PR snapshot into the
-verdict the control plane would publish, which is also how the replay harness will use the planner.
+`explain` is offline: it turns a recorded snapshot into the verdict the control plane would publish.
+`explain-pr` reads one live PR (read-only) and does the same. Neither writes anything to GitHub.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from osac_ci.github.api import GitHubClient, GitHubError, HttpClient
+from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
 from osac_ci.render import render_markdown
+
+TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 
 
 def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
@@ -44,20 +50,42 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_client() -> GitHubClient:
+    """The real client, with the token taken from the environment (never from an argument or a file)."""
+    for name in TOKEN_ENV:
+        if token := os.environ.get(name):
+            return HttpClient(token)
+    raise SystemExit(f"error: set one of {' or '.join(TOKEN_ENV)} (for example GH_TOKEN=$(gh auth token))")
+
+
+def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="osac-ci", description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
     check = sub.add_parser("policy", help="policy tools").add_subparsers(dest="policy_command", required=True)
-    check_cmd = check.add_parser("check", help="validate a policy file")
-    check_cmd.add_argument("policy", type=Path)
+    check.add_parser("check", help="validate a policy file").add_argument("policy", type=Path)
 
     explain = sub.add_parser("explain", help="print the verdict for a recorded snapshot")
     explain.add_argument("--policy", type=Path, required=True)
     explain.add_argument("--snapshot", type=Path, required=True)
     explain.add_argument("--mode", choices=[m.value for m in Mode], default=Mode.PR.value)
 
-    args = parser.parse_args(argv)
+    live = sub.add_parser("explain-pr", help="read one live PR (read-only) and print its verdict")
+    live.add_argument("--policy", type=Path, required=True)
+    live.add_argument("--repo", required=True, help="owner/name")
+    live.add_argument("--number", type=int, required=True)
+    live.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
+    live.add_argument("--mode", choices=[m.value for m in Mode], default=Mode.PR.value)
+    live.add_argument(
+        "--no-membership-lookup",
+        action="store_true",
+        help="approximate org membership from author_association (needs no org-scoped token)",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
     try:
         policy = load_policy(args.policy)
     except PolicyError as exc:
@@ -68,11 +96,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"OK: {policy.repo}: {len(policy.jobs)} jobs")
         return 0
 
-    try:
-        snapshot = snapshot_from_dict(json.loads(args.snapshot.read_text(encoding="utf-8")))
-    except (OSError, ValueError, TypeError) as exc:
-        print(f"error: cannot load snapshot: {exc}", file=sys.stderr)
-        return 2
+    if args.command == "explain":
+        try:
+            snapshot = snapshot_from_dict(json.loads(args.snapshot.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"error: cannot load snapshot: {exc}", file=sys.stderr)
+            return 2
+    else:
+        try:
+            snapshot = fetch_snapshot(
+                build_client(),
+                args.repo,
+                args.number,
+                org=args.org or args.repo.split("/", 1)[0],
+                lookup_membership=not args.no_membership_lookup,
+            )
+        except (GitHubError, ValueError) as exc:
+            print(f"error: cannot read the PR: {exc}", file=sys.stderr)
+            return 3
+
     print(render_markdown(plan_or_error(snapshot, policy, Mode(args.mode))), end="")
     return 0
 
