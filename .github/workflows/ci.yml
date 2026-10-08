@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  lint-and-test:
-    name: lint-and-test
+  lint:
+    name: lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -28,11 +28,63 @@ jobs:
         run: pipx install uv==0.11.21
       - name: Install dependencies
         run: uv sync --locked
-      - name: Lint
+      - name: Ruff
         run: |
           uv run ruff check .
           uv run ruff format --check .
       - name: Type check
         run: uv run basedpyright
-      - name: Test (legacy differential tests need the sibling repos and run in a later slice)
+
+  unit-tests:
+    name: unit-tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Unit and property tests
         run: uv run pytest -m "not legacy"
+
+  # Runs the Python port against the REAL legacy bash functions. The legacy sources are pinned to the commits
+  # the port was verified against; bump them together with a review of what changed upstream.
+  legacy-differential:
+    name: legacy-differential
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: osac-project/osac
+          ref: 8cb0a227e45cc9b17421b6e79ce493ed370ebd5d
+          path: legacy/osac
+          sparse-checkout: .github/scripts/auto-queue.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: osac-project/osac-test-infra
+          ref: d9b5a663a9f4643fec67585969b460bc2bf3dc74
+          path: legacy/osac-test-infra
+          sparse-checkout: .github/actions/check-e2e-readiness/check-e2e-readiness.sh
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Differential tests
+        env:
+          OSAC_CI_REQUIRE_LEGACY: "1"
+          OSAC_AUTO_QUEUE_SH: ${{ github.workspace }}/legacy/osac/.github/scripts/auto-queue.sh
+          OSAC_CHECK_E2E_READINESS_SH: ${{ github.workspace }}/legacy/osac-test-infra/.github/actions/check-e2e-readiness/check-e2e-readiness.sh
+        run: uv run pytest -m legacy -v

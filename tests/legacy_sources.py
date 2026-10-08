@@ -56,9 +56,16 @@ READINESS = resolve(
 )
 
 
+def _unavailable(reason: str) -> None:
+    """Skip locally, but FAIL when OSAC_CI_REQUIRE_LEGACY=1 (set in CI) so a missing source can never pass silently."""
+    if os.environ.get("OSAC_CI_REQUIRE_LEGACY") == "1":
+        pytest.fail(f"legacy differential test cannot run: {reason}")
+    pytest.skip(reason)
+
+
 def require(path: Path) -> Path:
     if not shutil.which("bash") or not shutil.which("jq"):
-        pytest.skip("bash and jq are required for differential tests")
+        _unavailable("bash and jq are required for differential tests")
     if not path.is_file():
-        pytest.skip(f"legacy source not found: {path} (set OSAC_AUTO_QUEUE_SH / OSAC_CHECK_E2E_READINESS_SH)")
+        _unavailable(f"legacy source not found: {path} (set OSAC_AUTO_QUEUE_SH / OSAC_CHECK_E2E_READINESS_SH)")
     return path
