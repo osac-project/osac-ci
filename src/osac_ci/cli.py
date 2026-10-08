@@ -26,6 +26,7 @@ from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
+from osac_ci.publish import CHECK_NAME, describe, publish_pr, sweep
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
@@ -104,6 +105,21 @@ def _parser() -> argparse.ArgumentParser:
         "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
     )
 
+    pub = sub.add_parser("publish", help="post the verdict of one PR (or every open PR) as the OSAC CI check run")
+    pub.add_argument("--policy", type=Path, required=True)
+    pub.add_argument("--repo", required=True, help="owner/name")
+    target = pub.add_mutually_exclusive_group(required=True)
+    target.add_argument("--number", type=int, help="publish for this PR")
+    target.add_argument("--all", action="store_true", help="publish for every open PR (the periodic sweep)")
+    pub.add_argument("--check-name", default=CHECK_NAME)
+    pub.add_argument("--note", default="", help="text placed above the verdict in the check summary")
+    pub.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
+    pub.add_argument("--limit", type=int, help="with --all: stop after this many PRs")
+    pub.add_argument("--dry-run", action="store_true", help="print what would be posted, post nothing")
+    pub.add_argument(
+        "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
+    )
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -153,6 +169,26 @@ def main(argv: list[str] | None = None) -> int:
         summary = ", ".join(f"{n} {s.value}" for s, n in report.counts()) or "no open PRs"
         print(f"{len(report.rows)} open PRs ({summary}); wrote {', '.join(names)} to {args.out_dir}")
         return 0
+
+    if args.command == "publish":
+        common = {
+            "org": args.org,
+            "lookup_membership": args.lookup_membership,
+            "check_name": args.check_name,
+            "note": args.note,
+            "dry_run": args.dry_run,
+        }
+        try:
+            client = build_client()
+            if args.all:
+                outcomes = sweep(client, policy, args.repo, limit=args.limit, **common)
+            else:
+                outcomes = [publish_pr(client, policy, args.repo, args.number, **common)]
+        except (GitHubError, ValueError) as exc:
+            print(f"error: publish failed: {exc}", file=sys.stderr)
+            return 3
+        print(describe(outcomes), end="")
+        return 1 if any(o.action == "failed" for o in outcomes) else 0
 
     if args.command == "replay":
         try:
