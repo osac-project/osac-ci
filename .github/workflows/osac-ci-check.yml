@@ -56,9 +56,12 @@ jobs:
         run: pipx install uv==0.11.21
       - name: Install dependencies
         run: uv sync --locked
-      # Only for membership and team lookups: the app's other permissions never reach this token.
+      # Only for membership and team lookups: the app's other permissions never reach this token. If it cannot be
+      # created (key rotated, app uninstalled, permission not accepted) the job must still post: the next step then
+      # publishes a visible planner-error, so a broken credential never leaves a PR with no check at all.
       - name: Create a token that can read organization membership
         id: org-token
+        continue-on-error: true
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           client-id: ${{ secrets.OSAC_CI_READER_APP_ID }}
@@ -69,9 +72,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           OSAC_CI_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
+          TOKEN_OUTCOME: ${{ steps.org-token.outcome }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.number }}
         run: |
+          if [ "$TOKEN_OUTCOME" != "success" ]; then
+            echo "::warning::The organization token could not be created; PRs will show a planner-error until it can."
+          fi
           if [ -n "$PR_NUMBER" ]; then target=(--number "$PR_NUMBER"); else target=(--all); fi
-          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" --lookup-membership \
+          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" \
+            --lookup-membership --require-org-token \
             --note "Informational for now: this check is not required to merge."
