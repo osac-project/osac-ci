@@ -66,7 +66,15 @@ named `OSAC CI` on its head commit (`--dry-run` prints instead of posting).
 The newest check run of a name decides, so publishing again repairs a stale verdict, and an unchanged verdict is not
 posted twice. `.github/workflows/osac-ci-check.yml` runs it for this repository's own PRs (policy
 `policy/osac-ci.yml`) on PR events, when `ci` finishes, and every 10 minutes for all open PRs. The check is not
-required yet. Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's;
+required yet.
+
+Organization lookups (is the author a member, who is in an owner team) use a separate token from `OSAC_CI_ORG_TOKEN`.
+In Actions it is minted from the `osac-ci-reader` GitHub App, which only has the organization permission Members: read;
+the key lives in the `org-read` environment, which only `main` may use. A review runs the pull request branch's own
+workflow file, so `osac-ci-review.yml` (no secrets, no checkout) just asks the `main` workflow to re-evaluate that PR.
+Without the token the owner requirement cannot be checked and the verdict is a planner error, never a pass.
+
+Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's;
 the next event or sweep corrects it.
 
 ## Open-PR report

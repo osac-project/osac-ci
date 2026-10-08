@@ -10,13 +10,15 @@ name: osac-ci-check
 # * the verdict is computed from live API state, not from the event that woke the job, and runs for one PR are
 #   serialized, so a slow older run can never post over a newer one.
 #
+# * the organization-read key lives in the `org-read` environment, which only the default branch may use, so this
+#   file must only run from the default branch: reviews are relayed by osac-ci-review.yml, which holds no secret. The
+#   minted token is limited to the Members permission, whatever the app could do.
+#
 # A finished `ci` run targets its own PR (workflow_run lists same-repo PRs; for a fork it is empty, so the sweep runs).
-# Events can be missed (a review from a fork cannot post), so a periodic sweep re-evaluates every open PR.
+# Events can be missed, so a periodic sweep re-evaluates every open PR.
 on:  # zizmor: ignore[dangerous-triggers] -- no PR code is checked out or run; PR values reach the shell as env data only
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
-  pull_request_review:
-    types: [submitted, dismissed, edited]
   workflow_run:
     workflows: [ci]
     types: [completed]
@@ -38,14 +40,13 @@ concurrency:
 jobs:
   publish:
     name: publish
-    # A review on a fork PR runs with a read-only token and cannot post; the sweep covers it.
-    if: ${{ github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository }}
+    environment: org-read
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
-      checks: write
-      pull-requests: read
+      contents: read  # check out the default branch
+      checks: write  # post the OSAC CI check run
+      pull-requests: read  # read the PR, its reviews and files
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -55,12 +56,22 @@ jobs:
         run: pipx install uv==0.11.21
       - name: Install dependencies
         run: uv sync --locked
+      # Only for membership and team lookups: the app's other permissions never reach this token.
+      - name: Create a token that can read organization membership
+        id: org-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.OSAC_CI_READER_APP_ID }}
+          private-key: ${{ secrets.OSAC_CI_READER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-members: read
       - name: Post the verdict
         env:
           GH_TOKEN: ${{ github.token }}
+          OSAC_CI_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.number }}
         run: |
           if [ -n "$PR_NUMBER" ]; then target=(--number "$PR_NUMBER"); else target=(--all); fi
-          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" \
+          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" --lookup-membership \
             --note "Informational for now: this check is not required to merge."

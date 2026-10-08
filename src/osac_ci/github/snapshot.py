@@ -141,7 +141,13 @@ def fetch_change_fingerprint(client: GitHubClient, repo: str, base_ref: str, sha
 
 
 def _approval_inputs(
-    client: GitHubClient, repo: str, base_ref: str, head_sha: str, reviews: Sequence[Review], files: Sequence[str]
+    client: GitHubClient,
+    org_client: GitHubClient,
+    repo: str,
+    base_ref: str,
+    head_sha: str,
+    reviews: Sequence[Review],
+    files: Sequence[str],
 ) -> tuple[str | None, dict[str, frozenset[str] | None], dict[str, str]]:
     if not base_ref:
         raise ValueError("the pull request has no base branch, cannot read CODEOWNERS")
@@ -152,7 +158,7 @@ def _approval_inputs(
         for path in files:
             for owner in codeowners.owners_of(rules, path) or ():
                 if owner.startswith("@") and "/" in owner and owner[1:] not in teams:
-                    teams[owner[1:]] = fetch_team_members(client, owner[1:])
+                    teams[owner[1:]] = fetch_team_members(org_client, owner[1:])
     commits = [head_sha]
     for review in reviews:
         if review.state == "APPROVED" and review.commit_id and review.commit_id not in commits:
@@ -187,6 +193,7 @@ def fetch_snapshot(
     org: str,
     lookup_membership: bool = True,
     approval: Approval | None = None,
+    org_client: GitHubClient | None = None,
 ) -> Snapshot:
     """Read everything the planner needs.
 
@@ -195,7 +202,11 @@ def fetch_snapshot(
 
     ``approval`` is the policy's native-approval section; when given, CODEOWNERS (from the base branch), the members
     of owner teams and the change fingerprints of the head and of every approved commit are read as well.
+
+    ``org_client`` is used only for the organization lookups (membership and team members). It lets a token that can
+    read the organization, and nothing else, be kept apart from the one that reads and posts on the pull request.
     """
+    org_client = org_client or client
     repo = check_repo(repo)
     if number < 1:
         raise ValueError(f"invalid PR number: {number}")
@@ -221,15 +232,15 @@ def fetch_snapshot(
     files = tuple(raw["filename"] for raw in paginate(client, f"{base}/pulls/{number}/files"))
 
     if lookup_membership:
-        author_member = is_org_member(client, org, author)
-        owner_member = bool(fork_owner) and fork_owner != author and is_org_member(client, org, fork_owner)
+        author_member = is_org_member(org_client, org, author)
+        owner_member = bool(fork_owner) and fork_owner != author and is_org_member(org_client, org, fork_owner)
     else:
         author_member = pr.get("author_association") in {"MEMBER", "OWNER"}
         owner_member = False
 
     base_ref: str = (pr.get("base") or {}).get("ref", "")  # only the native-approval inputs need it
     owners_text, team_members, fingerprints = (
-        _approval_inputs(client, repo, base_ref, head_sha, reviews, files) if approval else (None, {}, {})
+        _approval_inputs(client, org_client, repo, base_ref, head_sha, reviews, files) if approval else (None, {}, {})
     )
 
     return Snapshot(

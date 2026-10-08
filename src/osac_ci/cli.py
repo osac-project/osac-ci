@@ -32,6 +32,7 @@ from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
+ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
 
 
 def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
@@ -58,6 +59,12 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
         changed_files=tuple(data.get("changed_files", ())),
         team_members={t: (None if m is None else frozenset(m)) for t, m in data.get("team_members", {}).items()},
     )
+
+
+def build_org_client() -> GitHubClient | None:
+    """A client for organization lookups only, when ``OSAC_CI_ORG_TOKEN`` is set; otherwise the main client is used."""
+    token = os.environ.get(ORG_TOKEN_ENV)
+    return HttpClient(token) if token else None
 
 
 def build_client() -> GitHubClient:
@@ -177,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
             "check_name": args.check_name,
             "note": args.note,
             "dry_run": args.dry_run,
+            "org_client": build_org_client(),
         }
         try:
             client = build_client()
@@ -224,6 +232,7 @@ def main(argv: list[str] | None = None) -> int:
                 org=args.org or args.repo.split("/", 1)[0],
                 lookup_membership=not args.no_membership_lookup,
                 approval=policy.approval,
+                org_client=build_org_client(),
             )
         except (GitHubError, ValueError) as exc:
             print(f"error: cannot read the PR: {exc}", file=sys.stderr)

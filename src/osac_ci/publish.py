@@ -110,6 +110,7 @@ def publish_pr(
     check_name: str = CHECK_NAME,
     note: str = "",
     dry_run: bool = False,
+    org_client: GitHubClient | None = None,
 ) -> Outcome:
     """Evaluate one PR from live state and post the verdict unless the newest check run already says the same."""
     repo = check_repo(repo)
@@ -117,7 +118,13 @@ def publish_pr(
     head_sha: str = get(client, f"/repos/{repo}/pulls/{number}")["head"]["sha"]
     try:
         snapshot = fetch_snapshot(
-            client, repo, number, org=org, lookup_membership=lookup_membership, approval=policy.approval
+            client,
+            repo,
+            number,
+            org=org,
+            lookup_membership=lookup_membership,
+            approval=policy.approval,
+            org_client=org_client,
         )
         verdict = plan_or_error(snapshot, policy, Mode.PR)
         head_sha = snapshot.head_sha
@@ -147,6 +154,7 @@ def sweep(
     dry_run: bool = False,
     limit: int | None = None,
     workers: int = 4,
+    org_client: GitHubClient | None = None,
 ) -> list[Outcome]:
     """Publish for every open PR. One PR failing never stops the others; it is reported as ``failed``."""
     prs = list_open_prs(client, repo, include_drafts=True)
@@ -166,6 +174,7 @@ def sweep(
                 check_name=check_name,
                 note=note,
                 dry_run=dry_run,
+                org_client=org_client,
             )
         except (GitHubError, KeyError, ValueError) as exc:
             sha = str((pr.get("head") or {}).get("sha", ""))
