@@ -10,7 +10,7 @@ A pull request from a fork may use secrets, and start expensive jobs, when any o
 
    * ``label`` (default, today's behavior, mirrors osac-test-infra ``authorize-fork-pr``): the ``ok-to-test`` label.
      The label survives pushes until a workflow strips it, so a commit pushed in that window is trusted too.
-   * ``sha-bound``: an org member commented ``/ok-to-test <sha>`` and the adapter found the authorization check run
+   * ``sha-bound``: an org member commented ``/ok-to-test <full sha>`` and the adapter found the authorization check run
      on *exactly the current head commit*. A new push has a new SHA and no such check, so it is unauthorized at once:
      there is nothing to strip and no window. Labels are ignored in this mode.
 
@@ -42,5 +42,5 @@ def fork_secrets_authorized(snapshot: Snapshot, trust: Trust = Trust()) -> bool:
 
 
 def authorization_command(head_sha: str) -> str:
-    """The exact comment an org member posts to authorize this commit."""
-    return f"{COMMAND} {head_sha[:7]}"
+    """The exact comment an org member posts to authorize this commit: the full SHA, never a prefix."""
+    return f"{COMMAND} {head_sha}"

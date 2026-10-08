@@ -147,7 +147,7 @@ def posts(fake: FakeGitHub) -> list[dict[str, Any]]:
 
 def test_a_member_authorizes_the_exact_head() -> None:
     fake = fake_for_command()
-    result = command(fake, f"/ok-to-test {SHA[:7]}")
+    result = command(fake, f"/ok-to-test {SHA}")
     (body,) = posts(fake)
     assert result.handled and result.granted and result.head_sha == SHA
     assert (body["name"], body["head_sha"], body["status"], body["conclusion"]) == (
@@ -160,31 +160,41 @@ def test_a_member_authorizes_the_exact_head() -> None:
 
 
 @pytest.mark.parametrize(
-    "text", [f"/ok-to-test {SHA}", f"  /ok-to-test   {SHA[:7].upper()}  \n", f"\n/ok-to-test {SHA[:12]}\n"]
+    "text", [f"/ok-to-test {SHA}", f"  /ok-to-test   {SHA.upper()}  \n", f"\n/ok-to-test\t{SHA}\n"]
 )
-def test_the_sha_may_be_short_or_long_and_the_spacing_is_forgiving(text: str) -> None:
+def test_the_full_sha_is_accepted_in_either_case_and_the_spacing_is_forgiving(text: str) -> None:
     assert command(fake_for_command(), text).granted
 
 
 def test_a_replaced_head_is_refused() -> None:
     fake = fake_for_command()
-    result = command(fake, f"/ok-to-test {'d' * 7}")
+    result = command(fake, f"/ok-to-test {'d' * 40}")
     assert result.handled and not result.granted and posts(fake) == []
-    assert f"The head is now `{SHA[:7]}`" in result.message
+    assert f"The head is now `{SHA}`" in result.message and f"`/ok-to-test {SHA}`" in result.message
 
 
 @pytest.mark.parametrize(
     "text",
-    ["/ok-to-test", "/ok-to-test please", f"/ok-to-test {SHA[:7]} thanks", "/ok-to-test xyz1234", "/ok-to-test abc"],
+    [
+        "/ok-to-test",
+        "/ok-to-test please",
+        f"/ok-to-test {SHA} thanks",
+        f"/ok-to-test {'x' * 40}",
+        # a prefix is never enough, however long: a crafted commit can share it (28 bits for 7 digits)
+        f"/ok-to-test {SHA[:7]}",
+        f"/ok-to-test {SHA[:12]}",
+        f"/ok-to-test {SHA[:39]}",
+        f"/ok-to-test {SHA}0",
+    ],
 )
-def test_a_command_without_a_valid_sha_gets_the_exact_command_back_and_authorizes_nothing(text: str) -> None:
+def test_a_command_without_the_full_sha_gets_the_exact_command_back_and_authorizes_nothing(text: str) -> None:
     fake = fake_for_command()
     result = command(fake, text)
     assert result.handled and not result.granted and posts(fake) == []
-    assert f"`/ok-to-test {SHA[:7]}`" in result.message
+    assert f"`/ok-to-test {SHA}`" in result.message
 
 
-@pytest.mark.parametrize("text", ["looks good", "/lgtm", "please /ok-to-test " + SHA[:7], ""])
+@pytest.mark.parametrize("text", ["looks good", "/lgtm", "please /ok-to-test " + SHA, ""])
 def test_other_comments_are_ignored(text: str) -> None:
     fake = fake_for_command()
     result = command(fake, text)
@@ -195,37 +205,37 @@ def test_a_commenter_who_is_not_an_org_member_is_ignored_silently() -> None:
     fake = fake_for_command()
     fake_org = FakeGitHub()
     fake_org.add("GET", "/orgs/example/members/outsider", None, status=404)
-    result = authorize(fake, fake_org, POLICY, REPO, 7, "outsider", f"/ok-to-test {SHA[:7]}", org="example")
+    result = authorize(fake, fake_org, POLICY, REPO, 7, "outsider", f"/ok-to-test {SHA}", org="example")
     assert not result.handled and posts(fake) == []
 
 
 def test_a_closed_pr_is_ignored() -> None:
     fake = fake_for_command()
     fake.add("GET", f"{BASE}/pulls/7", {**standard_fake().routes[("GET", f"{BASE}/pulls/7")][1], "state": "closed"})
-    assert not command(fake, f"/ok-to-test {SHA[:7]}").handled
+    assert not command(fake, f"/ok-to-test {SHA}").handled
 
 
 def test_nothing_happens_when_the_policy_is_not_sha_bound() -> None:
     fake = fake_for_command()
-    assert not command(fake, f"/ok-to-test {SHA[:7]}", policy=LEGACY).handled and posts(fake) == []
+    assert not command(fake, f"/ok-to-test {SHA}", policy=LEGACY).handled and posts(fake) == []
 
 
 def test_dry_run_decides_without_posting() -> None:
     fake = fake_for_command()
-    assert command(fake, f"/ok-to-test {SHA[:7]}", dry_run=True).granted and posts(fake) == []
+    assert command(fake, f"/ok-to-test {SHA}", dry_run=True).granted and posts(fake) == []
 
 
 def test_a_rejected_check_post_is_an_error() -> None:
     fake = standard_fake()
     fake.add("POST", f"{BASE}/check-runs", {"message": "Resource not accessible"}, status=403)
     with pytest.raises(GitHubError, match="403"):
-        command(fake, f"/ok-to-test {SHA[:7]}")
+        command(fake, f"/ok-to-test {SHA}")
 
 
 def test_the_authorization_is_read_back_by_the_adapter() -> None:
     # What the command posts is exactly what find_authorizer accepts.
     fake = fake_for_command()
-    command(fake, f"/ok-to-test {SHA[:7]}")
+    command(fake, f"/ok-to-test {SHA}")
     (body,) = posts(fake)
     posted = CheckRun(
         body["name"], "completed", "success", "2026-10-08T10:00:00Z", body["external_id"], "github-actions"
@@ -267,7 +277,7 @@ def replies(fake: FakeGitHub) -> list[str]:
 def test_cli_grants_and_replies(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     fake = fake_for_command()
     fake.add("POST", f"{BASE}/issues/7/comments", {"id": 2}, status=201)
-    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA[:7]}") == 0
+    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA}") == 0
     assert "granted" in capsys.readouterr().out and len(posts(fake)) == 1
     assert replies(fake) == [f"Authorized `{SHA[:7]}` (by `reviewer`). A new push needs a new authorization."]
 
@@ -275,7 +285,7 @@ def test_cli_grants_and_replies(monkeypatch: pytest.MonkeyPatch, capsys: pytest.
 def test_cli_refuses_a_stale_sha_with_a_reply_but_exit_0(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = fake_for_command()
     fake.add("POST", f"{BASE}/issues/7/comments", {"id": 2}, status=201)
-    assert cli_run(monkeypatch, fake, "/ok-to-test 1234567") == 0 and posts(fake) == []
+    assert cli_run(monkeypatch, fake, f"/ok-to-test {'1' * 40}") == 0 and posts(fake) == []
     assert "The head is now" in replies(fake)[0]
 
 
@@ -289,7 +299,7 @@ def test_cli_ignores_other_comments_without_replying(
 
 def test_cli_dry_run_posts_and_replies_to_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = fake_for_command()
-    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA[:7]}", "--dry-run") == 0
+    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA}", "--dry-run") == 0
     assert posts(fake) == [] and replies(fake) == []
 
 
@@ -298,7 +308,7 @@ def test_cli_reports_an_api_failure_with_exit_3(
 ) -> None:
     fake = standard_fake()
     fake.add("POST", f"{BASE}/check-runs", {"message": "nope"}, status=403)
-    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA[:7]}") == 3
+    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA}") == 3
     assert "authorize failed" in capsys.readouterr().err
 
 
@@ -307,5 +317,16 @@ def test_cli_reports_a_failed_reply_with_exit_3(
 ) -> None:
     fake = fake_for_command()
     fake.add("POST", f"{BASE}/issues/7/comments", {"message": "forbidden"}, status=403)
-    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA[:7]}") == 3
+    assert cli_run(monkeypatch, fake, f"/ok-to-test {SHA}") == 3
     assert "authorize failed" in capsys.readouterr().err
+
+
+def test_a_commit_that_shares_a_short_prefix_with_the_reviewed_one_is_not_authorized() -> None:
+    # The attack the full SHA closes: the reviewer saw SHA, the author swaps in a commit whose SHA starts the same way.
+    crafted = SHA[:7] + "e" * 33
+    fake = standard_fake(head={"sha": crafted, "repo": {"full_name": "alice/app", "owner": {"login": "alice"}}})
+    fake.add("POST", f"{BASE}/check-runs", {"id": 1}, status=201)
+    for text in (f"/ok-to-test {SHA[:7]}", f"/ok-to-test {SHA}"):
+        result = command(fake, text)
+        assert result.handled and not result.granted
+    assert posts(fake) == []

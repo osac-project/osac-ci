@@ -54,7 +54,7 @@ def test_sha_bound_mode_names_the_exact_command(sha_bound: Policy) -> None:
     s = snap(sha_bound, is_fork=True, author="x", fork_owner="x", check_runs=gate_missing(sha_bound))
     v = plan(s, sha_bound)
     assert v.state is State.NEEDS_AUTHORIZATION
-    assert f"`/ok-to-test {HEAD[:7]}`" in v.next_action and "exactly this commit" in v.next_action
+    assert f"`/ok-to-test {HEAD}`" in v.next_action and "exactly this commit" in v.next_action
     assert v.who_must_act == "org member"
 
 

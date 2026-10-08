@@ -3,9 +3,11 @@
 The authorization is a check run on that commit, so it is bound to the commit by construction: a new push has a new SHA
 and no such check, and there is no label to strip and no window between a push and its cleanup (see rules/fork.py).
 
-The command must carry the commit's SHA. A bare ``/ok-to-test`` would authorize "whatever the head is when the workflow
-reads it", and an attacker watching the comments could push in the few seconds between the reviewer's comment and that
-read. With the SHA, the reviewer authorizes exactly the code they looked at, and a replaced head is refused.
+The command must carry the commit's *full* SHA. A bare ``/ok-to-test`` would authorize "whatever the head is when the
+workflow reads it", and an attacker watching the comments could push in the few seconds between the reviewer's comment
+and that read. A short prefix is no better: seven hex digits are 28 bits, so the author of the PR can pre-compute a
+malicious commit whose SHA starts like the reviewed one and push it after the review. With all 40 digits the reviewer
+authorizes exactly the code they looked at, and a replaced head is refused.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from osac_ci.github.snapshot import authorization_external_id, is_org_member
 from osac_ci.policy import Policy
 from osac_ci.rules.fork import COMMAND
 
-_COMMAND = re.compile(rf"^{re.escape(COMMAND)}[ \t]+(?P<sha>[0-9a-fA-F]{{7,40}})[ \t]*$")
+_COMMAND = re.compile(rf"^{re.escape(COMMAND)}[ \t]+(?P<sha>[0-9a-fA-F]{{40}})[ \t]*$")
 
 
 @dataclass(frozen=True)
@@ -59,17 +61,17 @@ def authorize(
     if pr.get("state") != "open":
         return _ignore("the pull request is not open")
     head: str = pr["head"]["sha"]
-    short = head[:7]
+    short = head[:7]  # for reading only; the command and the comparison always use the full SHA
 
     found = _COMMAND.match(text)
     if found is None:
-        return Authorization(True, False, f"Authorize this exact commit by commenting `{COMMAND} {short}`.", head)
-    if not head.startswith(found["sha"].lower()):
+        return Authorization(True, False, f"Authorize this exact commit by commenting `{COMMAND} {head}`.", head)
+    if found["sha"].lower() != head:
         return Authorization(
             True,
             False,
-            f"The head is now `{short}`, not `{found['sha'].lower()}`: the commit you looked at was replaced. "
-            f"Review the new one and comment `{COMMAND} {short}`.",
+            f"The head is now `{head}`, not `{found['sha'].lower()}`: the commit you looked at was replaced. "
+            f"Review the new one and comment `{COMMAND} {head}`.",
             head,
         )
 
