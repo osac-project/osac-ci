@@ -16,8 +16,11 @@ on:
 permissions:
   contents: read
 
+# One group per comment, never per PR. GitHub keeps one pending run per group and cancels the older one when a new run
+# queues, and it decides that before the job's `if`. A shared per-PR group would let any other comment on the PR (a
+# bot's, or an outsider's spam) cancel an org member's pending /ok-to-test.
 concurrency:
-  group: osac-ci-check-${{ github.event.issue.number }}
+  group: osac-ci-authorize-${{ github.event.comment.id }}
   cancel-in-progress: false
 
 jobs:
