@@ -68,6 +68,46 @@ class Approval(_Strict):
     )
 
 
+Signal = Literal["human-approval", "coderabbit-approval", "lgtm-label", "e2e-ready-label"]
+
+
+class E2EUnlock(_Strict):
+    """What lets an expensive E2E job start (see rules/e2e_unlock.py).
+
+    ``legacy`` reproduces today's rules exactly (the label and review rules ported from osac-test-infra). ``policy``
+    unlocks when any one of the listed signals is present, per suite if configured. Unlike the legacy rules there is
+    no sticky ``lgtm``: a signal must hold for the commit that is about to be tested."""
+
+    mode: Literal["legacy", "policy"] = "legacy"
+    any_of: tuple[Signal, ...] = Field(default=("human-approval", "coderabbit-approval"), min_length=1)
+    per_suite: dict[str, tuple[Signal, ...]] = Field(default_factory=dict, description="Signals for one suite")
+    block_on_changes_requested: bool = Field(
+        default=True, description="An outstanding human 'changes requested' blocks every signal"
+    )
+
+    @field_validator("any_of")
+    @classmethod
+    def _unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("signals must not repeat")
+        return value
+
+    @field_validator("per_suite")
+    @classmethod
+    def _non_empty_unique(cls, value: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+        for suite, signals in value.items():
+            if not signals or len(set(signals)) != len(signals):
+                raise ValueError(f"suite {suite!r}: list at least one signal, without repeats")
+        return value
+
+    def signals_for(self, suite: str | None) -> tuple[str, ...]:
+        return self.per_suite.get(suite or "", self.any_of)
+
+
+class E2E(_Strict):
+    unlock: E2EUnlock = E2EUnlock()
+
+
 class Trust(_Strict):
     """Who may use secrets and start expensive jobs from a pull request (see rules/fork.py)."""
 
@@ -85,7 +125,22 @@ class Policy(_Strict):
     merge: Merge = Merge()
     approval: Approval | None = None
     trust: Trust = Trust()
+    e2e: E2E = E2E()
     jobs: dict[str, Job]
+
+    @model_validator(mode="after")
+    def _e2e_unlock_is_consistent(self) -> Policy:
+        unlock = self.e2e.unlock
+        if unlock.mode != "policy":
+            return self
+        suites = {job.suite for job in self.jobs.values() if job.suite}
+        unknown = sorted(set(unlock.per_suite) - suites)
+        if unknown:
+            raise ValueError(f"e2e.unlock.per_suite names suites no job has: {unknown}; jobs have {sorted(suites)}")
+        used = set(unlock.any_of).union(*unlock.per_suite.values())
+        if "human-approval" in used and self.approval is None:
+            raise ValueError("e2e.unlock uses human-approval, which needs an approval: section")
+        return self
 
     @field_validator("jobs")
     @classmethod

@@ -59,7 +59,7 @@ def pr_ever_had_lgtm(events: Sequence[LabelEvent]) -> bool:
     return any(event.event == "labeled" and event.label == "lgtm" for event in events)
 
 
-def _coderabbit_latest(reviews: Sequence[Review]) -> Review | None:
+def coderabbit_latest(reviews: Sequence[Review]) -> Review | None:
     candidates = [r for r in reviews if r.user == CODERABBIT_LOGIN and r.state in _DECISION_STATES]
     return max(candidates, key=_order_key) if candidates else None
 
@@ -67,7 +67,7 @@ def _coderabbit_latest(reviews: Sequence[Review]) -> Review | None:
 def coderabbit_approves_head(reviews: Sequence[Review], head_sha: str) -> bool:
     if not head_sha:
         return False
-    latest = _coderabbit_latest(reviews)
+    latest = coderabbit_latest(reviews)
     if latest is None or latest.state != "APPROVED" or latest.commit_id is None or latest.commit_id != head_sha:
         return False
     return not human_has_changes_requested(reviews)
@@ -81,7 +81,7 @@ def explain_wait(
         return "denied: e2e-ready label present but applied by untrusted actor"
     if human_has_changes_requested(reviews):
         return "waiting: human CHANGES_REQUESTED still open"
-    latest = _coderabbit_latest(reviews)
+    latest = coderabbit_latest(reviews)
     if latest is not None and latest.state == "APPROVED" and latest.commit_id and latest.commit_id != head_sha:
         return f"waiting: CR APPROVED on older SHA {latest.commit_id[:7]}"
     return "waiting: no CR APPROVED on this SHA"
