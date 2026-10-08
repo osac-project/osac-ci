@@ -104,12 +104,13 @@ def approvers(snapshot: Snapshot, policy: Approval) -> Approvers:
     return Approvers(valid, tuple(notes), tuple(stale), blockers)
 
 
-def evaluate(snapshot: Snapshot, policy: Approval) -> ApprovalDecision:
+def evaluate(snapshot: Snapshot, policy: Approval, *, block_on_changes_requested: bool = True) -> ApprovalDecision:
+    """Is the PR approved by this policy? ``block_on_changes_requested=False`` lets an open change request pass."""
     found = approvers(snapshot, policy)
     problems: list[str] = []
     valid, stale, notes = found.valid, list(found.stale), list(found.notes)
 
-    if found.changes_requested:
+    if found.changes_requested and block_on_changes_requested:
         problems.append(f"changes requested by {', '.join(found.changes_requested)}")
 
     if len(valid) < policy.min_approvals:

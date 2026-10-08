@@ -176,3 +176,9 @@ def test_an_email_owner_cannot_be_matched_to_a_login() -> None:
     s = snapshot(review("bob"), codeowners="* someone@example.com\n", changed_files=("a.go",))
     d = evaluate(s, POLICY)
     assert not d.approved and "someone@example.com" in d.problems[0]
+
+
+def test_an_open_change_request_can_be_let_through_when_the_caller_says_so() -> None:
+    s = snapshot(review("bob"), review("carol", "CHANGES_REQUESTED"))
+    assert not evaluate(s, POLICY).approved
+    assert evaluate(s, POLICY, block_on_changes_requested=False).approved
