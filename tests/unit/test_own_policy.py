@@ -28,3 +28,11 @@ def test_the_publishing_workflow_never_checks_out_pull_request_code() -> None:
     ]
     assert checkouts and all(s["with"]["ref"] == "${{ github.event.repository.default_branch }}" for s in checkouts)
     assert all(s["with"]["persist-credentials"] is False for s in checkouts)
+
+
+def test_a_finished_ci_run_targets_its_own_pr_and_uses_that_pr_concurrency_group() -> None:
+    workflow = yaml.safe_load((ROOT / ".github" / "workflows" / "osac-ci-check.yml").read_text(encoding="utf-8"))
+    number = "github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.number"
+    env = next(s["env"] for s in workflow["jobs"]["publish"]["steps"] if s.get("name") == "Post the verdict")
+    assert env["PR_NUMBER"] == "${{ " + number + " }}"
+    assert workflow["concurrency"]["group"] == "osac-ci-check-${{ " + number + " || 'sweep' }}"
