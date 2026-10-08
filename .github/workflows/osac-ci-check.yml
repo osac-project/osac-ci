@@ -10,6 +10,7 @@ name: osac-ci-check
 # * the verdict is computed from live API state, not from the event that woke the job, and runs for one PR are
 #   serialized, so a slow older run can never post over a newer one.
 #
+# A finished `ci` run targets its own PR (workflow_run lists same-repo PRs; for a fork it is empty, so the sweep runs).
 # Events can be missed (a review from a fork cannot post), so a periodic sweep re-evaluates every open PR.
 on:  # zizmor: ignore[dangerous-triggers] -- no PR code is checked out or run; PR values reach the shell as env data only
   pull_request_target:
@@ -31,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: osac-ci-check-${{ github.event.pull_request.number || inputs.number || 'sweep' }}
+  group: osac-ci-check-${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.number || 'sweep' }}
   cancel-in-progress: false
 
 jobs:
@@ -58,7 +59,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.number }}
+          PR_NUMBER: ${{ github.event.pull_request.number || github.event.workflow_run.pull_requests[0].number || inputs.number }}
         run: |
           if [ -n "$PR_NUMBER" ]; then target=(--number "$PR_NUMBER"); else target=(--all); fi
           uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" \
