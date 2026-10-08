@@ -66,6 +66,8 @@ class CheckRun:
     status: str  # queued | in_progress | completed
     conclusion: str | None = None
     started_at: str | None = None
+    external_id: str = ""  # set by whoever posted the check run; used to read back an authorization
+    app: str = ""  # slug of the app that posted it, for example github-actions
 
 
 @dataclass(frozen=True)
@@ -97,6 +99,8 @@ class Snapshot:
         default_factory=dict
     )  # "org/team" -> logins; None = unreadable
     change_fingerprints: Mapping[str, str] = field(default_factory=dict)  # commit sha -> fingerprint of its changes
+    # Login of an org member who authorized exactly this head commit for secrets and E2E (sha-bound trust mode only).
+    authorized_by: str = ""
 
 
 @dataclass(frozen=True)

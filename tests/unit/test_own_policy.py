@@ -82,3 +82,34 @@ def test_the_relay_only_dispatches_the_default_branch_workflow_with_the_pr_numbe
 
 def test_owner_checks_are_on_so_the_planner_agrees_with_the_ruleset() -> None:
     assert load_policy(ROOT / "policy" / "osac-ci.yml").approval.require_code_owners is True  # type: ignore[union-attr]
+
+
+def test_own_policy_authorizes_outside_forks_by_commit() -> None:
+    assert load_policy(ROOT / "policy" / "osac-ci.yml").trust.authorization == "sha-bound"
+
+
+def test_the_authorize_workflow_treats_the_comment_as_untrusted_input() -> None:
+    path = ROOT / ".github" / "workflows" / "osac-ci-authorize.yml"
+    workflow = _workflow("osac-ci-authorize.yml")
+    job = workflow["jobs"]["authorize"]
+    assert _triggers(workflow) == {"issue_comment": {"types": ["created"]}}  # a comment edit can never authorize
+    assert job["environment"] == "org-read"
+    steps = {s.get("name"): s for s in job["steps"]}
+    run = steps["Authorize the commit and refresh the verdict"]["run"]
+    assert "github.event" not in run and "${{" not in run  # the comment and the login reach the program as env only
+    env = steps["Authorize the commit and refresh the verdict"]["env"]
+    assert env["OSAC_CI_COMMENT"] == "${{ github.event.comment.body }}"
+    checkouts = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert all(s["with"]["ref"] == "${{ github.event.repository.default_branch }}" for s in checkouts)
+    assert "pull_request_target" not in path.read_text(encoding="utf-8").replace("# ", "")  # no PR code anywhere
+
+
+def test_the_authorize_workflow_only_reacts_to_the_command_on_pull_requests() -> None:
+    cond = _workflow("osac-ci-authorize.yml")["jobs"]["authorize"]["if"]
+    assert "github.event.issue.pull_request" in cond and "startsWith(github.event.comment.body, '/ok-to-test')" in cond
+
+
+def test_the_authorize_workflow_shares_the_pr_concurrency_group_with_the_check_workflow() -> None:
+    group = _workflow("osac-ci-authorize.yml")["concurrency"]["group"]
+    assert group == "osac-ci-check-${{ github.event.issue.number }}"
+    assert _workflow("osac-ci-check.yml")["concurrency"]["group"].startswith("osac-ci-check-")

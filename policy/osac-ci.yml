@@ -15,6 +15,11 @@ approval:
   require_code_owners: true
   carry_over: trivial-rebase
 
+# A fork PR from someone outside the org may not use secrets or start expensive jobs until an org member comments
+# `/ok-to-test <sha>` for that exact commit; a new push needs a new authorization. See osac_ci/rules/fork.py.
+trust:
+  authorization: sha-bound
+
 jobs:
   lint: {check: lint}
   unit-tests: {check: unit-tests}

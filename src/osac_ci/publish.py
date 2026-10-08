@@ -125,6 +125,7 @@ def publish_pr(
             lookup_membership=lookup_membership,
             approval=policy.approval,
             org_client=org_client,
+            trust=policy.trust,
         )
         verdict = plan_or_error(snapshot, policy, Mode.PR)
         head_sha = snapshot.head_sha

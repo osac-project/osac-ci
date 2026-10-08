@@ -22,9 +22,9 @@ from osac_ci.model import (
     Verdict,
 )
 from osac_ci.paths import applicable
-from osac_ci.policy import Job, Policy
+from osac_ci.policy import Job, Policy, Trust
 from osac_ci.rules import approval, readiness
-from osac_ci.rules.fork import fork_secrets_authorized
+from osac_ci.rules.fork import authorization_command, fork_secrets_authorized
 from osac_ci.rules.labels import missing_required, present_blocking
 
 # A completed check with one of these conclusions counts as passing for a required context (GitHub semantics).
@@ -76,7 +76,13 @@ def _from_check(run: CheckRun | None) -> tuple[JobStatus, str]:
 
 
 def _evaluate(
-    job_id: str, job: Job, snapshot: Snapshot, mode: Mode, checks: dict[str, CheckRun], labels: frozenset[str]
+    job_id: str,
+    job: Job,
+    snapshot: Snapshot,
+    mode: Mode,
+    checks: dict[str, CheckRun],
+    labels: frozenset[str],
+    trust: Trust,
 ) -> JobEntry | None:
     if mode.value not in job.required_at:
         return None
@@ -85,7 +91,7 @@ def _evaluate(
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"
     if mode is Mode.PR and job.kind == "e2e" and job.needs_readiness and not finished:
-        if not fork_secrets_authorized(snapshot):
+        if not fork_secrets_authorized(snapshot, trust):
             return JobEntry(job_id, job.check, JobStatus.WAITING, _AUTH_DETAIL)
         decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
         if not decision.allowed:
@@ -102,8 +108,11 @@ def _verdict(
     jobs: tuple[JobEntry, ...],
     notes: tuple[str, ...] = (),
     native_approval: bool = False,
+    next_override: tuple[str, str] | None = None,
 ) -> Verdict:
-    next_action, who = _NATIVE_APPROVAL_NEXT if native_approval and state is State.AWAITING_APPROVAL else _NEXT[state]
+    next_action, who = next_override or _NEXT[state]
+    if native_approval and state is State.AWAITING_APPROVAL:
+        next_action, who = _NATIVE_APPROVAL_NEXT
     return Verdict(state, headline, next_action, who, mode, blockers, jobs, notes)
 
 
@@ -121,7 +130,7 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     entries = tuple(
         entry
         for job_id, job in policy.jobs.items()
-        if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels)) is not None
+        if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels, policy.trust)) is not None
     )
     kind = {job.check: job.kind for job in policy.jobs.values()}
 
@@ -169,7 +178,15 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
 
     waiting_e2e = [e for e in where(JobStatus.WAITING, "e2e")]
     if any(e.detail == _AUTH_DETAIL for e in waiting_e2e):
-        return _verdict(State.NEEDS_AUTHORIZATION, _AUTH_DETAIL, mode, tuple(blockers), entries, notes, native)
+        command = authorization_command(snapshot.head_sha)
+        override = (
+            (f"an org member comments `{command}`, which authorizes exactly this commit", "org member")
+            if policy.trust.authorization == "sha-bound"
+            else None
+        )
+        return _verdict(
+            State.NEEDS_AUTHORIZATION, _AUTH_DETAIL, mode, tuple(blockers), entries, notes, native, override
+        )
 
     pending_cheap = where(JobStatus.RUNNING, "cheap") + where(JobStatus.WAITING, "cheap")
     if pending_cheap:

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from osac_ci.authorize import authorize, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response
 from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
@@ -33,6 +34,7 @@ from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
+COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
 ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
 
 
@@ -146,6 +148,16 @@ def _parser() -> argparse.ArgumentParser:
         "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
     )
 
+    auth = sub.add_parser(
+        "authorize", help="handle an /ok-to-test <sha> comment (the comment text is read from the environment)"
+    )
+    auth.add_argument("--policy", type=Path, required=True)
+    auth.add_argument("--repo", required=True, help="owner/name")
+    auth.add_argument("--number", type=int, required=True)
+    auth.add_argument("--commenter", required=True, help="login of whoever commented")
+    auth.add_argument("--org", help="org used for the membership check (default: the repo owner)")
+    auth.add_argument("--dry-run", action="store_true", help="decide, but post neither the check nor the reply")
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -217,6 +229,29 @@ def main(argv: list[str] | None = None) -> int:
         print(describe(outcomes), end="")
         return 1 if any(o.action == "failed" for o in outcomes) else 0
 
+    if args.command == "authorize":
+        try:
+            client = build_client()
+            result = authorize(
+                client,
+                build_org_client(required=True) or client,
+                policy,
+                args.repo,
+                args.number,
+                args.commenter,
+                os.environ.get(COMMENT_ENV, ""),
+                org=args.org,
+                dry_run=args.dry_run,
+            )
+            if result.handled and not args.dry_run:
+                reply(client, args.repo, args.number, result.message)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: authorize failed: {exc}", file=sys.stderr)
+            return 3
+        state = "granted" if result.granted else ("refused" if result.handled else "ignored")
+        print(f"PR #{args.number}: {state}: {result.message}")
+        return 0
+
     if args.command == "replay":
         try:
             report = replay(
@@ -252,6 +287,7 @@ def main(argv: list[str] | None = None) -> int:
                 lookup_membership=not args.no_membership_lookup,
                 approval=policy.approval,
                 org_client=build_org_client(),
+                trust=policy.trust,
             )
         except (GitHubError, ValueError) as exc:
             print(f"error: cannot read the PR: {exc}", file=sys.stderr)

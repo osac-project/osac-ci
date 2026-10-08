@@ -68,11 +68,23 @@ class Approval(_Strict):
     )
 
 
+class Trust(_Strict):
+    """Who may use secrets and start expensive jobs from a pull request (see rules/fork.py)."""
+
+    authorization: Literal["label", "sha-bound"] = Field(
+        default="label",
+        description="label: the ok-to-test label (today). sha-bound: an org member authorizes one exact commit.",
+    )
+    trusted_bots: tuple[str, ...] = Field(default=(), description="Bot logins whose fork PRs need no authorization")
+    check_name: str = Field(default="OSAC CI authorization", min_length=1)
+
+
 class Policy(_Strict):
     version: Literal[1]
     repo: str = Field(min_length=3)
     merge: Merge = Merge()
     approval: Approval | None = None
+    trust: Trust = Trust()
     jobs: dict[str, Job]
 
     @field_validator("jobs")
