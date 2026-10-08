@@ -1,0 +1,131 @@
+# serializer version: 1
+# name: test_render_awaiting_approval
+  '''
+  ### OSAC CI: awaiting-approval
+  
+  missing label: lgtm
+  
+  **Next:** get /lgtm and /approve and clear any blocking label (who: reviewer or approver)
+  
+  **Blockers:**
+  - missing label: lgtm
+  
+  | Job | Check | Status | Detail |
+  |---|---|---|---|
+  | e2e-vmaas | e2e-vmaas-gate | passed | passed |
+  | e2e-caas | e2e-caas-gate | passed | passed |
+  | e2e-bmaas | e2e-bmaas-gate | passed | passed |
+  | pre-commit | pre-commit | passed | passed |
+  | proto-generated | Check generated code (proto) | passed | passed |
+  | python-checks | Check Python code | passed | passed |
+  | go-proto-checks | Check Go and proto code | passed | passed |
+  | build-binaries | Build binaries | passed | passed |
+  | ansible-lint | ansible-lint | passed | passed |
+  | dependency-review | dependency-review | passed | passed |
+  | darwin-keychain | Run darwin keychain tests | passed | passed |
+  | unit-tests | Run unit tests | passed | passed |
+  | unit-tests-metering | Run unit tests (osac-metering) | passed | passed |
+  | unit-tests-metering-adapters | Run unit tests (osac-metering/adapters) | passed | passed |
+  | unit-tests-metering-schema | Run unit tests (osac-metering/schema) | passed | passed |
+  | unit-tests-operator | Run unit tests (osac-operator) | passed | passed |
+  | unit-tests-bmf | Run unit tests (bare-metal-fulfillment-operator) | passed | passed |
+  | integration-fulfillment-service | Run integration test (fulfillment-service) | passed | passed |
+  | integration-operator | Run integration test (osac-operator) | passed | passed |
+  | integration-aap | Run integration test (osac-aap) | passed | passed |
+  | integration-installer | Run integration test (osac-installer) | passed | passed |
+  | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
+  | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
+  | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |
+  
+  '''
+# ---
+# name: test_render_failed_check
+  '''
+  ### OSAC CI: checks-failed
+  
+  required checks failed: pre-commit
+  
+  **Next:** fix the failing checks and push, or comment /retest for a flaky one (who: author)
+  
+  **Blockers:**
+  - pre-commit: conclusion: failure
+  
+  | Job | Check | Status | Detail |
+  |---|---|---|---|
+  | e2e-vmaas | e2e-vmaas-gate | passed | passed |
+  | e2e-caas | e2e-caas-gate | passed | passed |
+  | e2e-bmaas | e2e-bmaas-gate | passed | passed |
+  | pre-commit | pre-commit | failed | conclusion: failure |
+  | proto-generated | Check generated code (proto) | passed | passed |
+  | python-checks | Check Python code | passed | passed |
+  | go-proto-checks | Check Go and proto code | passed | passed |
+  | build-binaries | Build binaries | passed | passed |
+  | ansible-lint | ansible-lint | passed | passed |
+  | dependency-review | dependency-review | passed | passed |
+  | darwin-keychain | Run darwin keychain tests | passed | passed |
+  | unit-tests | Run unit tests | passed | passed |
+  | unit-tests-metering | Run unit tests (osac-metering) | passed | passed |
+  | unit-tests-metering-adapters | Run unit tests (osac-metering/adapters) | passed | passed |
+  | unit-tests-metering-schema | Run unit tests (osac-metering/schema) | passed | passed |
+  | unit-tests-operator | Run unit tests (osac-operator) | passed | passed |
+  | unit-tests-bmf | Run unit tests (bare-metal-fulfillment-operator) | passed | passed |
+  | integration-fulfillment-service | Run integration test (fulfillment-service) | passed | passed |
+  | integration-operator | Run integration test (osac-operator) | passed | passed |
+  | integration-aap | Run integration test (osac-aap) | passed | passed |
+  | integration-installer | Run integration test (osac-installer) | passed | passed |
+  | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
+  | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
+  | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |
+  
+  '''
+# ---
+# name: test_render_planner_error
+  '''
+  ### OSAC CI: planner-error
+  
+  planner error: TypeError: 'NoneType' object is not iterable
+  
+  **Next:** re-run the OSAC CI check; if it keeps failing, contact the infra group (who: infra group)
+  
+  '''
+# ---
+# name: test_render_ready
+  '''
+  ### OSAC CI: ready-to-enqueue
+  
+  all PR-time requirements are met
+  
+  **Next:** the merge queue picks it up (who: nobody)
+  
+  | Job | Check | Status | Detail |
+  |---|---|---|---|
+  | e2e-vmaas | e2e-vmaas-gate | passed | passed |
+  | e2e-caas | e2e-caas-gate | passed | passed |
+  | e2e-bmaas | e2e-bmaas-gate | passed | passed |
+  | pre-commit | pre-commit | passed | passed |
+  | proto-generated | Check generated code (proto) | passed | passed |
+  | python-checks | Check Python code | passed | passed |
+  | go-proto-checks | Check Go and proto code | passed | passed |
+  | build-binaries | Build binaries | passed | passed |
+  | ansible-lint | ansible-lint | passed | passed |
+  | dependency-review | dependency-review | passed | passed |
+  | darwin-keychain | Run darwin keychain tests | passed | passed |
+  | unit-tests | Run unit tests | passed | passed |
+  | unit-tests-metering | Run unit tests (osac-metering) | passed | passed |
+  | unit-tests-metering-adapters | Run unit tests (osac-metering/adapters) | passed | passed |
+  | unit-tests-metering-schema | Run unit tests (osac-metering/schema) | passed | passed |
+  | unit-tests-operator | Run unit tests (osac-operator) | passed | passed |
+  | unit-tests-bmf | Run unit tests (bare-metal-fulfillment-operator) | passed | passed |
+  | integration-fulfillment-service | Run integration test (fulfillment-service) | passed | passed |
+  | integration-operator | Run integration test (osac-operator) | passed | passed |
+  | integration-aap | Run integration test (osac-aap) | passed | passed |
+  | integration-installer | Run integration test (osac-installer) | passed | passed |
+  | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
+  | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
+  | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |
+  
+  '''
+# ---

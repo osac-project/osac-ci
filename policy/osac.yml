@@ -1,0 +1,63 @@
+# OSAC CI policy v0: TODAY's rules, not the target rules.
+#
+# Encodes the merge-required contexts of the live `ci-status-checks` ruleset (26). `check-labels` is not a job
+# here: its meaning lives in `merge:` below, so a missing label is reported as "awaiting approval" rather than as a
+# failed check. tests/unit/test_osac_policy.py proves jobs + check-labels == the recorded ruleset.
+#
+# Path filters are not ported yet. Today each workflow's own `changes` job decides applicability and reports a
+# skipped or green check, so the planner reads the outcome. Porting ci-filters.yml is slice 0 follow-up.
+# Changes here alter merge behavior: they need review by @osac-project/wg-infra (see CODEOWNERS).
+version: 1
+repo: osac-project/osac
+
+merge:
+  required_labels: [lgtm, approved, jira/valid-reference]
+  blocking_labels:
+    - do-not-merge/hold
+    - do-not-merge/work-in-progress
+    - do-not-merge/invalid-owners-file
+    - needs-rebase
+
+jobs:
+  # Cost-gated full-install E2E: unlocked by lgtm, /e2e-ready or a CodeRabbit approval (needs_readiness).
+  e2e-vmaas:
+    kind: e2e
+    check: e2e-vmaas-gate
+    needs_readiness: true
+    suite: vmaas
+  e2e-caas:
+    kind: e2e
+    check: e2e-caas-gate
+    needs_readiness: true
+    suite: caas
+  e2e-bmaas:
+    kind: e2e
+    check: e2e-bmaas-gate
+    needs_readiness: true
+    suite: bmaas/sanity
+
+  pre-commit: {check: pre-commit}
+  proto-generated: {check: "Check generated code (proto)"}
+  python-checks: {check: "Check Python code"}
+  go-proto-checks: {check: "Check Go and proto code"}
+  build-binaries: {check: "Build binaries"}
+  ansible-lint: {check: ansible-lint}
+  dependency-review: {check: dependency-review}
+  darwin-keychain: {check: "Run darwin keychain tests"}
+
+  unit-tests: {check: "Run unit tests"}
+  unit-tests-metering: {check: "Run unit tests (osac-metering)"}
+  unit-tests-metering-adapters: {check: "Run unit tests (osac-metering/adapters)"}
+  unit-tests-metering-schema: {check: "Run unit tests (osac-metering/schema)"}
+  unit-tests-operator: {check: "Run unit tests (osac-operator)"}
+  unit-tests-bmf: {check: "Run unit tests (bare-metal-fulfillment-operator)"}
+
+  integration-fulfillment-service: {check: "Run integration test (fulfillment-service)"}
+  integration-operator: {check: "Run integration test (osac-operator)"}
+  integration-aap: {check: "Run integration test (osac-aap)"}
+  integration-installer: {check: "Run integration test (osac-installer)"}
+  integration-bmf: {check: "Run integration test (bare-metal-fulfillment-operator)"}
+
+  helm-lint-installer: {check: "Lint Helm charts (osac-installer)"}
+  helm-crd-sync-operator: {check: "Check Helm CRD sync (osac-operator)"}
+  helm-crd-sync-bmf: {check: "Check Helm CRD sync (bare-metal-fulfillment-operator)"}

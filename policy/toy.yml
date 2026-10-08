@@ -1,0 +1,18 @@
+# A deliberately different repo: proves the engine carries no OSAC-specific rules.
+# (Used by tests/unit/test_policy.py; different labels, different checks, no E2E.)
+version: 1
+repo: example/toy
+
+merge:
+  required_labels: [approved]
+  blocking_labels: [wip]
+
+jobs:
+  lint: {check: lint}
+  test:
+    check: test
+    required_at: [pr, queue]
+  docs-only-site:
+    check: site
+    required_at: [pr]
+    paths: ["docs/**"]

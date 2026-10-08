@@ -1,0 +1,164 @@
+{
+  "observed_at": "2026-10-07T14:41:07Z",
+  "endpoint": "GET /repos/osac-project/osac/rulesets/20134747",
+  "id": 20134747,
+  "name": "ci-status-checks",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "~DEFAULT_BRANCH"
+      ]
+    }
+  },
+  "rules": [
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {
+            "context": "e2e-bmaas-gate",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run integration test (osac-operator)",
+            "integration_id": 15368
+          },
+          {
+            "context": "check-labels",
+            "integration_id": 15368
+          },
+          {
+            "context": "Lint Helm charts (osac-installer)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run integration test (osac-installer)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Check Helm CRD sync (osac-operator)",
+            "integration_id": 15368
+          },
+          {
+            "context": "pre-commit",
+            "integration_id": 15368
+          },
+          {
+            "context": "ansible-lint",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests (osac-metering)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests (osac-operator)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Check Python code",
+            "integration_id": 15368
+          },
+          {
+            "context": "Build binaries",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run integration test (osac-aap)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run integration test (bare-metal-fulfillment-operator)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests (osac-metering/schema)",
+            "integration_id": 15368
+          },
+          {
+            "context": "dependency-review",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests (osac-metering/adapters)",
+            "integration_id": 15368
+          },
+          {
+            "context": "e2e-caas-gate",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run darwin keychain tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Check Go and proto code",
+            "integration_id": 15368
+          },
+          {
+            "context": "e2e-vmaas-gate",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run integration test (fulfillment-service)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Check Helm CRD sync (bare-metal-fulfillment-operator)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Check generated code (proto)",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests",
+            "integration_id": 15368
+          },
+          {
+            "context": "Run unit tests (bare-metal-fulfillment-operator)",
+            "integration_id": 15368
+          }
+        ]
+      }
+    },
+    {
+      "type": "merge_queue",
+      "parameters": {
+        "merge_method": "SQUASH",
+        "max_entries_to_build": 4,
+        "min_entries_to_merge": 1,
+        "max_entries_to_merge": 5,
+        "min_entries_to_merge_wait_minutes": 5,
+        "grouping_strategy": "ALLGREEN",
+        "check_response_timeout_minutes": 120
+      }
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": []
+        },
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": [
+          "merge",
+          "squash",
+          "rebase"
+        ]
+      }
+    }
+  ]
+}
