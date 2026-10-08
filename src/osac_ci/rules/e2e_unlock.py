@@ -4,8 +4,8 @@ Today's rules (rules/readiness.py, a port of the osac-test-infra bash) are one h
 reviews, including a sticky ``lgtm`` that keeps E2E unlocked after the code has changed. This module is the same
 decision as an explicit, per-suite policy (``e2e.unlock`` in the policy file):
 
-* ``human-approval``      a human has approved the current changes (fresh, or carried over a rebase by the approval
-                          rules) and the planner's approval policy accepts that reviewer;
+* ``human-approval``      the PR is approved by the planner's approval policy (``approval:``): enough human approvals
+                          of the current changes (fresh, or carried over a rebase) and, if required, the code owners;
 * ``coderabbit-approval`` CodeRabbit's latest decision is APPROVED on exactly the head commit. It re-reviews every
                           push, so an approval of an older commit never counts;
 * ``lgtm-label``         the ``lgtm`` label is on the PR *now* (a transition aid while approvals still use labels);
@@ -56,10 +56,16 @@ def decide(
     if unlock.block_on_changes_requested and readiness.human_has_changes_requested(snapshot.reviews):
         return Readiness(False, "waiting: human CHANGES_REQUESTED still open", CODE_CHANGES_REQUESTED)
 
-    found = approval.approvers(snapshot, approval_policy or Approval()) if "human-approval" in signals else None
+    policy = approval_policy or Approval()
+    found = approval.approvers(snapshot, policy) if "human-approval" in signals else None
+    approved = (
+        approval.evaluate(snapshot, policy, block_on_changes_requested=unlock.block_on_changes_requested)
+        if found
+        else None
+    )
     denied = ""
     for signal in signals:
-        if signal == "human-approval" and found and found.valid:
+        if signal == "human-approval" and found and approved and approved.approved:
             names = ", ".join(sorted(r.user for r in found.valid.values()))
             return Readiness(True, f"allowed: human approval from {names}")
         if signal == "coderabbit-approval" and _coderabbit_on_head(snapshot):
@@ -72,8 +78,8 @@ def decide(
             denied = "e2e-ready label present but applied by untrusted actor"
 
     why = [f"needs {describe(signals)}"]
-    if found and found.stale:
-        why.append(found.stale[0])
+    if found and approved and not approved.approved and (found.valid or found.stale):
+        why.append(approved.problems[0])  # someone approved, but not enough or not the current changes
     if "coderabbit-approval" in signals:
         latest = readiness.coderabbit_latest(snapshot.reviews)
         if latest and latest.state == "APPROVED" and latest.commit_id and latest.commit_id != snapshot.head_sha:

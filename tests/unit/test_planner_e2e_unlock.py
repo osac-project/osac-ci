@@ -176,3 +176,18 @@ def test_the_legacy_ladder_is_untouched_by_the_reason_codes() -> None:
     assert v.state is State.AWAITING_E2E_SIGNAL
     assert v.next_action == "get /lgtm, /e2e-ready, or a CodeRabbit approval on the current head"
     assert {e.code for e in v.jobs} == {""}
+
+
+def test_the_next_action_lists_the_signals_of_every_locked_suite_once_each() -> None:
+    p = e2e(any_of=["coderabbit-approval"], per_suite={"bmaas/sanity": ["lgtm-label"]})
+    v = plan(snap(p, labels=JIRA, check_runs=without_gates(p)), p)
+    # vmaas and caas need CodeRabbit, bmaas needs the label: all three are locked, so both signals show, once each
+    # (the order follows the jobs, which the helper's YAML round trip sorts, so it is not asserted)
+    parts = v.next_action.removeprefix("get ").split(" or ")
+    assert sorted(parts) == ["a CodeRabbit approval on the current commit", "the lgtm label"]
+
+
+def test_the_next_action_follows_only_the_suites_that_are_still_locked() -> None:
+    p = e2e(any_of=["coderabbit-approval"], per_suite={"bmaas/sanity": ["lgtm-label"]})
+    v = plan(snap(p, labels=JIRA, reviews=(CR,), check_runs=without_gates(p)), p)  # CodeRabbit unlocks vmaas and caas
+    assert v.next_action == "get the lgtm label"

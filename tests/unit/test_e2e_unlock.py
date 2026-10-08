@@ -151,3 +151,42 @@ def test_describe_joins_signals_in_order() -> None:
 
 def test_an_unrelated_review_state_changes_nothing() -> None:
     assert go(snapshot(review("bob", "COMMENTED")), ("human-approval",)).allowed is False
+
+
+# ---- human-approval means "approved by the approval policy" -------------------------------------------------------
+
+
+def go_with(s: Snapshot, approval_policy: Approval, signals: tuple[str, ...] = ("human-approval",), **unlock: object):  # type: ignore[no-untyped-def]
+    return decide(s, signals, E2EUnlock(mode="policy", **unlock), approval_policy)  # type: ignore[arg-type]
+
+
+def test_one_approval_is_not_enough_when_the_policy_asks_for_two() -> None:
+    two = Approval(min_approvals=2)
+    d = go_with(snapshot(review("bob")), two)
+    assert not d.allowed and "needs 2 approving review(s) from someone else, has 1" in d.reason
+    assert go_with(snapshot(review("bob"), review("carol")), two).allowed
+
+
+def test_a_required_code_owner_must_have_approved() -> None:
+    owned = {"codeowners": "* @alice\n", "changed_files": ("main.go",)}
+    d = go_with(snapshot(review("bob"), **owned), Approval())
+    assert not d.allowed and "needs an approval from a code owner (@alice)" in d.reason
+    assert go_with(snapshot(review("alice"), **owned), Approval()).allowed
+    assert go_with(snapshot(review("bob"), **owned), Approval(require_code_owners=False)).allowed
+
+
+def test_the_waiting_reason_stays_short_when_nobody_has_approved_yet() -> None:
+    d = go_with(snapshot(), Approval(min_approvals=2))
+    assert d.reason == "waiting: needs a human approval of the current changes"
+
+
+def test_the_changes_requested_knob_reaches_the_approval_decision() -> None:
+    blocked = snapshot(review("bob"), review("carol", "CHANGES_REQUESTED"))
+    assert not go_with(blocked, Approval()).allowed  # blocks by default, before any signal is looked at
+    assert go_with(blocked, Approval(), block_on_changes_requested=False).allowed
+
+
+def test_an_unreadable_owner_team_is_an_error_not_an_unlock() -> None:
+    s = snapshot(review("bob"), codeowners="* @org/team\n", changed_files=("a.go",), team_members={"org/team": None})
+    with pytest.raises(ValueError, match="cannot read the members"):
+        go_with(s, Approval())

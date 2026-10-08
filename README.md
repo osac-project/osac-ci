@@ -66,13 +66,13 @@ e2e:
 
 | Signal | Holds when |
 |---|---|
-| `human-approval` | a human approved the current changes (this commit, or carried over a rebase); needs an `approval:` section |
+| `human-approval` | the PR is approved by the `approval:` policy: its minimum number of human approvals of the current changes (this commit, or carried over a rebase) and, if required, the code owners; needs that section |
 | `coderabbit-approval` | CodeRabbit's latest decision is APPROVED on exactly the head commit |
 | `lgtm-label` | the `lgtm` label is on the PR now (a transition aid while approvals still use labels) |
 | `e2e-ready-label` | the `e2e-ready` label, applied by `github-actions[bot]` |
 
 There is no sticky signal: the legacy ladder keeps E2E unlocked once `lgtm` was ever applied, even after the code
-changed. In `policy` mode a signal must hold for the commit about to be tested. The verdict names what would unlock it.
+changed, for as long as no human "changes requested" review is open. In `policy` mode a signal must hold for the commit about to be tested. The verdict names what would unlock it.
 
 ## Native approval (instead of `lgtm` / `approved` labels)
 
