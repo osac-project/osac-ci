@@ -1,0 +1,33 @@
+---
+name: osac-ci-review
+
+# A review cannot post the OSAC CI check itself: it runs the workflow file of the pull request branch, which must not
+# see the organization-read key, and a review on a fork PR has a read-only token. So this workflow only asks the
+# default-branch workflow to re-evaluate the PR. It checks out nothing and reads no secret.
+on:
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+
+permissions: {}
+
+concurrency:
+  group: osac-ci-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  relay:
+    name: relay
+    # Fork reviews cannot dispatch; the 10-minute sweep in osac-ci-check covers them.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write  # dispatch the default-branch workflow, nothing else
+    steps:
+      - name: Ask the default-branch workflow to re-evaluate this PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh workflow run osac-ci-check.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" -f number="$PR_NUMBER"

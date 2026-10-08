@@ -7,12 +7,12 @@ merge:
   required_labels: []
   blocking_labels: []
 
-# GitHub already requires a code owner here (see CODEOWNERS and the ruleset); this section makes the planner explain
-# the approval state and keep an approval alive across a rebase. Owner teams are not expanded: that needs an
-# org-scoped credential, and the ruleset already enforces the owner requirement.
+# GitHub requires a code owner here (see CODEOWNERS and the ruleset); the planner applies the same rule, so it says
+# "ready" only when GitHub does, and keeps an approval alive across a rebase. Owner teams are expanded with the
+# organization-read token (OSAC_CI_ORG_TOKEN); without it the verdict is a planner error, never a pass.
 approval:
   min_approvals: 1
-  require_code_owners: false
+  require_code_owners: true
   carry_over: trivial-rebase
 
 jobs:

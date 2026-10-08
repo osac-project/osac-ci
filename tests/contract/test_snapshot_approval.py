@@ -142,3 +142,15 @@ def test_a_team_name_without_a_slug_is_unreadable_not_guessed() -> None:
 def test_a_pr_without_a_base_branch_cannot_be_checked() -> None:
     with pytest.raises(ValueError, match="no base branch"):
         snapshot(standard_fake(base={}))
+
+
+def test_organization_lookups_use_the_org_client_and_everything_else_the_main_one() -> None:
+    main = with_approval_routes(standard_fake(), owners="* @example/data\n")
+    org = FakeGitHub()
+    org.add("GET", "/orgs/example/members/alice", None, status=204)
+    org.add("GET", "/orgs/example/teams/data/members", [{"login": "erin"}])
+    s = fetch_snapshot(main, REPO, 7, org="example", approval=Approval(), org_client=org)
+    assert s.author_is_org_member and s.team_members == {"example/data": frozenset({"erin"})}
+    assert not [c for c in main.calls if c[1].startswith("/orgs/")]  # the PR token never asks about the org
+    assert {c[1] for c in org.calls} == {"/orgs/example/members/alice", "/orgs/example/teams/data/members"}
+    assert not [c for c in org.calls if c[1].startswith("/repos/")]  # the org token never touches the repository
