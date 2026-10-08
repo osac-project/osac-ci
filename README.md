@@ -27,6 +27,27 @@ uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json
 ```
 
+## Who may use secrets and start expensive jobs (`trust:`)
+
+A PR from a fork may use secrets, and start E2E, when its author is an org member, the fork is owned by an org member,
+the author is in `trusted_bots`, or an org member authorized it. PRs from branches of the repository itself are
+trusted (pushing there needs write access). The `authorization` mode decides what "authorized" means:
+
+- `label` (default, today's behavior): the `ok-to-test` label. It survives pushes until a workflow strips it, so a
+  commit pushed in that window is trusted as well.
+- `sha-bound`: an org member comments `/ok-to-test <sha>` with the commit's SHA. `osac-ci-authorize.yml` verifies
+  the commenter with the read-only org token and posts a check run named `OSAC CI authorization` on that commit; the
+  planner accepts it only on the exact head, from the workflow app, with an authorizer who is still an org member.
+  A new push has a new SHA and no such check, so it is unauthorized at once: nothing to strip, no window. The SHA is
+  part of the command because a bare `/ok-to-test` would authorize "the head when the workflow looks", and a push
+  in those seconds would be authorized unseen. The verdict shows the exact command to post. Labels are ignored.
+
+```yaml
+trust:
+  authorization: sha-bound
+  trusted_bots: ["dependabot[bot]"]
+```
+
 ## Native approval (instead of `lgtm` / `approved` labels)
 
 A policy with an `approval:` section decides approval from GitHub reviews and CODEOWNERS, not from labels:

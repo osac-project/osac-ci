@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 import urllib.parse
 from collections.abc import Sequence
 from datetime import datetime, timedelta
@@ -17,7 +18,7 @@ from typing import Any
 from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
-from osac_ci.policy import Approval
+from osac_ci.policy import Approval, Trust
 from osac_ci.rules import codeowners
 
 _QUEUE_QUERY = """
@@ -42,6 +43,29 @@ def _in_merge_queue(client: GitHubClient, node_id: str) -> bool:
         raise GitHubError(response.status, "merge queue lookup failed")
     node = (response.data.get("data") or {}).get("node") or {}
     return node.get("mergeQueueEntry") is not None
+
+
+AUTH_APP = "github-actions"  # the app a workflow's built-in token posts as; a fork's read-only token cannot post
+AUTH_ID = re.compile(r"^osac-ci-auth:v1:(?P<login>[A-Za-z0-9][A-Za-z0-9-]{0,38}(?:\[bot\])?):(?P<sha>[0-9a-f]{40})$")
+
+
+def authorization_external_id(login: str, head_sha: str) -> str:
+    return f"osac-ci-auth:v1:{login}:{head_sha}"
+
+
+def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust) -> str:
+    """Login of an org member who authorized exactly ``head_sha``, or ``""``.
+
+    The authorization is a successful check run named ``trust.check_name`` posted by the workflow app, whose external id
+    names the authorizer and the commit. The runs were listed for the head commit, and the id must name it too. The
+    authorizer must still be an org member now: leaving the org withdraws the authorization."""
+    for run in sorted(runs, key=lambda r: r.started_at or "", reverse=True):
+        if (run.name, run.status, run.conclusion, run.app) != (trust.check_name, "completed", "success", AUTH_APP):
+            continue
+        found = AUTH_ID.match(run.external_id)
+        if found and found["sha"] == head_sha and is_org_member(org_client, org, found["login"]):
+            return found["login"]
+    return ""
 
 
 QUEUE_BOT = "github-merge-queue[bot]"
@@ -194,6 +218,7 @@ def fetch_snapshot(
     lookup_membership: bool = True,
     approval: Approval | None = None,
     org_client: GitHubClient | None = None,
+    trust: Trust | None = None,
 ) -> Snapshot:
     """Read everything the planner needs.
 
@@ -226,7 +251,14 @@ def fetch_snapshot(
         if raw.get("label")
     )
     runs = tuple(
-        CheckRun(raw["name"], raw["status"], raw.get("conclusion"), raw.get("started_at"))
+        CheckRun(
+            raw["name"],
+            raw["status"],
+            raw.get("conclusion"),
+            raw.get("started_at"),
+            raw.get("external_id") or "",
+            (raw.get("app") or {}).get("slug", ""),
+        )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
     files = tuple(raw["filename"] for raw in paginate(client, f"{base}/pulls/{number}/files"))
@@ -237,6 +269,10 @@ def fetch_snapshot(
     else:
         author_member = pr.get("author_association") in {"MEMBER", "OWNER"}
         owner_member = False
+
+    authorized_by = ""
+    if trust and trust.authorization == "sha-bound" and is_fork and not (author_member or owner_member):
+        authorized_by = find_authorizer(org_client, org, runs, head_sha, trust)
 
     base_ref: str = (pr.get("base") or {}).get("ref", "")  # only the native-approval inputs need it
     owners_text, team_members, fingerprints = (
@@ -264,4 +300,5 @@ def fetch_snapshot(
         codeowners=owners_text,
         team_members=team_members,
         change_fingerprints=fingerprints,
+        authorized_by=authorized_by,
     )

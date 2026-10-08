@@ -44,6 +44,7 @@ def pr_payload(**overrides: Any) -> dict[str, Any]:
         "number": 7,
         "node_id": "PR_node7",
         "draft": False,
+        "state": "open",
         "user": {"login": "alice"},
         "author_association": "CONTRIBUTOR",
         "labels": [{"name": "lgtm"}, {"name": "approved"}],

@@ -103,7 +103,13 @@ def build_report(
         number = pr["number"]
         try:
             snapshot = fetch_snapshot(
-                client, repo, number, org=org, lookup_membership=lookup_membership, approval=policy.approval
+                client,
+                repo,
+                number,
+                org=org,
+                lookup_membership=lookup_membership,
+                approval=policy.approval,
+                trust=policy.trust,
             )
             verdict = plan_or_error(snapshot, policy, Mode.PR)
         except (GitHubError, KeyError, ValueError) as exc:

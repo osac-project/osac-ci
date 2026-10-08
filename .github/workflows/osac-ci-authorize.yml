@@ -1,0 +1,63 @@
+---
+name: osac-ci-authorize
+
+# `/ok-to-test <sha>` from an org member authorizes that exact commit of a pull request to use secrets and start
+# expensive jobs. The authorization is a check run on the commit, so a new push is unauthorized at once.
+#
+# Safety rules for this file (it runs with write access to checks and PR comments):
+# * issue_comment always runs from the default branch, and checkout is pinned to it: no pull request code runs here;
+# * the comment text is user input: it reaches the program through an environment variable only, never the script text;
+# * the commenter is verified as an org member with the read-only app token, whatever the comment's author_association
+#   says; if that token cannot be created the job fails and nothing is authorized.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osac-ci-check-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: authorize
+    if: ${{ github.event.issue.pull_request && startsWith(github.event.comment.body, '/ok-to-test') }}
+    environment: org-read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read  # check out the default branch
+      checks: write  # post the authorization check run and refresh OSAC CI
+      pull-requests: write  # reply on the pull request
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Create a token that can read organization membership
+        id: org-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.OSAC_CI_READER_APP_ID }}
+          private-key: ${{ secrets.OSAC_CI_READER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-members: read
+      - name: Authorize the commit and refresh the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OSAC_CI_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
+          OSAC_CI_COMMENT: ${{ github.event.comment.body }}
+          COMMENTER: ${{ github.event.comment.user.login }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          uv run osac-ci authorize --policy policy/osac-ci.yml --repo "$REPO" --number "$PR_NUMBER" --commenter "$COMMENTER"
+          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" --number "$PR_NUMBER" \
+            --lookup-membership --require-org-token \
+            --note "Informational for now: this check is not required to merge."
