@@ -27,6 +27,30 @@ uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json
 ```
 
+## Native approval (instead of `lgtm` / `approved` labels)
+
+A policy with an `approval:` section decides approval from GitHub reviews and CODEOWNERS, not from labels:
+
+```yaml
+approval:
+  min_approvals: 1                # people other than the author
+  require_code_owners: true       # every changed file with owners needs one of them
+  carry_over: trivial-rebase      # or: never
+merge:
+  required_labels: [jira/valid-reference]   # the approval labels are no longer required
+```
+
+- Only human reviewers count; the latest review of each person decides; outstanding "changes requested" blocks.
+- CODEOWNERS is read from the **base** branch, so a PR cannot make its author an owner. Team owners are expanded with the
+  org members API; a team that cannot be read is a `planner-error`, never a pass.
+- An approval given on an older commit still counts when the PR makes exactly the same changes (a rebase, or the base
+  merged in): `osac_ci/fingerprint.py` compares what each commit adds and removes, ignoring context, line numbers and
+  blob ids. Re-indenting, a different mode or a different binary count as a change. The merge queue still tests the PR
+  on top of the current base, so a rebase that changes behavior is caught there.
+- An approved PR also unlocks E2E the way the `lgtm` label does today.
+
+Without an `approval:` section nothing changes: `policy/osac.yml` keeps today's label rules.
+
 ## Open-PR report
 
 ```bash

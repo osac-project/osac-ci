@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 
@@ -89,6 +90,13 @@ class Snapshot:
     # Replaying the issue events in order up to the merge: was the PR still in the queue when it merged? True means
     # the queue merged it; False means a direct merge (a bypass), even if it was queued earlier.
     queued_per_events: bool = False
+    # Native-approval inputs (see rules/approval.py). All empty unless the policy has an `approval:` section.
+    base_ref: str = ""
+    codeowners: str | None = None  # CODEOWNERS text from the base branch; None when the repository has none
+    team_members: Mapping[str, frozenset[str] | None] = field(
+        default_factory=dict
+    )  # "org/team" -> logins; None = unreadable
+    change_fingerprints: Mapping[str, str] = field(default_factory=dict)  # commit sha -> fingerprint of its changes
 
 
 @dataclass(frozen=True)
@@ -108,3 +116,4 @@ class Verdict:
     mode: Mode
     blockers: tuple[str, ...] = ()
     jobs: tuple[JobEntry, ...] = ()
+    notes: tuple[str, ...] = ()  # things worth knowing that do not block, for example an approval carried over

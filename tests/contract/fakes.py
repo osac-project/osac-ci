@@ -45,6 +45,7 @@ def pr_payload(**overrides: Any) -> dict[str, Any]:
         "author_association": "CONTRIBUTOR",
         "labels": [{"name": "lgtm"}, {"name": "approved"}],
         "head": {"sha": SHA, "repo": {"full_name": "alice/app", "owner": {"login": "alice"}}},
+        "base": {"ref": "main"},
     }
     pr.update(overrides)
     return pr

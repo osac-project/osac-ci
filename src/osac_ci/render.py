@@ -15,6 +15,8 @@ def render_markdown(verdict: Verdict) -> str:
     ]
     if verdict.blockers:
         lines += ["", "**Blockers:**", *[f"- {b}" for b in verdict.blockers]]
+    if verdict.notes:
+        lines += ["", "**Notes:**", *[f"- {n}" for n in verdict.notes]]
     if verdict.jobs:
         lines += ["", "| Job | Check | Status | Detail |", "|---|---|---|---|"]
         lines += [f"| {j.job_id} | {j.check} | {j.status.value} | {j.detail} |" for j in verdict.jobs]

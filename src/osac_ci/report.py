@@ -102,7 +102,9 @@ def build_report(
     def one(pr: dict[str, Any]) -> PRRow:
         number = pr["number"]
         try:
-            snapshot = fetch_snapshot(client, repo, number, org=org, lookup_membership=lookup_membership)
+            snapshot = fetch_snapshot(
+                client, repo, number, org=org, lookup_membership=lookup_membership, approval=policy.approval
+            )
             verdict = plan_or_error(snapshot, policy, Mode.PR)
         except (GitHubError, KeyError, ValueError) as exc:
             verdict = error_verdict(f"could not read PR #{number}: {exc}")

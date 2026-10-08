@@ -57,10 +57,22 @@ class Merge(_Strict):
     blocking_labels: tuple[str, ...] = QUEUE_BLOCKING_LABELS
 
 
+class Approval(_Strict):
+    """Native approval from code owners (see rules/approval.py). Absent from the policy means label-based approval."""
+
+    min_approvals: int = Field(default=1, ge=1, description="Distinct people other than the author who must approve")
+    require_code_owners: bool = Field(default=True, description="Every changed file with owners needs one of them")
+    carry_over: Literal["never", "trivial-rebase"] = Field(
+        default="trivial-rebase",
+        description="Keep an approval after a rebase when the PR's own changes are unchanged",
+    )
+
+
 class Policy(_Strict):
     version: Literal[1]
     repo: str = Field(min_length=3)
     merge: Merge = Merge()
+    approval: Approval | None = None
     jobs: dict[str, Job]
 
     @field_validator("jobs")

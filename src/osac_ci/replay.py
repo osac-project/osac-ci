@@ -129,7 +129,9 @@ def replay(
     org = org or repo.split("/", 1)[0]
     rows = []
     for pr in merged_prs(client, repo, now=now, days=days, limit=limit):
-        snapshot = fetch_snapshot(client, repo, pr["number"], org=org, lookup_membership=lookup_membership)
+        snapshot = fetch_snapshot(
+            client, repo, pr["number"], org=org, lookup_membership=lookup_membership, approval=policy.approval
+        )
         verdict = plan_or_error(snapshot, policy, Mode.PR)
         agrees = verdict.state is EXPECTED
         rows.append(

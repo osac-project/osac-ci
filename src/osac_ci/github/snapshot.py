@@ -7,13 +7,18 @@ Per PR this makes roughly 9 requests (PR, reviews, events, files, 2 pages of che
 
 from __future__ import annotations
 
+import base64
+import binascii
 import urllib.parse
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
+from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
+from osac_ci.policy import Approval
+from osac_ci.rules import codeowners
 
 _QUEUE_QUERY = """
 query($id: ID!) { node(id: $id) { ... on PullRequest { mergeQueueEntry { id } } } }
@@ -81,6 +86,85 @@ def queued_at_end(events: Sequence[dict[str, Any]]) -> bool:
     return queued
 
 
+CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub's lookup order
+_COMPARE_FILE_CAP = 300  # the compare API lists at most this many files; beyond it a fingerprint would be partial
+_MAX_FINGERPRINTED_COMMITS = 10
+
+
+def _quote(path: str) -> str:
+    return urllib.parse.quote(path, safe="/")
+
+
+def fetch_codeowners(client: GitHubClient, repo: str, base_ref: str) -> str | None:
+    """CODEOWNERS text from the base branch (never the PR head). ``None`` when the repository has none."""
+    for path in CODEOWNERS_PATHS:
+        response = client.request("GET", f"/repos/{repo}/contents/{_quote(path)}", params={"ref": base_ref})
+        if response.status == 404:
+            continue
+        if response.status != 200 or not isinstance(response.data, dict):
+            raise GitHubError(response.status, f"GET contents/{path}")
+        try:
+            return base64.b64decode(response.data.get("content", "")).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise GitHubError(response.status, f"CODEOWNERS is not readable text: {exc}") from exc
+    return None
+
+
+def fetch_team_members(client: GitHubClient, team: str) -> frozenset[str] | None:
+    """Logins in ``org/team``; ``None`` when the credential cannot read the team (never an empty guess)."""
+    org, _, slug = team.partition("/")
+    if not org or not slug:
+        return None
+    path = f"/orgs/{urllib.parse.quote(org, safe='')}/teams/{urllib.parse.quote(slug, safe='')}/members"
+    try:
+        return frozenset(member["login"] for member in paginate(client, path))
+    except GitHubError:
+        return None
+
+
+def fetch_change_fingerprint(client: GitHubClient, repo: str, base_ref: str, sha: str) -> str | None:
+    """Fingerprint of what ``sha`` changes relative to the base branch, or ``None`` if it cannot be known exactly."""
+    response = client.request("GET", f"/repos/{repo}/compare/{_quote(base_ref)}...{sha}", params={"per_page": "1"})
+    if response.status != 200 or not isinstance(response.data, dict):
+        return None
+    files = response.data.get("files") or []
+    if len(files) >= _COMPARE_FILE_CAP:
+        return None
+    parts: list[str] = []
+    for item in sorted(files, key=lambda f: f["filename"]):
+        previous = item.get("previous_filename") or item["filename"]
+        parts.append(f"diff --git a/{previous} b/{item['filename']}")
+        parts.append(f"status {item.get('status', '')}")
+        # No patch means binary or too large: fall back to the blob id, which can only err toward "changed".
+        parts.append(item["patch"] if item.get("patch") else f"GIT binary patch\nblob {item.get('sha', '')}")
+    return fingerprint("\n".join(parts))
+
+
+def _approval_inputs(
+    client: GitHubClient, repo: str, base_ref: str, head_sha: str, reviews: Sequence[Review], files: Sequence[str]
+) -> tuple[str | None, dict[str, frozenset[str] | None], dict[str, str]]:
+    if not base_ref:
+        raise ValueError("the pull request has no base branch, cannot read CODEOWNERS")
+    text = fetch_codeowners(client, repo, base_ref)
+    teams: dict[str, frozenset[str] | None] = {}
+    if text is not None:
+        rules = codeowners.parse(text)
+        for path in files:
+            for owner in codeowners.owners_of(rules, path) or ():
+                if owner.startswith("@") and "/" in owner and owner[1:] not in teams:
+                    teams[owner[1:]] = fetch_team_members(client, owner[1:])
+    commits = [head_sha]
+    for review in reviews:
+        if review.state == "APPROVED" and review.commit_id and review.commit_id not in commits:
+            commits.append(review.commit_id)
+    fingerprints: dict[str, str] = {}
+    for sha in commits[:_MAX_FINGERPRINTED_COMMITS]:
+        value = fetch_change_fingerprint(client, repo, base_ref, sha)
+        if value is not None:
+            fingerprints[sha] = value
+    return text, teams, fingerprints
+
+
 def _review(raw: dict[str, Any]) -> Review | None:
     user = raw.get("user")
     if not user:  # deleted account: the legacy rules ignore reviews without a user too
@@ -102,11 +186,15 @@ def fetch_snapshot(
     *,
     org: str,
     lookup_membership: bool = True,
+    approval: Approval | None = None,
 ) -> Snapshot:
     """Read everything the planner needs.
 
     ``lookup_membership=False`` approximates org membership from ``author_association`` (MEMBER or OWNER), which
     needs no org-scoped credential. The real authorization check needs one (see the design doc).
+
+    ``approval`` is the policy's native-approval section; when given, CODEOWNERS (from the base branch), the members
+    of owner teams and the change fingerprints of the head and of every approved commit are read as well.
     """
     repo = check_repo(repo)
     if number < 1:
@@ -139,6 +227,11 @@ def fetch_snapshot(
         author_member = pr.get("author_association") in {"MEMBER", "OWNER"}
         owner_member = False
 
+    base_ref: str = (pr.get("base") or {}).get("ref", "")  # only the native-approval inputs need it
+    owners_text, team_members, fingerprints = (
+        _approval_inputs(client, repo, base_ref, head_sha, reviews, files) if approval else (None, {}, {})
+    )
+
     return Snapshot(
         repo=repo,
         number=number,
@@ -156,4 +249,8 @@ def fetch_snapshot(
         changed_files=files,
         in_merge_queue=_in_merge_queue(client, pr["node_id"]),
         queued_per_events=queued_at_end(raw_events),
+        base_ref=base_ref,
+        codeowners=owners_text,
+        team_members=team_members,
+        change_fingerprints=fingerprints,
     )

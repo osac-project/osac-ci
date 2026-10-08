@@ -38,13 +38,15 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
     allowed = {
         "repo", "number", "head_sha", "is_draft", "is_fork", "author", "author_is_org_member", "fork_owner",
         "fork_owner_is_org_member", "labels", "reviews", "label_events", "check_runs", "changed_files",
-        "in_merge_queue", "queued_per_events",
+        "in_merge_queue", "queued_per_events", "base_ref", "codeowners", "team_members", "change_fingerprints",
     }  # fmt: skip
     unknown = set(data) - allowed
     if unknown:
         raise ValueError(f"unknown snapshot keys: {sorted(unknown)}")
     kwargs: dict[str, Any] = {
-        k: v for k, v in data.items() if k not in {"labels", "reviews", "label_events", "check_runs", "changed_files"}
+        k: v
+        for k, v in data.items()
+        if k not in {"labels", "reviews", "label_events", "check_runs", "changed_files", "team_members"}
     }
     return Snapshot(
         **kwargs,
@@ -53,6 +55,7 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
         label_events=tuple(LabelEvent(**e) for e in data.get("label_events", ())),
         check_runs=tuple(CheckRun(**c) for c in data.get("check_runs", ())),
         changed_files=tuple(data.get("changed_files", ())),
+        team_members={t: (None if m is None else frozenset(m)) for t, m in data.get("team_members", {}).items()},
     )
 
 
@@ -184,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.number,
                 org=args.org or args.repo.split("/", 1)[0],
                 lookup_membership=not args.no_membership_lookup,
+                approval=policy.approval,
             )
         except (GitHubError, ValueError) as exc:
             print(f"error: cannot read the PR: {exc}", file=sys.stderr)

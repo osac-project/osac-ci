@@ -7,6 +7,8 @@
 # Jobs here do not use path filters yet. Today each workflow's own `changes` job decides applicability and reports a
 # skipped or green check, so the planner reads the outcome. The matcher in osac_ci/paths.py already reproduces the real
 # dorny/paths-filter on ci-filters.yml (tests/contract/test_paths_oracle.py); wiring named filters into jobs is next.
+# Approval is by the `lgtm` / `approved` labels (merge.required_labels). To move to native reviews plus CODEOWNERS with
+# approvals that survive a rebase, add an `approval:` section and drop those two labels (see README).
 # Changes here alter merge behavior: they need review by @osac-project/wg-infra (see CODEOWNERS).
 version: 1
 repo: osac-project/osac

@@ -23,13 +23,15 @@ from osac_ci.model import (
 )
 from osac_ci.paths import applicable
 from osac_ci.policy import Job, Policy
-from osac_ci.rules import readiness
+from osac_ci.rules import approval, readiness
 from osac_ci.rules.fork import fork_secrets_authorized
 from osac_ci.rules.labels import missing_required, present_blocking
 
 # A completed check with one of these conclusions counts as passing for a required context (GitHub semantics).
 _PASSING = frozenset({"success", "neutral", "skipped"})
 _AUTH_DETAIL = "fork PR is not authorized to use secrets"
+
+_NATIVE_APPROVAL_NEXT = ("get a code owner to approve the current changes and clear any blocking label", "code owner")
 
 _NEXT: dict[State, tuple[str, str]] = {
     State.DRAFT: ("mark the PR ready for review", "author"),
@@ -73,7 +75,9 @@ def _from_check(run: CheckRun | None) -> tuple[JobStatus, str]:
     return JobStatus.FAILED, f"conclusion: {run.conclusion}"
 
 
-def _evaluate(job_id: str, job: Job, snapshot: Snapshot, mode: Mode, checks: dict[str, CheckRun]) -> JobEntry | None:
+def _evaluate(
+    job_id: str, job: Job, snapshot: Snapshot, mode: Mode, checks: dict[str, CheckRun], labels: frozenset[str]
+) -> JobEntry | None:
     if mode.value not in job.required_at:
         return None
     if not applicable(snapshot.changed_files, job.paths, job.exclude_paths):
@@ -83,16 +87,24 @@ def _evaluate(job_id: str, job: Job, snapshot: Snapshot, mode: Mode, checks: dic
     if mode is Mode.PR and job.kind == "e2e" and job.needs_readiness and not finished:
         if not fork_secrets_authorized(snapshot):
             return JobEntry(job_id, job.check, JobStatus.WAITING, _AUTH_DETAIL)
-        decision = readiness.decide(snapshot.labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
+        decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
         if not decision.allowed:
             return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason)
     status, detail = _from_check(run)
     return JobEntry(job_id, job.check, status, detail)
 
 
-def _verdict(state: State, headline: str, mode: Mode, blockers: tuple[str, ...], jobs: tuple[JobEntry, ...]) -> Verdict:
-    next_action, who = _NEXT[state]
-    return Verdict(state, headline, next_action, who, mode, blockers, jobs)
+def _verdict(
+    state: State,
+    headline: str,
+    mode: Mode,
+    blockers: tuple[str, ...],
+    jobs: tuple[JobEntry, ...],
+    notes: tuple[str, ...] = (),
+    native_approval: bool = False,
+) -> Verdict:
+    next_action, who = _NATIVE_APPROVAL_NEXT if native_approval and state is State.AWAITING_APPROVAL else _NEXT[state]
+    return Verdict(state, headline, next_action, who, mode, blockers, jobs, notes)
 
 
 def _names(entries: Sequence[JobEntry]) -> str:
@@ -101,10 +113,15 @@ def _names(entries: Sequence[JobEntry]) -> str:
 
 def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     checks = latest_checks(snapshot.check_runs)
+    # With native approval an approved PR unlocks E2E the way the `lgtm` label does today.
+    decision = approval.evaluate(snapshot, policy.approval) if policy.approval and mode is Mode.PR else None
+    labels = snapshot.labels | {"lgtm"} if decision and decision.approved else snapshot.labels
+    notes = decision.notes if decision else ()
+    native = decision is not None
     entries = tuple(
         entry
         for job_id, job in policy.jobs.items()
-        if (entry := _evaluate(job_id, job, snapshot, mode, checks)) is not None
+        if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels)) is not None
     )
     kind = {job.check: job.kind for job in policy.jobs.values()}
 
@@ -129,11 +146,15 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
         return _verdict(State.QUEUE_PASSED, "all queue checks passed", mode, (), entries)
 
     if snapshot.is_draft:
-        return _verdict(State.DRAFT, "draft PR: not eligible for the merge queue", mode, tuple(blockers), entries)
+        return _verdict(
+            State.DRAFT, "draft PR: not eligible for the merge queue", mode, tuple(blockers), entries, notes, native
+        )
 
     missing = missing_required(snapshot.labels, policy.merge.required_labels)
     blocking = present_blocking(snapshot.labels, policy.merge.blocking_labels)
     label_problems = [f"missing label: {m}" for m in missing] + [f"blocking label: {b}" for b in blocking]
+    if decision:
+        label_problems += decision.problems
     blockers += label_problems
 
     failed_cheap, failed_e2e = where(JobStatus.FAILED, "cheap"), where(JobStatus.FAILED, "e2e")
@@ -142,11 +163,13 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
             State.CHECKS_FAILED, f"required checks failed: {_names(failed_cheap)}", mode, tuple(blockers), entries
         )
     if failed_e2e:
-        return _verdict(State.E2E_FAILED, f"E2E failed: {_names(failed_e2e)}", mode, tuple(blockers), entries)
+        return _verdict(
+            State.E2E_FAILED, f"E2E failed: {_names(failed_e2e)}", mode, tuple(blockers), entries, notes, native
+        )
 
     waiting_e2e = [e for e in where(JobStatus.WAITING, "e2e")]
     if any(e.detail == _AUTH_DETAIL for e in waiting_e2e):
-        return _verdict(State.NEEDS_AUTHORIZATION, _AUTH_DETAIL, mode, tuple(blockers), entries)
+        return _verdict(State.NEEDS_AUTHORIZATION, _AUTH_DETAIL, mode, tuple(blockers), entries, notes, native)
 
     pending_cheap = where(JobStatus.RUNNING, "cheap") + where(JobStatus.WAITING, "cheap")
     if pending_cheap:
@@ -156,20 +179,28 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
             mode,
             tuple(blockers),
             entries,
+            notes,
+            native,
         )
     if label_problems:
-        return _verdict(State.AWAITING_APPROVAL, "; ".join(label_problems), mode, tuple(blockers), entries)
+        return _verdict(
+            State.AWAITING_APPROVAL, "; ".join(label_problems), mode, tuple(blockers), entries, notes, native
+        )
     locked = [e for e in waiting_e2e if e.detail.startswith(("waiting:", "denied:"))]
     if locked:
-        return _verdict(State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries)
+        return _verdict(State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries, notes, native)
     if pending:
-        return _verdict(State.E2E_RUNNING, f"E2E in progress: {_names(pending)}", mode, tuple(blockers), entries)
+        return _verdict(
+            State.E2E_RUNNING, f"E2E in progress: {_names(pending)}", mode, tuple(blockers), entries, notes, native
+        )
 
     nothing_ran = bool(entries) and all(e.status is JobStatus.NOT_APPLICABLE for e in entries)
     suffix = " (no required job applies to the changed files)" if nothing_ran else ""
     if snapshot.in_merge_queue:
-        return _verdict(State.IN_QUEUE, "in the merge queue" + suffix, mode, (), entries)
-    return _verdict(State.READY_TO_ENQUEUE, "all PR-time requirements are met" + suffix, mode, (), entries)
+        return _verdict(State.IN_QUEUE, "in the merge queue" + suffix, mode, (), entries, notes, native)
+    return _verdict(
+        State.READY_TO_ENQUEUE, "all PR-time requirements are met" + suffix, mode, (), entries, notes, native
+    )
 
 
 def plan_or_error(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
