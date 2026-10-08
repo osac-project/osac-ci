@@ -35,7 +35,7 @@ trusted (pushing there needs write access). The `authorization` mode decides wha
 
 - `label` (default, today's behavior): the `ok-to-test` label. It survives pushes until a workflow strips it, so a
   commit pushed in that window is trusted as well.
-- `sha-bound`: an org member comments `/ok-to-test <sha>` with the commit's SHA. `osac-ci-authorize.yml` verifies
+- `sha-bound`: an org member comments `/ok-to-test <full sha>` with the commit's full 40-character SHA. `osac-ci-authorize.yml` verifies
   the commenter with the read-only org token and posts a check run named `OSAC CI authorization` on that commit; the
   planner accepts it only on the exact head, from the workflow app, with an authorizer who is still an org member.
   A new push has a new SHA and no such check, so it is unauthorized at once: nothing to strip, no window. The SHA is

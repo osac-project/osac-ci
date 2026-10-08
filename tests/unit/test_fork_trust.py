@@ -49,5 +49,5 @@ def test_sha_bound_mode_ignores_the_label_and_needs_an_authorizer_of_this_commit
     assert not fork_secrets_authorized(fork(), SHA_BOUND)
 
 
-def test_the_command_to_post_names_the_short_commit() -> None:
-    assert authorization_command(HEAD) == "/ok-to-test aaaaaaa"
+def test_the_command_to_post_names_the_full_commit() -> None:
+    assert authorization_command(HEAD) == f"/ok-to-test {HEAD}"
