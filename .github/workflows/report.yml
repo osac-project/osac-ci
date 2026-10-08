@@ -1,0 +1,61 @@
+---
+name: open-pr-report
+
+# Writes a table of every open PR in osac with its state, the reason, who has to act and what comes next.
+# Read-only: it reads public GitHub data and uploads files. It changes nothing in any repository.
+
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Repository to report on (owner/name)
+        default: osac-project/osac
+      limit:
+        description: Maximum number of PRs to read (empty means all)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-pr-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: report
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      # Inputs go through the environment, never into the command line (they are user-controlled text).
+      # About 7 API requests per PR: the built-in token's rate limit may cut a very large run short. PRs that could
+      # not be read then appear as planner-error rows instead of disappearing.
+      - name: Build the report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ inputs.repo || 'osac-project/osac' }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          args=(--policy policy/osac.yml --repo "$REPO" --out-dir report)
+          if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi
+          uv run osac-ci report "${args[@]}"
+      - name: Show it in the job summary
+        run: cat report/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: open-pr-report
+          path: report/
+          retention-days: 14
+          if-no-files-found: error

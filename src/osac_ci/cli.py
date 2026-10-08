@@ -4,6 +4,7 @@
     osac-ci explain --policy policy/osac.yml --snapshot snapshot.json [--mode pr|queue]
     GH_TOKEN=... osac-ci explain-pr --policy policy/osac.yml --repo osac-project/osac --number 1438
     GH_TOKEN=... osac-ci replay --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
+    GH_TOKEN=... osac-ci report --policy policy/osac.yml --repo osac-project/osac --out-dir report
 
 `explain` is offline: it turns a recorded snapshot into the verdict the control plane would publish.
 `explain-pr` reads one live PR (read-only) and does the same. `replay` reads recently merged PRs and reports
@@ -27,6 +28,7 @@ from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
+from osac_ci.report import build_report, write_all
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 
@@ -86,6 +88,19 @@ def _parser() -> argparse.ArgumentParser:
         help="approximate org membership from author_association (needs no org-scoped token)",
     )
 
+    rpt = sub.add_parser("report", help="write a table of every open PR with its state, reason and next step")
+    rpt.add_argument("--policy", type=Path, required=True)
+    rpt.add_argument("--repo", required=True, help="owner/name")
+    rpt.add_argument("--out-dir", type=Path, default=Path("report"))
+    rpt.add_argument("--formats", default="md,html,json", help="comma separated: md, html, json")
+    rpt.add_argument("--include-drafts", action="store_true")
+    rpt.add_argument("--limit", type=int)
+    rpt.add_argument("--workers", type=int, default=6)
+    rpt.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
+    rpt.add_argument(
+        "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
+    )
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -108,6 +123,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "policy":
         print(f"OK: {policy.repo}: {len(policy.jobs)} jobs")
+        return 0
+
+    if args.command == "report":
+        formats = [f.strip() for f in args.formats.split(",") if f.strip()]
+        unknown = set(formats) - {"md", "html", "json"}
+        if unknown or not formats:
+            print(f"error: unknown formats {sorted(unknown)}; use md, html, json", file=sys.stderr)
+            return 2
+        try:
+            report = build_report(
+                build_client(),
+                policy,
+                args.repo,
+                generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                org=args.org,
+                include_drafts=args.include_drafts,
+                limit=args.limit,
+                lookup_membership=args.lookup_membership,
+                workers=args.workers,
+            )
+            names = write_all(report, args.out_dir, formats)
+        except (GitHubError, ValueError, OSError) as exc:
+            print(f"error: report failed: {exc}", file=sys.stderr)
+            return 3
+        summary = ", ".join(f"{n} {s.value}" for s, n in report.counts()) or "no open PRs"
+        print(f"{len(report.rows)} open PRs ({summary}); wrote {', '.join(names)} to {args.out_dir}")
         return 0
 
     if args.command == "replay":

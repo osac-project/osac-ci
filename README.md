@@ -15,8 +15,9 @@ A policy-driven CI control plane for the OSAC repositories. For any pull request
 | Legacy rules, ported | `src/osac_ci/rules/` | labels (`auto-queue.sh`), E2E readiness (`check-e2e-readiness.sh`), fork authorization (`authorize-fork-pr`) |
 | Policy | `policy/osac.yml`, `policy/toy.yml` | today's OSAC rules; a toy repo that proves the engine is generic |
 | GitHub adapter | `src/osac_ci/github/` | standard library only; about 9 read requests per PR; no bulk `statusCheckRollup` pull |
+| Open-PR report | `src/osac_ci/report.py`, `.github/workflows/report.yml` | one table of every open PR: state, reason, who acts, next step; markdown, HTML and JSON; nightly |
 | Replay | `src/osac_ci/replay.py`, `parity/explained.yaml` | the parity evidence: does the planner agree with recently merged PRs? |
-| CLI | `osac-ci policy check`, `explain`, `explain-pr`, `replay` | read-only; live commands need `GH_TOKEN` |
+| CLI | `osac-ci policy check`, `explain`, `explain-pr`, `report`, `replay` | read-only; live commands need `GH_TOKEN` |
 
 ## Try it
 
@@ -25,6 +26,17 @@ uv sync
 uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json
 ```
+
+## Open-PR report
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci report --policy policy/osac.yml --repo osac-project/osac --out-dir report
+```
+
+Writes `report.md`, `report.html` (filterable, self-contained) and `report.json`. A PR that cannot be read shows up
+as a `planner-error` row, so nothing silently disappears. PR titles are treated as untrusted text in every format.
+The `open-pr-report` workflow runs it every night and keeps the files as a workflow artifact and in the job summary.
+On the built-in token it makes about 7 requests per PR, which may hit its rate limit on a very large run.
 
 ## Replay (parity evidence)
 

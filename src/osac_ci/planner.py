@@ -177,4 +177,9 @@ def plan_or_error(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> V
     try:
         return plan(snapshot, policy, mode)
     except Exception as exc:  # noqa: BLE001 - the whole point is to never let a planner bug pass as success
-        return _verdict(State.PLANNER_ERROR, f"planner error: {type(exc).__name__}: {exc}", mode, (), ())
+        return error_verdict(f"{type(exc).__name__}: {exc}", mode)
+
+
+def error_verdict(message: str, mode: Mode = Mode.PR) -> Verdict:
+    """The verdict for anything that stops the planner from answering, including failing to read the PR."""
+    return _verdict(State.PLANNER_ERROR, f"planner error: {message}", mode, (), ())
