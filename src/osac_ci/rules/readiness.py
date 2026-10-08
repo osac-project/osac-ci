@@ -27,7 +27,12 @@ _DECISION_STATES = frozenset({"APPROVED", "CHANGES_REQUESTED", "DISMISSED"})
 @dataclass(frozen=True)
 class Readiness:
     allowed: bool
-    reason: str
+    reason: str  # for people; its wording may change
+    code: str = ""  # for code: "" when allowed or not classified, else one of the CODE_* values below
+
+
+CODE_CHANGES_REQUESTED = "changes-requested"  # an open human change request locks every signal
+CODE_NEEDS_SIGNAL = "needs-signal"  # no listed signal holds yet
 
 
 def _order_key(review: Review) -> tuple[str, int]:

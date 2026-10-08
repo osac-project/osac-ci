@@ -31,6 +31,7 @@ from osac_ci.rules.labels import missing_required, present_blocking
 _PASSING = frozenset({"success", "neutral", "skipped"})
 _AUTH_DETAIL = "fork PR is not authorized to use secrets"
 
+_CHANGES_REQUESTED_NEXT = "address the requested changes; the reviewer approves again or dismisses their review"
 _NATIVE_APPROVAL_NEXT = ("get a code owner to approve the current changes and clear any blocking label", "code owner")
 
 _NEXT: dict[State, tuple[str, str]] = {
@@ -99,7 +100,7 @@ def _evaluate(
         else:
             decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
         if not decision.allowed:
-            return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason)
+            return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason, decision.code)
     status, detail = _from_check(run)
     return JobEntry(job_id, job.check, status, detail)
 
@@ -210,7 +211,10 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     locked = [e for e in waiting_e2e if e.detail.startswith(("waiting:", "denied:"))]
     if locked:
         override = None
-        if policy.e2e.unlock.mode == "policy":
+        if policy.e2e.unlock.mode == "policy" and locked[0].code == readiness.CODE_CHANGES_REQUESTED:
+            # An approval or a CodeRabbit review cannot unlock anything until the change request is resolved.
+            override = (_CHANGES_REQUESTED_NEXT, "author and the reviewer who requested changes")
+        elif policy.e2e.unlock.mode == "policy":
             job = next(j for j in policy.jobs.values() if j.check == locked[0].check)
             signals = policy.e2e.unlock.signals_for(job.suite)
             override = (f"get {e2e_unlock.describe(signals)}", "reviewer")
