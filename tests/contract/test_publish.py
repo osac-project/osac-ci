@@ -197,3 +197,23 @@ def test_cli_needs_a_target(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cli, "build_client", lambda: standard_fake())
     with pytest.raises(SystemExit):
         cli.main(["publish", *POLICY_ARGS])
+
+
+def test_a_missing_org_token_that_is_required_becomes_a_visible_failure_not_a_fallback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv(cli.ORG_TOKEN_ENV, raising=False)
+    fake = fake_with_publish_routes()
+    code = run_cli(monkeypatch, fake, "--number", "7", "--lookup-membership", "--require-org-token")
+    (body,) = posted(fake)
+    assert code == 0 and "planner-error" in capsys.readouterr().out
+    assert body["conclusion"] == "failure" and "OSAC_CI_ORG_TOKEN is not available" in body["output"]["summary"]
+    assert not [c for c in fake.calls if c[1].startswith("/orgs/")]  # the main token never asked about the org
+
+
+def test_without_the_require_flag_the_main_client_is_used_for_org_lookups(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(cli.ORG_TOKEN_ENV, raising=False)
+    assert cli.build_org_client() is None
+    assert isinstance(cli.build_org_client(required=True), cli._NoOrgToken)  # type: ignore[attr-defined]
+    monkeypatch.setenv(cli.ORG_TOKEN_ENV, "x")
+    assert isinstance(cli.build_org_client(required=True), cli.HttpClient)

@@ -55,6 +55,14 @@ def test_the_organization_read_key_is_only_used_from_the_environment_and_only_fo
     assert len(mint["uses"].split("@")[1].split()[0]) == 40  # pinned by commit SHA
 
 
+def test_a_failed_token_does_not_stop_the_job_so_the_pr_still_gets_a_visible_check() -> None:
+    steps = _workflow("osac-ci-check.yml")["jobs"]["publish"]["steps"]
+    (mint,) = [s for s in steps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+    post = next(s for s in steps if s.get("name") == "Post the verdict")
+    assert mint["continue-on-error"] is True
+    assert "--require-org-token" in post["run"] and "--lookup-membership" in post["run"]
+
+
 def test_the_pr_branch_workflow_never_sees_the_key_and_reviews_are_relayed() -> None:
     check, review = _workflow("osac-ci-check.yml"), _workflow("osac-ci-review.yml")
     assert "pull_request_review" not in _triggers(check)

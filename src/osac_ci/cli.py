@@ -17,11 +17,12 @@ import argparse
 import json
 import os
 import sys
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci.github.api import GitHubClient, GitHubError, HttpClient
+from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response
 from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
@@ -61,10 +62,23 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
     )
 
 
-def build_org_client() -> GitHubClient | None:
-    """A client for organization lookups only, when ``OSAC_CI_ORG_TOKEN`` is set; otherwise the main client is used."""
+class _NoOrgToken:
+    """Stands in for the organization client when it was required but is missing: every lookup fails loudly, so the
+    PR gets a visible planner-error with the cause instead of an answer from a token that cannot see the org."""
+
+    def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
+        raise GitHubError(0, f"{ORG_TOKEN_ENV} is not available (the organization app token could not be created)")
+
+
+def build_org_client(*, required: bool = False) -> GitHubClient | None:
+    """A client for organization lookups only, when ``OSAC_CI_ORG_TOKEN`` is set; otherwise the main client is used.
+
+    With ``required`` a missing token never falls back to the main client (it cannot read the organization): lookups
+    fail instead, which the planner reports as an error."""
     token = os.environ.get(ORG_TOKEN_ENV)
-    return HttpClient(token) if token else None
+    if token:
+        return HttpClient(token)
+    return _NoOrgToken() if required else None
 
 
 def build_client() -> GitHubClient:
@@ -123,6 +137,11 @@ def _parser() -> argparse.ArgumentParser:
     pub.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
     pub.add_argument("--limit", type=int, help="with --all: stop after this many PRs")
     pub.add_argument("--dry-run", action="store_true", help="print what would be posted, post nothing")
+    pub.add_argument(
+        "--require-org-token",
+        action="store_true",
+        help=f"never fall back to the main token for organization lookups: without {ORG_TOKEN_ENV} they fail visibly",
+    )
     pub.add_argument(
         "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
     )
@@ -184,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             "check_name": args.check_name,
             "note": args.note,
             "dry_run": args.dry_run,
-            "org_client": build_org_client(),
+            "org_client": build_org_client(required=args.require_org_token),
         }
         try:
             client = build_client()
