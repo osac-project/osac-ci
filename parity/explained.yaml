@@ -1,0 +1,3 @@
+# PR number: reason. Every entry is a signed-off, explained disagreement between the planner and what actually
+# happened (see src/osac_ci/replay.py). Keep it small. Changes need review by @osac-project/wg-infra.
+{}

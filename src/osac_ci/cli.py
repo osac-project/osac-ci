@@ -3,9 +3,11 @@
     osac-ci policy check policy/osac.yml
     osac-ci explain --policy policy/osac.yml --snapshot snapshot.json [--mode pr|queue]
     GH_TOKEN=... osac-ci explain-pr --policy policy/osac.yml --repo osac-project/osac --number 1438
+    GH_TOKEN=... osac-ci replay --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
 
 `explain` is offline: it turns a recorded snapshot into the verdict the control plane would publish.
-`explain-pr` reads one live PR (read-only) and does the same. Neither writes anything to GitHub.
+`explain-pr` reads one live PR (read-only) and does the same. `replay` reads recently merged PRs and reports
+whether the planner agrees they were ready (the parity evidence). None of them writes anything to GitHub.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,7 @@ from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
 from osac_ci.render import render_markdown
+from osac_ci.replay import load_explained, render, replay, to_json
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 
@@ -81,6 +85,16 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="approximate org membership from author_association (needs no org-scoped token)",
     )
+
+    rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
+    rep.add_argument("--policy", type=Path, required=True)
+    rep.add_argument("--repo", required=True, help="owner/name")
+    rep.add_argument("--days", type=int, default=60)
+    rep.add_argument("--limit", type=int, default=100)
+    rep.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
+    rep.add_argument("--explained", type=Path, help="YAML ledger of signed-off disagreements (PR number: reason)")
+    rep.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    rep.add_argument("--no-membership-lookup", action="store_true")
     return parser
 
 
@@ -95,6 +109,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "policy":
         print(f"OK: {policy.repo}: {len(policy.jobs)} jobs")
         return 0
+
+    if args.command == "replay":
+        try:
+            report = replay(
+                build_client(),
+                policy,
+                args.repo,
+                now=datetime.now(UTC),
+                days=args.days,
+                limit=args.limit,
+                org=args.org,
+                explained=load_explained(args.explained),
+                lookup_membership=not args.no_membership_lookup,
+            )
+        except (GitHubError, ValueError, OSError) as exc:
+            print(f"error: replay failed: {exc}", file=sys.stderr)
+            return 3
+        print(to_json(report) if args.json else render(report), end="")
+        return 1 if report.unexplained else 0
 
     if args.command == "explain":
         try:
