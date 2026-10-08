@@ -4,8 +4,9 @@
 # here: its meaning lives in `merge:` below, so a missing label is reported as "awaiting approval" rather than as a
 # failed check. tests/unit/test_osac_policy.py proves jobs + check-labels == the recorded ruleset.
 #
-# Path filters are not ported yet. Today each workflow's own `changes` job decides applicability and reports a
-# skipped or green check, so the planner reads the outcome. Porting ci-filters.yml is slice 0 follow-up.
+# Jobs here do not use path filters yet. Today each workflow's own `changes` job decides applicability and reports a
+# skipped or green check, so the planner reads the outcome. The matcher in osac_ci/paths.py already reproduces the real
+# dorny/paths-filter on ci-filters.yml (tests/contract/test_paths_oracle.py); wiring named filters into jobs is next.
 # Changes here alter merge behavior: they need review by @osac-project/wg-infra (see CODEOWNERS).
 version: 1
 repo: osac-project/osac

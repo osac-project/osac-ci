@@ -9,7 +9,7 @@ pytestmark = pytest.mark.unit
     ("pattern", "path", "expected"),
     [
         ("docs/**", "docs/a/b.md", True),
-        ("docs/**", "docs", False),
+        ("docs/**", "docs", True),  # picomatch: a trailing /** also matches the name itself
         ("docs/**", "other/docs/a.md", False),
         ("**/*.md", "README.md", True),
         ("**/*.md", "a/b/c.md", True),
@@ -20,6 +20,12 @@ pytestmark = pytest.mark.unit
         ("a?c", "a/c", False),
         ("osac-ui/**", "osac-ui/pnpm-lock.yaml", True),
         ("a.b", "aXb", False),
+        ("{a/**,b/**}", "b/x/y", True),
+        ("{**/*.yaml,z}", "x.yaml", False),
+        ("{**/*.yaml,z}", "d/x.yaml", True),
+        ("**/*.yaml", "x.yaml", True),
+        ("a/**/b", "a/b", True),
+        ("*.yaml", ".yaml", True),
     ],
 )
 def test_matches(pattern: str, path: str, expected: bool) -> None:
