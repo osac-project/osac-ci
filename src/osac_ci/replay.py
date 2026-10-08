@@ -38,11 +38,13 @@ class Row:
     state: State
     headline: str
     agrees: bool
+    via_queue: bool
     explanation: str | None = None
 
     @property
     def unexplained(self) -> bool:
-        return not self.agrees and self.explanation is None
+        """Only PRs the queue merged are held to the planner. A direct merge is a bypass, reported separately."""
+        return self.via_queue and not self.agrees and self.explanation is None
 
 
 @dataclass(frozen=True)
@@ -58,6 +60,20 @@ class Report:
     @property
     def unexplained(self) -> tuple[Row, ...]:
         return tuple(r for r in self.rows if r.unexplained)
+
+    @property
+    def queue_rows(self) -> tuple[Row, ...]:
+        return tuple(r for r in self.rows if r.via_queue)
+
+    @property
+    def bypass_rows(self) -> tuple[Row, ...]:
+        """Merged outside the queue. The planner's verdict says which requirement was bypassed."""
+        return tuple(r for r in self.rows if not r.via_queue)
+
+    @property
+    def queue_agreement(self) -> float:
+        rows = self.queue_rows
+        return 1.0 if not rows else sum(r.agrees for r in rows) / len(rows)
 
     @property
     def agreement(self) -> float:
@@ -123,6 +139,7 @@ def replay(
                 state=verdict.state,
                 headline=verdict.headline,
                 agrees=agrees,
+                via_queue=snapshot.queued_per_events,
                 explanation=None if agrees else explained.get(pr["number"]),
             )
         )
@@ -130,24 +147,51 @@ def replay(
 
 
 def render(report: Report) -> str:
-    n, bad = len(report.rows), report.disagreements
+    queue, bypass = report.queue_rows, report.bypass_rows
+    queue_ok = sum(r.agrees for r in queue)
+    blocked_bypass = [r for r in bypass if not r.agrees]
     lines = [
         f"# Replay: {report.repo}, merged in the last {report.days} days",
         "",
-        f"- merged PRs replayed: {n}",
-        f"- planner agrees (ready to merge): {n - len(bad)} ({report.agreement:.1%})",
-        f"- disagreements: {len(bad)} (explained: {len(bad) - len(report.unexplained)}, "
-        f"UNEXPLAINED: {len(report.unexplained)})",
+        f"- merged PRs replayed: {len(report.rows)}",
+        f"- merged by the queue: {len(queue)}; planner agrees (ready): {queue_ok} ({report.queue_agreement:.1%})",
+        f"- queue-merged disagreements: {len(queue) - queue_ok} "
+        f"(explained: {len(queue) - queue_ok - len(report.unexplained)}, UNEXPLAINED: {len(report.unexplained)})",
+        f"- merged directly, outside the queue (bypass): {len(bypass)} "
+        f"({len(bypass) / len(report.rows):.0%} of all merges)"
+        if report.rows
+        else "- no merged PRs in the window",
+        f"  - of which the planner would have blocked: {len(blocked_bypass)}",
         "",
-        "Reads each PR's final state, not its state when it was enqueued.",
+        "Reads each PR's final state, not its state when it was enqueued. A PR counts as queue-merged when the",
+        "queue still held it at the end of its event history; a direct merge is a bypass, not a planner error.",
     ]
     by_state = Counter(r.state.value for r in report.rows)
     lines += ["", "| Verdict | PRs |", "|---|---|", *[f"| {s} | {c} |" for s, c in by_state.most_common()]]
-    if bad:
-        lines += ["", "## Disagreements", "", "| PR | Verdict | Why | Explained |", "|---|---|---|---|"]
+    queue_bad = [r for r in queue if not r.agrees]
+    if queue_bad:
+        lines += [
+            "",
+            "## Queue-merged PRs the planner disagrees with",
+            "",
+            "| PR | Verdict | Why | Explained |",
+            "|---|---|---|---|",
+        ]
         lines += [
             f"| #{r.number} | {r.state.value} | {r.headline} | {r.explanation or '**no**'} |"
-            for r in sorted(bad, key=lambda r: r.number)
+            for r in sorted(queue_bad, key=lambda r: r.number)
+        ]
+    if blocked_bypass:
+        lines += [
+            "",
+            "## Bypass merges (what the rules would have said)",
+            "",
+            "| PR | Verdict | Why |",
+            "|---|---|---|",
+        ]
+        lines += [
+            f"| #{r.number} | {r.state.value} | {r.headline[:140]} |"
+            for r in sorted(blocked_bypass, key=lambda r: r.number)
         ]
     return "\n".join(lines) + "\n"
 
@@ -158,7 +202,9 @@ def to_json(report: Report) -> str:
             "repo": report.repo,
             "days": report.days,
             "replayed": len(report.rows),
-            "agreement": report.agreement,
+            "queue_merged": len(report.queue_rows),
+            "bypass_merged": len(report.bypass_rows),
+            "queue_agreement": report.queue_agreement,
             "unexplained": [r.number for r in report.unexplained],
             "rows": [
                 {
@@ -167,6 +213,7 @@ def to_json(report: Report) -> str:
                     "state": r.state.value,
                     "headline": r.headline,
                     "agrees": r.agrees,
+                    "via_queue": r.via_queue,
                     "explanation": r.explanation,
                 }
                 for r in report.rows

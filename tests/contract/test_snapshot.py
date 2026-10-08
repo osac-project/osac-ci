@@ -6,7 +6,7 @@ import pytest
 from fakes import REPO, SHA, FakeGitHub, check_runs, standard_fake
 
 from osac_ci.github.api import GitHubError, check_repo, paginate
-from osac_ci.github.snapshot import fetch_snapshot, is_org_member
+from osac_ci.github.snapshot import fetch_snapshot, is_org_member, queued_at_end
 
 pytestmark = pytest.mark.contract
 BASE = f"/repos/{REPO}"
@@ -182,3 +182,69 @@ def test_bad_pr_number_is_rejected() -> None:
 
 def test_check_repo_accepts_normal_names() -> None:
     assert check_repo("osac-project/osac-ci") == "osac-project/osac-ci"
+
+
+def ev(kind: str, at: str = "2026-10-07T10:00:00Z", actor: str = "someone") -> dict[str, object]:
+    return {"event": kind, "created_at": at, "actor": {"login": actor}}
+
+
+BOT = "github-merge-queue[bot]"
+T = "2026-10-07T10:00:00Z"
+T_PLUS_1S = "2026-10-07T10:00:01Z"
+T_MINUS_38S = "2026-10-07T09:59:22Z"
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        ([], False),
+        ([ev("labeled"), ev("merged")], False),
+        ([ev("added_to_merge_queue")], True),
+        ([ev("added_to_merge_queue"), ev("removed_from_merge_queue")], False),
+        ([ev("added_to_merge_queue"), ev("head_ref_force_pushed")], False),
+        ([ev("added_to_merge_queue"), ev("removed_from_merge_queue"), ev("added_to_merge_queue")], True),
+        ([ev("auto_merge_enabled"), ev("added_to_merge_queue"), ev("merged")], True),
+        # PR 1472: the queue merges, then the queue bot removes the PR in the same second
+        ([ev("added_to_merge_queue"), ev("merged", T), ev("removed_from_merge_queue", T, BOT)], True),
+        # the API can list that same-second cleanup BEFORE the merge: it is still a queue merge
+        ([ev("added_to_merge_queue"), ev("removed_from_merge_queue", T, BOT), ev("merged", T)], True),
+        ([ev("added_to_merge_queue"), ev("removed_from_merge_queue", T_PLUS_1S, BOT), ev("merged", T)], True),
+        # PR 1481: a human dequeues the PR and merges it by hand 38 seconds later
+        (
+            [
+                ev("added_to_merge_queue"),
+                ev("removed_from_merge_queue", T_MINUS_38S, "alice"),
+                ev("merged", T, "alice"),
+            ],
+            False,
+        ),
+        # a human dequeuing in the same second as the merge is still a human dequeue
+        ([ev("added_to_merge_queue"), ev("removed_from_merge_queue", T, "alice"), ev("merged", T, "alice")], False),
+        # the queue bot ejecting the PR long before a later manual merge (PR 1449 shape)
+        (
+            [
+                ev("added_to_merge_queue", "2026-10-06T14:12:00Z"),
+                ev("removed_from_merge_queue", "2026-10-06T14:21:00Z", BOT),
+                ev("added_to_merge_queue", "2026-10-06T14:22:00Z"),
+                ev("head_ref_force_pushed", "2026-10-06T15:15:00Z"),
+                ev("removed_from_merge_queue", "2026-10-06T15:15:30Z", "osac-ci-bot"),
+                ev("merged", "2026-10-07T08:02:00Z", "bob"),
+            ],
+            False,
+        ),
+    ],
+)  # fmt: skip
+def test_queued_at_end_replays_the_event_sequence(events: list[dict[str, object]], expected: bool) -> None:
+    assert queued_at_end(events) is expected
+
+
+def test_events_without_timestamps_never_count_as_cleanup() -> None:
+    bare = [{"event": "added_to_merge_queue"}, {"event": "removed_from_merge_queue"}, {"event": "merged"}]
+    assert queued_at_end(bare) is False
+
+
+def test_snapshot_marks_a_pr_whose_last_queue_event_is_an_add() -> None:
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/issues/7/events", [ev("added_to_merge_queue"), ev("merged")])
+    assert snapshot(fake).queued_per_events is True
+    assert snapshot(standard_fake()).queued_per_events is False

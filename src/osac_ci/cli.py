@@ -36,7 +36,7 @@ def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
     allowed = {
         "repo", "number", "head_sha", "is_draft", "is_fork", "author", "author_is_org_member", "fork_owner",
         "fork_owner_is_org_member", "labels", "reviews", "label_events", "check_runs", "changed_files",
-        "in_merge_queue",
+        "in_merge_queue", "queued_per_events",
     }  # fmt: skip
     unknown = set(data) - allowed
     if unknown:

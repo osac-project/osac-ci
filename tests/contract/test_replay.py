@@ -31,6 +31,7 @@ def add_pr(
     updated: str,
     labels: tuple[str, ...] = ("approved",),
     lint: str = "success",
+    via_queue: bool = True,
 ) -> None:
     sha = f"{number:040x}"
     listing.append({"number": number, "merged_at": merged, "updated_at": updated, "closed_at": updated})
@@ -48,7 +49,8 @@ def add_pr(
         },
     )
     fake.add("GET", f"{BASE}/pulls/{number}/reviews", [])
-    fake.add("GET", f"{BASE}/issues/{number}/events", [])
+    queue_events = [{"event": "added_to_merge_queue", "actor": {"login": "bot"}}] if via_queue else []
+    fake.add("GET", f"{BASE}/issues/{number}/events", queue_events)
     fake.add("GET", f"{BASE}/pulls/{number}/files", [{"filename": "a.go"}])
     runs = [
         {"name": "lint", "status": "completed", "conclusion": lint, "started_at": "2026-01-01T00:00:01Z"},
@@ -152,6 +154,32 @@ def test_load_explained(tmp_path: Path) -> None:
 
 def test_the_committed_ledger_is_valid_and_empty() -> None:
     assert load_explained(ROOT / "parity" / "explained.yaml") == {}
+
+
+# merged outside the queue --------------------------------------------------------------------------------
+
+
+def test_a_direct_merge_is_a_bypass_not_a_planner_error() -> None:
+    fake, listing = world()
+    add_pr(fake, listing, 9, merged="2026-10-06T10:00:00Z", updated="2026-10-06T10:00:00Z")
+    add_pr(fake, listing, 8, merged="2026-10-06T09:00:00Z", updated="2026-10-06T09:00:00Z", labels=(), via_queue=False)
+    report = replay(fake, TOY, REPO, now=NOW, org="example", lookup_membership=False)
+    assert [r.number for r in report.queue_rows] == [9] and report.queue_agreement == 1.0
+    assert [r.number for r in report.bypass_rows] == [8]
+    assert not report.unexplained  # the bypass does not fail the gate
+    text = render(report)
+    assert "merged directly, outside the queue (bypass): 1 (50% of all merges)" in text
+    assert "of which the planner would have blocked: 1" in text
+    assert "## Bypass merges" in text and "| #8 | awaiting-approval |" in text
+
+
+def test_json_reports_both_populations() -> None:
+    fake, listing = world()
+    add_pr(fake, listing, 9, merged="2026-10-06T10:00:00Z", updated="2026-10-06T10:00:00Z")
+    add_pr(fake, listing, 8, merged="2026-10-06T09:00:00Z", updated="2026-10-06T09:00:00Z", via_queue=False)
+    data = json.loads(to_json(replay(fake, TOY, REPO, now=NOW, org="example", lookup_membership=False)))
+    assert (data["queue_merged"], data["bypass_merged"]) == (1, 1)
+    assert [r["via_queue"] for r in data["rows"]] == [True, False]
 
 
 # the command: exit 0 when everything agrees or is explained, 1 when anything is unexplained -----------------

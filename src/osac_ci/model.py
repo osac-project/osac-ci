@@ -86,6 +86,9 @@ class Snapshot:
     check_runs: tuple[CheckRun, ...] = ()
     changed_files: tuple[str, ...] = ()
     in_merge_queue: bool = False
+    # Replaying the issue events in order up to the merge: was the PR still in the queue when it merged? True means
+    # the queue merged it; False means a direct merge (a bypass), even if it was queued earlier.
+    queued_per_events: bool = False
 
 
 @dataclass(frozen=True)

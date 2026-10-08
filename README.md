@@ -3,8 +3,8 @@
 A policy-driven CI control plane for the OSAC repositories. For any pull request it answers, in one place:
 **what is blocking it, why, who must act, and what happens next.**
 
-> Status: slice 0 (read-only planner and explainer). Nothing here gates a merge yet. It runs against recorded
-> snapshots; the GitHub adapter, replay harness and entrypoint workflow come in later slices.
+> Status: slice 0 (read-only planner, explainer and replay). Nothing here gates a merge yet and nothing writes to
+> GitHub. The entrypoint workflow, sandbox and path-filter port come in later slices.
 
 ## What exists
 
@@ -14,7 +14,9 @@ A policy-driven CI control plane for the OSAC repositories. For any pull request
 | Planner | `src/osac_ci/planner.py` | pure function `plan(snapshot, policy, mode)`; `plan_or_error` fails closed |
 | Legacy rules, ported | `src/osac_ci/rules/` | labels (`auto-queue.sh`), E2E readiness (`check-e2e-readiness.sh`), fork authorization (`authorize-fork-pr`) |
 | Policy | `policy/osac.yml`, `policy/toy.yml` | today's OSAC rules; a toy repo that proves the engine is generic |
-| CLI | `osac-ci policy check`, `osac-ci explain` | offline, read-only |
+| GitHub adapter | `src/osac_ci/github/` | standard library only; about 9 read requests per PR; no bulk `statusCheckRollup` pull |
+| Replay | `src/osac_ci/replay.py`, `parity/explained.yaml` | the parity evidence: does the planner agree with recently merged PRs? |
+| CLI | `osac-ci policy check`, `explain`, `explain-pr`, `replay` | read-only; live commands need `GH_TOKEN` |
 
 ## Try it
 
@@ -23,6 +25,20 @@ uv sync
 uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json
 ```
+
+## Replay (parity evidence)
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci replay --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
+```
+
+PRs the merge queue merged are held to the planner: it must call each one ready, and every disagreement must be
+listed in `parity/explained.yaml`. PRs merged directly (outside the queue) are reported separately as bypasses,
+with the verdict the rules would have given. The run exits 1 only for unexplained queue-merged disagreements. It
+reads each PR's final state, not its state when it was enqueued.
+
+First run, OSAC, last 60 days: 100 merged PRs; 85 through the queue (planner agrees on all 85); 15 merged
+directly, of which 12 the rules would have blocked.
 
 ## Tests
 
