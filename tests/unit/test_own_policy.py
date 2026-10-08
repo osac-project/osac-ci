@@ -109,7 +109,13 @@ def test_the_authorize_workflow_only_reacts_to_the_command_on_pull_requests() ->
     assert "github.event.issue.pull_request" in cond and "startsWith(github.event.comment.body, '/ok-to-test')" in cond
 
 
-def test_the_authorize_workflow_shares_the_pr_concurrency_group_with_the_check_workflow() -> None:
-    group = _workflow("osac-ci-authorize.yml")["concurrency"]["group"]
-    assert group == "osac-ci-check-${{ github.event.issue.number }}"
-    assert _workflow("osac-ci-check.yml")["concurrency"]["group"].startswith("osac-ci-check-")
+def test_a_command_can_never_be_cancelled_by_another_comment_or_run() -> None:
+    # GitHub cancels the older pending run of a concurrency group when a new one queues, before any job `if` is
+    # evaluated. So the group must be unique per comment: not per PR, and not shared with the check workflow.
+    workflow = _workflow("osac-ci-authorize.yml")
+    assert workflow["concurrency"] == {
+        "group": "osac-ci-authorize-${{ github.event.comment.id }}",
+        "cancel-in-progress": False,
+    }
+    assert "issue.number" not in workflow["concurrency"]["group"]
+    assert not _workflow("osac-ci-check.yml")["concurrency"]["group"].startswith("osac-ci-authorize-")
