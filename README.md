@@ -48,6 +48,32 @@ trust:
   trusted_bots: ["dependabot[bot]"]
 ```
 
+## E2E unlock (`e2e.unlock:`)
+
+Which signal lets an expensive E2E job start (it is the cost gate, separate from who may use secrets and from merge
+approval). Without this section the legacy ladder applies, a port of the osac-test-infra bash: a current or ever-applied
+`lgtm`, a trusted `e2e-ready` label, or a CodeRabbit approval on the head. `mode: policy` replaces it with one explicit
+list:
+
+```yaml
+e2e:
+  unlock:
+    mode: policy
+    any_of: [human-approval, coderabbit-approval]       # any one is enough
+    per_suite: {bmaas/sanity: [human-approval]}         # optional: a suite with its own list
+    block_on_changes_requested: true                    # an open human "changes requested" blocks every signal
+```
+
+| Signal | Holds when |
+|---|---|
+| `human-approval` | a human approved the current changes (this commit, or carried over a rebase); needs an `approval:` section |
+| `coderabbit-approval` | CodeRabbit's latest decision is APPROVED on exactly the head commit |
+| `lgtm-label` | the `lgtm` label is on the PR now (a transition aid while approvals still use labels) |
+| `e2e-ready-label` | the `e2e-ready` label, applied by `github-actions[bot]` |
+
+There is no sticky signal: the legacy ladder keeps E2E unlocked once `lgtm` was ever applied, even after the code
+changed. In `policy` mode a signal must hold for the commit about to be tested. The verdict names what would unlock it.
+
 ## Native approval (instead of `lgtm` / `approved` labels)
 
 A policy with an `approval:` section decides approval from GitHub reviews and CODEOWNERS, not from labels:

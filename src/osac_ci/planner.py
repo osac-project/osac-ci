@@ -22,8 +22,8 @@ from osac_ci.model import (
     Verdict,
 )
 from osac_ci.paths import applicable
-from osac_ci.policy import Job, Policy, Trust
-from osac_ci.rules import approval, readiness
+from osac_ci.policy import Job, Policy
+from osac_ci.rules import approval, e2e_unlock, readiness
 from osac_ci.rules.fork import authorization_command, fork_secrets_authorized
 from osac_ci.rules.labels import missing_required, present_blocking
 
@@ -82,7 +82,7 @@ def _evaluate(
     mode: Mode,
     checks: dict[str, CheckRun],
     labels: frozenset[str],
-    trust: Trust,
+    policy: Policy,
 ) -> JobEntry | None:
     if mode.value not in job.required_at:
         return None
@@ -91,9 +91,13 @@ def _evaluate(
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"
     if mode is Mode.PR and job.kind == "e2e" and job.needs_readiness and not finished:
-        if not fork_secrets_authorized(snapshot, trust):
+        if not fork_secrets_authorized(snapshot, policy.trust):
             return JobEntry(job_id, job.check, JobStatus.WAITING, _AUTH_DETAIL)
-        decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
+        unlock = policy.e2e.unlock
+        if unlock.mode == "policy":
+            decision = e2e_unlock.decide(snapshot, unlock.signals_for(job.suite), unlock, policy.approval)
+        else:
+            decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
         if not decision.allowed:
             return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason)
     status, detail = _from_check(run)
@@ -130,7 +134,7 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     entries = tuple(
         entry
         for job_id, job in policy.jobs.items()
-        if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels, policy.trust)) is not None
+        if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels, policy)) is not None
     )
     kind = {job.check: job.kind for job in policy.jobs.values()}
 
@@ -205,7 +209,14 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
         )
     locked = [e for e in waiting_e2e if e.detail.startswith(("waiting:", "denied:"))]
     if locked:
-        return _verdict(State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries, notes, native)
+        override = None
+        if policy.e2e.unlock.mode == "policy":
+            job = next(j for j in policy.jobs.values() if j.check == locked[0].check)
+            signals = policy.e2e.unlock.signals_for(job.suite)
+            override = (f"get {e2e_unlock.describe(signals)}", "reviewer")
+        return _verdict(
+            State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries, notes, native, override
+        )
     if pending:
         return _verdict(
             State.E2E_RUNNING, f"E2E in progress: {_names(pending)}", mode, tuple(blockers), entries, notes, native

@@ -72,15 +72,19 @@ def _freshness(review: Review, snapshot: Snapshot, policy: Approval) -> str:
     return "stale"
 
 
-def evaluate(snapshot: Snapshot, policy: Approval) -> ApprovalDecision:
+@dataclass(frozen=True)
+class Approvers:
+    """Humans whose latest review approves the current changes, and the approvals that no longer do."""
+
+    valid: dict[str, Review]  # lower-case login -> review
+    notes: tuple[str, ...]  # approvals carried over a rebase
+    stale: tuple[str, ...]  # approvals of code that has since changed
+    changes_requested: tuple[str, ...]  # humans whose latest review requests changes
+
+
+def approvers(snapshot: Snapshot, policy: Approval) -> Approvers:
     stances = _latest_stances(snapshot.reviews, snapshot.author)
-    problems: list[str] = []
     notes: list[str] = []
-
-    blockers = sorted(r.user for r in stances.values() if _STANCE[r.state] == "changes")
-    if blockers:
-        problems.append(f"changes requested by {', '.join(blockers)}")
-
     stale: list[str] = []
     valid: dict[str, Review] = {}
     for login, review in stances.items():
@@ -96,6 +100,17 @@ def evaluate(snapshot: Snapshot, policy: Approval) -> ApprovalDecision:
         valid[login] = review
         if kind == "carried":
             notes.append(f"approval from {review.user} carried over from {short}: same changes after a rebase")
+    blockers = tuple(sorted(r.user for r in stances.values() if _STANCE[r.state] == "changes"))
+    return Approvers(valid, tuple(notes), tuple(stale), blockers)
+
+
+def evaluate(snapshot: Snapshot, policy: Approval) -> ApprovalDecision:
+    found = approvers(snapshot, policy)
+    problems: list[str] = []
+    valid, stale, notes = found.valid, list(found.stale), list(found.notes)
+
+    if found.changes_requested:
+        problems.append(f"changes requested by {', '.join(found.changes_requested)}")
 
     if len(valid) < policy.min_approvals:
         problems.append(f"needs {policy.min_approvals} approving review(s) from someone else, has {len(valid)}")
