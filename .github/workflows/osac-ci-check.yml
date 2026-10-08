@@ -1,0 +1,65 @@
+---
+name: osac-ci-check
+
+# Posts the planner's verdict for a pull request as the "OSAC CI" check run on its head commit.
+# Informational for now: the check is not required, so a bug here cannot block a merge.
+#
+# Safety rules for this file (it runs with write access to checks):
+# * it never checks out or runs pull request code: checkout is pinned to the default branch, on every trigger;
+# * pull request data reaches the shell only through environment variables, never through the script text;
+# * the verdict is computed from live API state, not from the event that woke the job, and runs for one PR are
+#   serialized, so a slow older run can never post over a newer one.
+#
+# Events can be missed (a review from a fork cannot post), so a periodic sweep re-evaluates every open PR.
+on:  # zizmor: ignore[dangerous-triggers] -- no PR code is checked out or run; PR values reach the shell as env data only
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, converted_to_draft, labeled, unlabeled, edited]
+  pull_request_review:
+    types: [submitted, dismissed, edited]
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      number:
+        description: Pull request number (empty means every open PR)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: osac-ci-check-${{ github.event.pull_request.number || inputs.number || 'sweep' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish
+    # A review on a fork PR runs with a read-only token and cannot post; the sweep covers it.
+    if: ${{ github.event_name != 'pull_request_review' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Post the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.number }}
+        run: |
+          if [ -n "$PR_NUMBER" ]; then target=(--number "$PR_NUMBER"); else target=(--all); fi
+          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" \
+            --note "Informational for now: this check is not required to merge."

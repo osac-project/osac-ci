@@ -18,12 +18,15 @@ class FakeGitHub:
     def __init__(self) -> None:
         self.routes: dict[tuple[str, str], Any] = {}
         self.calls: list[tuple[str, str]] = []
+        self.bodies: list[tuple[str, str, Any]] = []  # every request that carried a body
 
     def add(self, method: str, path: str, data: Any, status: int = 200) -> None:
         self.routes[(method, path)] = (status, data)
 
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
         self.calls.append((method, path))
+        if body is not None:
+            self.bodies.append((method, path, body))
         if (method, path) not in self.routes:
             return Response(404, {"message": f"no route for {method} {path}"})
         status, data = self.routes[(method, path)]

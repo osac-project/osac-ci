@@ -51,6 +51,24 @@ merge:
 
 Without an `approval:` section nothing changes: `policy/osac.yml` keeps today's label rules.
 
+## Publishing the verdict as a check
+
+`osac-ci publish --policy P --repo R (--number N | --all)` evaluates a PR from live GitHub state and posts one check run
+named `OSAC CI` on its head commit (`--dry-run` prints instead of posting).
+
+| State | Check run | Why |
+|---|---|---|
+| ready, in the queue, queue passed | `completed / success` | nothing left to do |
+| checks or E2E running | `in_progress` | machines are working |
+| awaiting approval, needs authorization, draft, a check failed | `completed / action_required` | a person acts; blocked but not red, and the summary says why |
+| planner failed | `completed / failure` | fail closed, with the cause and a re-run hint |
+
+The newest check run of a name decides, so publishing again repairs a stale verdict, and an unchanged verdict is not
+posted twice. `.github/workflows/osac-ci-check.yml` runs it for this repository's own PRs (policy
+`policy/osac-ci.yml`) on PR events, when `ci` finishes, and every 10 minutes for all open PRs. The check is not
+required yet. Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's;
+the next event or sweep corrects it.
+
 ## Open-PR report
 
 ```bash

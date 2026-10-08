@@ -1,0 +1,21 @@
+# Policy for this repository's own pull requests. It is the rehearsal for the OSAC policy: the same planner, the same
+# published check, but approval comes from native reviews and the jobs are this repo's CI jobs.
+version: 1
+repo: osac-project/osac-ci
+
+merge:
+  required_labels: []
+  blocking_labels: []
+
+# GitHub already requires a code owner here (see CODEOWNERS and the ruleset); this section makes the planner explain
+# the approval state and keep an approval alive across a rebase. Owner teams are not expanded: that needs an
+# org-scoped credential, and the ruleset already enforces the owner requirement.
+approval:
+  min_approvals: 1
+  require_code_owners: false
+  carry_over: trivial-rebase
+
+jobs:
+  lint: {check: lint}
+  unit-tests: {check: unit-tests}
+  legacy-differential: {check: legacy-differential}
