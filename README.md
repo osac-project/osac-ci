@@ -370,6 +370,10 @@ review that requests changes is not an approval, and a team that cannot be read 
 and it works with label approval as well as native approval. It is evaluated at pull request time, not on a merge-queue
 commit.
 
+`policy/osac.yml` uses it for the files that define osac's checks (`.github/workflows`, `actions`, `scripts` and
+`filters`, `CODEOWNERS`, `.pre-commit-config.yaml`), with `@osac-project/wg-infra` as the approvers. The team is read
+with the organization token. Documentation in `.github/` is not covered.
+
 `path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
 job that applies to the PR (its filters or globs match, or nothing narrows it, as for `pre-commit`) counts as failed
 instead of passed. A readiness-gated E2E job is exempt, since it is
