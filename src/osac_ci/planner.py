@@ -11,6 +11,7 @@ listed separately in the design doc (for example "skip before readiness").
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 
 from osac_ci.model import (
     CheckRun,
@@ -157,7 +158,25 @@ def _names(entries: Sequence[JobEntry]) -> str:
     return ", ".join(e.check for e in entries)
 
 
+def _enqueue_gate_ok(snapshot: Snapshot, policy: Policy) -> bool:
+    """Today's enqueue rule (auto-queue.sh): not a draft, and the required labels (or the native approval) are in order
+    with no blocking label. It does not read any check result, which is the point: replays use it to ask whether the
+    PR was *let in*, separately from whether it was ready."""
+    if snapshot.is_draft:
+        return False
+    if missing_required(snapshot.labels, policy.merge.required_labels) or present_blocking(
+        snapshot.labels, policy.merge.blocking_labels
+    ):
+        return False
+    return policy.approval is None or approval.evaluate(snapshot, policy.approval).approved
+
+
 def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
+    verdict = _plan(snapshot, policy, mode)
+    return replace(verdict, label_gate_ok=True if mode is Mode.QUEUE else _enqueue_gate_ok(snapshot, policy))
+
+
+def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
     checks = latest_checks(snapshot.check_runs)
     # With native approval an approved PR unlocks E2E the way the `lgtm` label does today.
     decision = approval.evaluate(snapshot, policy.approval) if policy.approval and mode is Mode.PR else None

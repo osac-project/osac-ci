@@ -98,27 +98,41 @@ def _is_queue_cleanup(event: dict[str, Any], merged_at: datetime | None) -> bool
     return actor == QUEUE_BOT and abs(removed_at - merged_at) <= _CLEANUP_WINDOW
 
 
-def queued_at_end(events: Sequence[dict[str, Any]]) -> bool:
-    """Was the PR in the merge queue at the moment it merged (or is it queued now, if it has not merged)?
+def _queue_state(events: Sequence[dict[str, Any]]) -> tuple[bool, str]:
+    """Replay the issue events, oldest first, up to the ``merged`` event: is the PR queued at the end, and since when?
 
-    Replays the issue events, oldest first, up to the ``merged`` event. A removal by anyone other than the queue's
-    own post-merge cleanup (a human dequeuing and then merging by hand, an ejection, a force-push) means the PR
-    was taken out of the queue, so the merge was direct.
-    """
+    A removal by anyone other than the queue's own post-merge cleanup (a human dequeuing and then merging by hand,
+    an ejection, a force-push) means the PR was taken out of the queue."""
     merged_at = next((_when(e) for e in events if e.get("event") == "merged"), None)
-    queued = False
+    queued, since = False, ""
     for event in events:
         kind = event.get("event")
         if kind == "added_to_merge_queue":
-            queued = True
+            queued, since = True, str(event.get("created_at") or "")
         elif kind == "removed_from_merge_queue":
             if not _is_queue_cleanup(event, merged_at):
-                queued = False
+                queued, since = False, ""
         elif kind == "head_ref_force_pushed":
-            queued = False
+            queued, since = False, ""
         elif kind == "merged":
             break
-    return queued
+    return queued, since
+
+
+def queued_at_end(events: Sequence[dict[str, Any]]) -> bool:
+    """Was the PR in the merge queue at the moment it merged (or is it queued now, if it has not merged)?
+
+    A removal by anyone other than the queue's own post-merge cleanup means the PR was taken out of the queue, so the
+    merge was direct."""
+    return _queue_state(events)[0]
+
+
+def queue_entry_time(events: Sequence[dict[str, Any]]) -> str:
+    """When the queue entry that was still there at the end was created, or ``""`` if the PR was not queued then.
+
+    A push removes a PR from the queue, so for a queue-merged PR its head commit at that moment is its final head."""
+    queued, since = _queue_state(events)
+    return since if queued else ""
 
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub's lookup order
@@ -291,7 +305,9 @@ def fetch_snapshot(
     reviews = tuple(r for raw in paginate(client, f"{base}/pulls/{number}/reviews") if (r := _review(raw)))
     raw_events = list(paginate(client, f"{base}/issues/{number}/events"))
     events = tuple(
-        LabelEvent(raw["event"], raw["label"]["name"], (raw.get("actor") or {}).get("login", ""))
+        LabelEvent(
+            raw["event"], raw["label"]["name"], (raw.get("actor") or {}).get("login", ""), raw.get("created_at") or ""
+        )
         for raw in raw_events
         if raw.get("label")
     )
@@ -303,6 +319,7 @@ def fetch_snapshot(
             raw.get("started_at"),
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
+            raw.get("completed_at"),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
@@ -341,6 +358,7 @@ def fetch_snapshot(
         changed_files=files,
         in_merge_queue=_in_merge_queue(client, pr["node_id"]),
         queued_per_events=queued_at_end(raw_events),
+        enqueued_at=queue_entry_time(raw_events),
         base_ref=base_ref,
         codeowners=owners_text,
         team_members=team_members,
