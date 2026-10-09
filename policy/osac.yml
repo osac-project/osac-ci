@@ -22,6 +22,20 @@ path_filters:
   mode: shadow
   file: osac-filters.yml
 
+# The files that define the checks every pull request is judged by. A PR can change them, and then a passing check
+# proves little (a job changed to end with `exit 0` still reports success), so a change needs an approval from the
+# infrastructure group. Documentation next to them (.github/*.md) is not covered. The rule is in this file, not in the
+# PR, so a PR cannot change who has to approve. Needs the organization token, to read the team.
+protected_paths:
+  - paths:
+      - ".github/workflows/**"
+      - ".github/actions/**"
+      - ".github/scripts/**"
+      - ".github/filters/**"
+      - "CODEOWNERS"
+      - ".pre-commit-config.yaml"
+    approvers: ["@osac-project/wg-infra"]
+
 merge:
   required_labels: [lgtm, approved, jira/valid-reference]
   blocking_labels:

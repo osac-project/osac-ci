@@ -47,7 +47,8 @@ def test_policy_parses_the_section_and_rejects_bad_input() -> None:
 
 
 def test_without_the_section_nothing_changes(osac_policy: Policy) -> None:
-    v = plan(snap(osac_policy, changed_files=(WORKFLOW,)), osac_policy)
+    unguarded = osac_policy.model_copy(update={"protected_paths": ()})
+    v = plan(snap(unguarded, changed_files=(WORKFLOW,)), unguarded)
     assert v.state is State.READY_TO_ENQUEUE
 
 
