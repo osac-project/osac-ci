@@ -192,6 +192,19 @@ class Policy(_Strict):
         return jobs
 
 
+def _inside(base: Path, name: str) -> Path:
+    """``name`` resolved against ``base``, which it may not leave: no absolute path, no ``..`` out of the directory,
+    no symlink pointing out of it (the path is resolved before the check)."""
+    if Path(name).is_absolute():
+        raise PolicyError(f"path_filters.file must be relative to the policy file, got {name!r}")
+    resolved = (base / name).resolve()
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        raise PolicyError(f"path_filters.file {name!r} leaves the policy directory") from None
+    return resolved
+
+
 def _load_filters_file(path: Path) -> dict[str, tuple[str, ...]]:
     try:
         raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -217,7 +230,7 @@ def parse_policy(text: str, *, base: Path | None = None) -> Policy:
     if isinstance(section, dict) and section.get("file"):
         if base is None:
             raise PolicyError("path_filters.file needs the policy to be loaded from a file (it is relative to it)")
-        loaded = _load_filters_file(base / str(section["file"]))
+        loaded = _load_filters_file(_inside(base, str(section["file"])))
         inline = section.get("filters") or {}
         clash = sorted(set(loaded) & set(inline))
         if clash:

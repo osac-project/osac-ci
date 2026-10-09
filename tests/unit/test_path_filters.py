@@ -64,6 +64,41 @@ def test_the_filters_come_from_a_file_next_to_the_policy(tmp_path: Path) -> None
     assert load_policy(tmp_path / "p.yml").path_filters.filters == {"go": ("**/*.go",)}
 
 
+def test_the_filters_file_may_sit_in_a_subdirectory_even_via_a_dotdot_that_stays_inside(tmp_path: Path) -> None:
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "f.yml").write_text("go: ['**/*.go']\n", encoding="utf-8")
+    for name in ("sub/f.yml", "sub/../sub/f.yml", "./sub/f.yml"):
+        text = f"version: 1\nrepo: o/r\npath_filters: {{file: {name}}}\njobs: {{a: {{check: a}}}}\n"
+        assert parse_policy(text, base=tmp_path).path_filters.filters == {"go": ("**/*.go",)}
+
+
+@pytest.mark.parametrize("name", ["../outside.yml", "sub/../../outside.yml", "../../etc/passwd"])
+def test_the_filters_file_may_not_leave_the_policy_directory(tmp_path: Path, name: str) -> None:
+    base = tmp_path / "policy"
+    (base / "sub").mkdir(parents=True)
+    (tmp_path / "outside.yml").write_text("go: ['x']\n", encoding="utf-8")
+    text = f"version: 1\nrepo: o/r\npath_filters: {{file: {name}}}\njobs: {{a: {{check: a}}}}\n"
+    with pytest.raises(PolicyError, match="leaves the policy directory"):
+        parse_policy(text, base=base)
+
+
+def test_the_filters_file_may_not_be_an_absolute_path(tmp_path: Path) -> None:
+    (tmp_path / "f.yml").write_text("go: ['x']\n", encoding="utf-8")
+    text = f"version: 1\nrepo: o/r\npath_filters: {{file: {tmp_path / 'f.yml'}}}\njobs: {{a: {{check: a}}}}\n"
+    with pytest.raises(PolicyError, match="must be relative"):
+        parse_policy(text, base=tmp_path)
+
+
+def test_a_symlink_that_points_out_of_the_directory_is_refused(tmp_path: Path) -> None:
+    base = tmp_path / "policy"
+    base.mkdir()
+    (tmp_path / "outside.yml").write_text("go: ['x']\n", encoding="utf-8")
+    (base / "link.yml").symlink_to(tmp_path / "outside.yml")
+    text = "version: 1\nrepo: o/r\npath_filters: {file: link.yml}\njobs: {a: {check: a}}\n"
+    with pytest.raises(PolicyError, match="leaves the policy directory"):
+        parse_policy(text, base=base)
+
+
 def test_a_file_needs_a_policy_that_was_loaded_from_one() -> None:
     with pytest.raises(PolicyError, match="loaded from a file"):
         parse_policy("version: 1\nrepo: o/r\npath_filters: {file: f.yml}\njobs: {a: {check: a}}\n")
