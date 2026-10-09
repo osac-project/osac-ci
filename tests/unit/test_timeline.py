@@ -106,7 +106,7 @@ def test_everything_else_is_left_alone(toy_policy) -> None:  # type: ignore[no-u
     assert (got.changed_files, got.author, got.is_fork, got.head_sha) == (s.changed_files, "alice", True, s.head_sha)
 
 
-# ---- sha-bound authorization is a check run: it exists only from when that run completed -------------------------------
+# ---- sha-bound authorization is a check run: it exists only from when that run completed ----------------------
 
 
 def auth_run(login: str, sha: str, completed: str | None, started: str = "2026-10-05T11:00:00Z") -> CheckRun:
