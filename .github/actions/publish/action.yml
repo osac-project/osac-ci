@@ -14,13 +14,14 @@ inputs:
     required: true
   org-token:
     description: >-
-      Token that can read organization membership and teams (a short-lived app token). Used only when
-      lookup-membership is "true"
+      Token that can read organization membership and teams (a short-lived app token). It is used for author lookups when
+      lookup-membership is "true", and always for the members of CODEOWNERS teams, which a policy with native approval needs
     default: ""
   lookup-membership:
     description: >-
-      "true" to look up organization membership and owner teams with org-token. A missing or unusable token then makes
-      the verdict a visible planner-error, never a pass. Otherwise membership is approximated from the author association
+      "true" to look up the membership of the author and of whoever authorized a commit with org-token. A missing or
+      unusable token then makes the verdict a visible planner-error, never a pass. Otherwise membership is approximated
+      from the author association. It does not control the owner-team lookups of native approval (see org-token)
     default: "false"
   repo:
     description: Repository to evaluate, owner/name

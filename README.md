@@ -467,10 +467,22 @@ this commit" lookup is empty for one. The action therefore finds it from the run
 pull request, `sweep: "true"` evaluates open pull requests within the `recent`, `rotate`, `reserve` and `interval`
 budget described below. The action never checks out the calling repository, so it cannot run pull request code.
 
-By default it makes no organization lookups and approximates membership from the author association GitHub reports (a
-member whose membership is private looks like an outsider). With `lookup-membership: "true"` and an `org-token` (a
-short-lived token of the read-only app, minted by the calling workflow) it looks membership and owner teams up, and a
-missing or unusable token turns the verdict into a visible `planner-error`.
+Two kinds of organization lookup exist, and they are controlled differently:
+
+- **Author membership** (is the author, or the owner of the fork, a member; who authorized a commit). This is what
+  `lookup-membership` switches. By default it is off and membership is approximated from the author association GitHub
+  reports (a member whose membership is private looks like an outsider). With `lookup-membership: "true"` the lookup
+  uses the `org-token`, and a missing or unusable token turns the verdict into a visible `planner-error`.
+- **Owner teams** (the members of the teams named in CODEOWNERS). A policy with an `approval:` section and
+  `require_code_owners` always needs these, whatever `lookup-membership` says. They are read with the `org-token`
+  whenever one is given. Without it the read fails and the verdict is a `planner-error`, never a pass.
+
+So a policy with native approval and team code owners needs an `org-token` even when `lookup-membership` is `"false"`:
+
+```yaml
+    org-token: ${{ steps.org-token.outputs.token }}   # short-lived token of the read-only app, minted by an earlier step
+    lookup-membership: "false"                        # still needed above for CODEOWNERS teams; "true" adds author lookups
+```
 
 ### Merge-queue commits
 
