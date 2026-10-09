@@ -11,10 +11,11 @@ from typing import Any
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo
 from osac_ci.stale import LastVerdict, Standing
 
-# Check runs posted with a workflow's built-in token belong to the GitHub Actions app.
-_ACTIONS_APP_ID = 15368
+# Check runs posted with a workflow's built-in token belong to the GitHub Actions app. A check posted with the token of
+# another app has another id; ``None`` accepts any app.
+ACTIONS_APP_ID = 15368
 _QUERY = """
-query($owner: String!, $name: String!, $after: String, $check: String!, $app: Int!) {
+query($owner: String!, $name: String!, $after: String, $check: String!, $app: Int) {
   repository(owner: $owner, name: $name) {
     pullRequests(states: OPEN, first: 100, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
@@ -23,8 +24,8 @@ query($owner: String!, $name: String!, $after: String, $check: String!, $app: In
         updatedAt
         headRefOid
         commits(last: 1) { nodes { commit {
-          checkSuites(first: 20, filterBy: {appId: $app, checkName: $check}) { nodes {
-            checkRuns(first: 5, filterBy: {checkName: $check}) { nodes { status conclusion startedAt completedAt } }
+          checkSuites(last: 20, filterBy: {appId: $app, checkName: $check}) { nodes {
+            checkRuns(last: 10, filterBy: {checkName: $check}) { nodes { status conclusion startedAt completedAt } }
           } }
         } } }
       }
@@ -42,22 +43,25 @@ def _newest_run(node: dict[str, Any]) -> LastVerdict | None:
     if not runs:
         return None
     # The newest check run of a name decides, wherever it was posted.
-    newest = max(runs, key=lambda r: str(r.get("startedAt") or ""))
+    newest = max(runs, key=lambda r: str(r.get("startedAt") or r.get("completedAt") or ""))
     return LastVerdict(
         status=str(newest["status"]).lower(),
         conclusion=str(newest["conclusion"]).lower() if newest.get("conclusion") else None,
-        started_at=str(newest.get("startedAt") or ""),
+        started_at=newest.get("startedAt"),
         completed_at=newest.get("completedAt"),
     )
 
 
-def fetch_standings(client: GitHubClient, repo: str, check_name: str) -> list[Standing]:
-    """Every open PR with the newest check run of ``check_name`` on its head commit. Fails loudly, never partially."""
+def fetch_standings(
+    client: GitHubClient, repo: str, check_name: str, app_id: int | None = ACTIONS_APP_ID
+) -> list[Standing]:
+    """Every open PR with the newest check run of ``check_name`` on its head commit, posted by the app ``app_id``
+    (``None``: any app). Fails loudly, never partially."""
     owner, _, name = check_repo(repo).partition("/")
     standings: list[Standing] = []
     cursor: str | None = None
     while True:
-        variables = {"owner": owner, "name": name, "after": cursor, "check": check_name, "app": _ACTIONS_APP_ID}
+        variables = {"owner": owner, "name": name, "after": cursor, "check": check_name, "app": app_id}
         response = client.request("POST", "/graphql", body={"query": _QUERY, "variables": variables})
         data = response.data if isinstance(response.data, dict) else {}
         if response.status != 200 or data.get("errors") or not data.get("data"):

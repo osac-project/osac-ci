@@ -543,17 +543,24 @@ points per 100 PRs, from the GraphQL budget that the rest of a sweep does not us
 
 - there is no verdict on the head commit yet (most recently active first);
 - the verdict is a failure, which for a pull request means a `planner-error` to retry;
-- the PR changed after the verdict was posted (a label, a review, a comment, a push);
-- the verdict still says "in progress" after `--stale-after` seconds (default 1,800), so the event that ends it may
-  have been missed;
+- the PR changed after the verdict was posted (a label, a review, a comment, a push), even when that verdict is still
+  in progress;
+- the verdict is still "in progress" after `--stale-after` seconds (default 1,800) with no change since, so the event
+  that ends it may have been missed;
 - the verdict is older than `--max-age` seconds (default 21,600, 0 for never): a safety net for what no event reports,
-  such as a team membership change or a CODEOWNERS change on the base branch.
+  such as a team membership change or a CODEOWNERS change on the base branch;
+- the check run carries no time at all (a queued run that never started), so it cannot be compared with anything.
+
+Among the stale PRs the one whose verdict went out of date longest ago goes first, so a busy sweep cannot starve it.
+PRs with no verdict start with the most recently active.
 
 Everything else is skipped, so a quiet repository costs one or two requests a sweep instead of hundreds, and the sweep
 can run every few minutes. A re-checked verdict that turns out unchanged is posted again, because the time of the newest
 check run is what the next sweep compares with; otherwise a PR that only got a comment would be read by every sweep.
 `--limit` keeps the most urgent first, `--reserve` still protects the REST quota, and the option cannot be combined with
-`--recent` or `--rotate`.
+`--recent` or `--rotate`. Verdicts are recognised by the app that posted them: the default is the built-in token of
+Actions (app id 15368). A check posted with another app's token needs `--verdict-app-id` with that id, or 0 for any app;
+without it every PR would look as if it had no verdict.
 
 ### Open-PR report
 
