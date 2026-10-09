@@ -346,16 +346,22 @@ def test_cli_passes_the_budget_and_reports_the_requests_left(
     ]  # tick 2 of 3 slices of [4, 5, 6]
 
 
-@pytest.mark.parametrize(("recent", "rotate"), [(-1, 0), (-5, -2), (0, -2), (None, -1), (-1, None), (2, -3)])
-def test_select_prs_never_slices_from_the_end_or_divides_by_zero_on_negative_counts(
-    recent: int | None, rotate: int | None
-) -> None:
+@pytest.mark.parametrize(
+    ("recent", "rotate", "expected"),
+    [
+        (-1, 0, []),  # a negative count is zero: it must not slice from the end and keep all but the last
+        (-5, -2, []),
+        (0, -2, []),
+        (None, -1, []),
+        (-1, None, []),
+        (2, -3, [4, 3]),  # the recent ones are kept, a negative rotation adds nothing and cannot divide by zero
+    ],
+)
+def test_select_prs_treats_negative_counts_as_zero(recent: int | None, rotate: int | None, expected: list[int]) -> None:
     from osac_ci.publish import select_prs
 
     prs = [{"number": n} for n in (4, 3, 2, 1)]
-    got = [p["number"] for p in select_prs(prs, recent=recent, rotate=rotate, tick=3)]
-    assert len(got) == len(set(got)) and set(got) <= {1, 2, 3, 4}
-    assert got[: max(0, recent or 0)] == [4, 3, 2, 1][: max(0, recent or 0)]  # the recent ones come first, none lost
+    assert [p["number"] for p in select_prs(prs, recent=recent, rotate=rotate, tick=3)] == expected
 
 
 @pytest.mark.parametrize("flag", ["--recent", "--rotate", "--reserve", "--interval", "--limit"])
