@@ -81,8 +81,8 @@ _FAILED_RUN = frozenset({"failure", "timed_out"})
 
 def _filters_verdict(job: Job, snapshot: Snapshot, policy: Policy) -> bool | None:
     """True or False when the job's named path filters decide applicability, None when they cannot (the job names no
-    filter, or the PR lists no changed files, which is never a reason to skip anything)."""
-    if not (job.filters or job.filters_any) or not snapshot.changed_files:
+    filter, the PR lists no changed files, or the list could not be read completely: none is a reason to skip)."""
+    if not (job.filters or job.filters_any) or not snapshot.changed_files or not snapshot.changed_files_known:
         return None
     return filters_hold(snapshot.changed_files, policy.path_filters.filters, job.filters, job.filters_any)
 
