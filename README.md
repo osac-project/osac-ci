@@ -176,11 +176,16 @@ the verdict on it:
 - A commit that cannot be read is a visible `failure` naming the cause, never a pass. When the list of changed files
   cannot be read completely (the compare API stops at 300 files) no path-gated job is skipped on a guess.
 
-`.github/workflows/osac-ci-queue.yml` runs it on `check_run` events of queue branches, which fire exactly when a
-required check completes and always run the workflow from the default branch. It uses the built-in token only (no
-secret, no organization lookups) and ignores its own checks. A `merge_group` workflow is deliberately not used: it would
-run the file from the queue commit, which holds the pull request's own changes. `workflow_dispatch` takes a commit
-and a queue branch for a manual run.
+`.github/workflows/osac-ci-queue.yml` runs it when a required check of a queue branch completes, from the default
+branch. Two events carry that: `workflow_run` when a GitHub Actions workflow finishes, and `check_run` for a check from
+another app. Both are needed: GitHub does not trigger `check_run` workflows when the check suite was created by GitHub
+Actions (to prevent recursive workflows), so the Actions checks, which are nearly all of them, only arrive through
+`workflow_run`. That event takes exact workflow names, no wildcards, so every workflow that produces a required check
+has to be listed (here `ci`; for `osac` the list has to be generated and kept in step with the policy). It uses the
+built-in token only (no secret, no organization lookups) and ignores its own checks. A `merge_group` workflow is
+deliberately not used: it would run the file from the queue commit, which holds the pull request's own changes.
+`workflow_dispatch` takes a commit and a queue branch for a manual run. Not yet exercised on a real queue: whether
+`workflow_run` fires for runs started by `merge_group` is to be confirmed on the first one.
 
 ## Open-PR report
 
