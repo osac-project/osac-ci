@@ -88,6 +88,12 @@ def test_own_policy_authorizes_outside_forks_by_commit() -> None:
     assert load_policy(ROOT / "policy" / "osac-ci.yml").trust.authorization == "sha-bound"
 
 
+def test_the_sweep_never_spends_the_last_of_the_quota() -> None:
+    steps = _workflow("osac-ci-check.yml")["jobs"]["publish"]["steps"]
+    run = next(s["run"] for s in steps if s.get("name") == "Post the verdict")
+    assert "--reserve 200" in run
+
+
 def test_the_authorize_workflow_treats_the_comment_as_untrusted_input() -> None:
     path = ROOT / ".github" / "workflows" / "osac-ci-authorize.yml"
     workflow = _workflow("osac-ci-authorize.yml")

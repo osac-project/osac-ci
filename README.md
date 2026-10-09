@@ -187,6 +187,27 @@ deliberately not used: it would run the file from the queue commit, which holds 
 `workflow_dispatch` takes a commit and a queue branch for a manual run. Not yet exercised on a real queue: whether
 `workflow_run` fires for runs started by `merge_group` is to be confirmed on the first one.
 
+
+## Sweep budget
+
+`osac-ci publish --all` re-evaluates every open PR, which repairs a missed event. It costs requests, and the sweep runs
+all day. Measured on 10 real `osac` PRs: about **7 requests per PR** with label approval and about **11** with native
+approval (CODEOWNERS, owner teams, change fingerprints), plus one to post. For about 140 open PRs one full sweep is
+roughly 1,000 to 1,600 requests. GitHub documents 1,000 requests an hour per repository for the built-in token (more
+on Enterprise Cloud), so a full sweep every 10 minutes would not fit. Budget it:
+
+- `--recent N`: the N most recently updated PRs every sweep, since activity is where a verdict goes stale.
+- `--rotate M`: plus M of the others, a different slice each sweep (the slice advances once per `--interval` seconds,
+  default 600, and wraps), so every PR is looked at within ceil(others / M) sweeps with no stored state.
+- `--reserve R`: stop starting PRs once fewer than R REST requests are left. They are reported as *skipped*, not
+  failed, and the next sweep picks them up. The count comes from the response headers of the REST bucket (`core`);
+  GraphQL has its own bucket and never stands in for it.
+
+For `osac` I would run every 30 minutes with `--recent 15 --rotate 15 --reserve 150`: about 30 PRs, 240 to 350 requests
+a sweep, 500 to 700 an hour, and the whole backlog covered in about 4 hours. Event-driven runs (PR events, `ci` finished,
+reviews) still update a PR at once; the sweep only repairs what they missed. A token with a higher limit (an app
+installation token) is the alternative if that is not enough.
+
 ## Open-PR report
 
 ```bash

@@ -19,12 +19,12 @@ failed.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, rate_remaining
 from osac_ci.github.snapshot import COMMIT_SHA, fetch_queue_snapshot, fetch_snapshot
 from osac_ci.model import Mode, State, Verdict
 from osac_ci.planner import error_verdict, plan_or_error
@@ -61,6 +61,14 @@ OUTCOME: dict[State, tuple[str, str | None]] = {
 }
 
 
+class Sweep(list["Outcome"]):
+    """The outcomes of one sweep, plus how many PRs were open (so a partial sweep can say it was partial)."""
+
+    def __init__(self, outcomes: Iterable[Outcome], open_prs: int) -> None:
+        super().__init__(outcomes)
+        self.open_prs = open_prs
+
+
 @dataclass(frozen=True)
 class Outcome:
     pr: int
@@ -68,7 +76,7 @@ class Outcome:
     state: State
     status: str
     conclusion: str | None
-    action: str  # created | unchanged | dry-run | failed
+    action: str  # created | unchanged | dry-run | failed | skipped
     detail: str = ""
 
 
@@ -188,6 +196,26 @@ def publish_queue(
     return Outcome(0, sha, verdict.state, status, conclusion, "created", body["output"]["title"])
 
 
+def select_prs(
+    prs: Sequence[dict[str, Any]], *, recent: int | None, rotate: int | None, tick: int
+) -> list[dict[str, Any]]:
+    """Which open PRs one sweep looks at.
+
+    With no budget (both ``None``) every PR. Otherwise the ``recent`` most recently updated ones (``prs`` is listed
+    newest first), because activity is where a verdict goes stale, plus a slice of ``rotate`` of the others. The slice
+    advances with ``tick`` (a counter that grows by one per sweep interval) and wraps, so with no other state every PR
+    is looked at within ceil(others / rotate) sweeps, as long as it stays among the others."""
+    if recent is None and rotate is None:
+        return list(prs)
+    first = list(prs[: recent or 0])
+    others = sorted(prs[recent or 0 :], key=lambda pr: pr["number"])
+    if not rotate or not others:
+        return first
+    slices = -(-len(others) // rotate)
+    start = (tick % slices) * rotate
+    return first + others[start : start + rotate]
+
+
 def sweep(
     client: GitHubClient,
     policy: Policy,
@@ -201,14 +229,28 @@ def sweep(
     limit: int | None = None,
     workers: int = 4,
     org_client: GitHubClient | None = None,
-) -> list[Outcome]:
-    """Publish for every open PR. One PR failing never stops the others; it is reported as ``failed``."""
+    recent: int | None = None,
+    rotate: int | None = None,
+    tick: int = 0,
+    reserve: int = 0,
+) -> Sweep:
+    """Publish for the open PRs one sweep covers (all of them without a budget, see ``select_prs``).
+
+    One PR failing never stops the others; it is reported as ``failed``. When the client knows how many requests it has
+    left and that falls below ``reserve``, the PRs not started yet are reported as ``skipped``, not failed: running
+    out of quota must not turn a sweep red or leave a half-written state, and the next sweep picks them up."""
     prs = list_open_prs(client, repo, include_drafts=True)
     if limit is not None:
         prs = prs[:limit]
+    open_prs = len(prs)
+    prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick)
 
     def one(pr: dict[str, Any]) -> Outcome:
         number = pr["number"]
+        left = rate_remaining(client)
+        if reserve and left is not None and left < reserve:
+            sha = str((pr.get("head") or {}).get("sha", ""))
+            return Outcome(number, sha, State.PLANNER_ERROR, "", None, "skipped", f"only {left} requests left")
         try:
             return publish_pr(
                 client,
@@ -227,15 +269,23 @@ def sweep(
             return Outcome(number, sha, State.PLANNER_ERROR, "", None, "failed", str(exc))
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        return list(pool.map(one, prs))
+        return Sweep(pool.map(one, prs), open_prs)
 
 
 def describe(outcomes: Sequence[Outcome]) -> str:
     lines = [
-        f"PR #{o.pr}: {o.action} {o.conclusion or o.status} ({o.state.value})"
+        f"PR #{o.pr}: skipped ({o.detail})"
+        if o.action == "skipped"
+        else f"PR #{o.pr}: {o.action} {o.conclusion or o.status} ({o.state.value})"
         + (f" {o.detail}" if o.action == "failed" else "")
         for o in outcomes
     ]
     failed = sum(o.action == "failed" for o in outcomes)
-    lines.append(f"{len(outcomes)} PRs, {failed} failed")
+    skipped = sum(o.action == "skipped" for o in outcomes)
+    summary = f"{len(outcomes)} PRs, {failed} failed"
+    if skipped:
+        summary += f", {skipped} skipped for the request reserve"
+    if isinstance(outcomes, Sweep) and outcomes.open_prs != len(outcomes):
+        summary += f" (this sweep covers {len(outcomes)} of {outcomes.open_prs} open PRs)"
+    lines.append(summary)
     return "\n".join(lines) + "\n"

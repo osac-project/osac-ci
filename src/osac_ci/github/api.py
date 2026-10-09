@@ -13,7 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 API_ROOT = "https://api.github.com"
@@ -34,6 +34,7 @@ class GitHubError(RuntimeError):
 class Response:
     status: int
     data: Any = None
+    headers: Mapping[str, str] = field(default_factory=dict)  # lower-case names
 
 
 class GitHubClient(Protocol):
@@ -45,6 +46,14 @@ class GitHubClient(Protocol):
         params: Mapping[str, str] | None = None,
         body: Any = None,
     ) -> Response: ...
+
+
+def rate_remaining(client: object) -> int | None:
+    """Requests left in the client's rate-limit window as of its last response, or ``None`` when it does not know
+    (a fake client, or no response seen yet)."""
+    ask = getattr(client, "rate_limit_remaining", None)
+    left = ask() if callable(ask) else None
+    return left if isinstance(left, int) else None
 
 
 def check_repo(repo: str) -> str:
@@ -96,6 +105,18 @@ class HttpClient:
         self._root = root.rstrip("/")
         self._timeout = timeout
         self._opener = opener
+        self._remaining: dict[str, int] = {}
+
+    def rate_limit_remaining(self, resource: str = "core") -> int | None:
+        """Requests left in one rate-limit bucket as of the last response that reported it. GitHub keeps separate
+        buckets (REST is ``core``, the merge-queue lookup is ``graphql``), so a GraphQL answer must never be mistaken
+        for the REST quota the sweep spends."""
+        return self._remaining.get(resource)
+
+    def _note_rate_limit(self, headers: Mapping[str, str]) -> None:
+        value = headers.get("x-ratelimit-remaining")
+        if value is not None and value.isdigit():
+            self._remaining[headers.get("x-ratelimit-resource", "core")] = int(value)
 
     def request(
         self,
@@ -122,11 +143,22 @@ class HttpClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310 - https root only
         try:
             with self._opener(request, timeout=self._timeout) as raw:
-                return Response(raw.status, _parse(raw.read()))
+                seen = _headers(getattr(raw, "headers", None))
+                self._note_rate_limit(seen)
+                return Response(raw.status, _parse(raw.read()), seen)
         except urllib.error.HTTPError as exc:
-            return Response(exc.code, _parse(exc.read()))
+            seen = _headers(exc.headers)
+            self._note_rate_limit(seen)
+            return Response(exc.code, _parse(exc.read()), seen)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             raise GitHubError(0, f"{method} {path}: {type(exc).__name__}") from exc
+
+
+def _headers(raw: Any) -> dict[str, str]:
+    """Response headers with lower-case names; an object without headers (a test double) gives none."""
+    if raw is None or not hasattr(raw, "items"):
+        return {}
+    return {str(k).lower(): str(v) for k, v in raw.items()}
 
 
 def _parse(raw: bytes) -> Any:
