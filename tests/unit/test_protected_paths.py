@@ -35,6 +35,8 @@ def test_policy_parses_the_section_and_rejects_bad_input() -> None:
     for bad in (
         "{paths: [], approvers: ['@o/t']}",
         "{paths: ['!x'], approvers: ['@o/t']}",
+        "{paths: ['x'], exclude_paths: ['!y'], approvers: ['@o/t']}",
+        "{paths: ['x'], exclude_paths: [''], approvers: ['@o/t']}",
         "{paths: ['x'], approvers: []}",
         "{paths: ['x'], approvers: ['bob']}",
         "{paths: ['x'], approvers: ['@o/t/extra']}",
@@ -315,3 +317,33 @@ def test_a_carried_over_approval_is_noted_in_the_verdict(osac_policy: Policy) ->
     )
     v = plan(s, policy)
     assert v.state is State.READY_TO_ENQUEUE and any("carried over" in n for n in v.notes)
+
+
+# ---- exclusions ---------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("file", "expected"),
+    [
+        (".github/workflows/a.yml", True),
+        (".github/workflows/README.md", False),
+        (".github/workflows/sub/notes.md", False),
+        (".github/workflows/a.md.yml", True),
+        ("CODEOWNERS", True),
+    ],
+)
+def test_exclusions_take_files_out_of_the_rule(file: str, expected: bool) -> None:
+    rule = ProtectedPaths(paths=(".github/**", "CODEOWNERS"), exclude_paths=("**/*.md",), approvers=(TEAM,))
+    assert rule.covers(file) is expected
+
+
+def test_without_exclusions_every_matching_file_is_covered() -> None:
+    rule = ProtectedPaths(paths=(".github/**",), approvers=(TEAM,))
+    assert rule.covers(".github/workflows/README.md")
+
+
+def test_a_pr_that_only_changes_excluded_files_is_not_held(osac_policy: Policy) -> None:
+    rule = ProtectedPaths(paths=(".github/**",), exclude_paths=("**/*.md",), approvers=(TEAM,))
+    policy = osac_policy.model_copy(update={"protected_paths": (rule,)})
+    s = snap(policy, changed_files=(".github/workflows/README.md",), team_members=TEAM_MEMBERS)
+    assert plan(s, policy).state is State.READY_TO_ENQUEUE

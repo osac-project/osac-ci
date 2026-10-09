@@ -19,7 +19,6 @@ from typing import Any
 from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
-from osac_ci.paths import any_match
 from osac_ci.policy import Approval, ProtectedPaths, Trust
 from osac_ci.rules import codeowners
 
@@ -401,7 +400,7 @@ def fetch_snapshot(
     owners_text, team_members, fingerprints = (
         _approval_inputs(client, org_client, repo, base_ref, head_sha, reviews, files) if approval else (None, {}, {})
     )
-    matched = [rule for rule in protected if any(any_match(rule.paths, f) for f in files)]
+    matched = [rule for rule in protected if any(rule.covers(f) for f in files)]
     if matched:
         if not base_ref:
             raise ValueError("the pull request has no base branch, cannot judge protected paths")

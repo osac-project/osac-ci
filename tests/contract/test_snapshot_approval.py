@@ -292,3 +292,13 @@ def test_a_queue_commit_lists_both_names_of_a_rename_too() -> None:
     )
     s = fetch_queue_snapshot(fake, REPO, sha, "main")
     assert s.changed_files == ("new/a.yml", ".github/a.yml", "b.go") and s.changed_files_known
+
+
+def test_no_team_is_read_when_only_excluded_files_changed() -> None:
+    from osac_ci.policy import ProtectedPaths
+
+    rule = ProtectedPaths(paths=("docs/**",), exclude_paths=("**/*.md",), approvers=("@example/infra",))
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/pulls/7/files", [{"filename": "docs/readme.md"}])
+    s = fetch_snapshot(fake, REPO, 7, org="example", protected=(rule,))
+    assert s.team_members == {} and not [c for c in fake.calls if "teams" in c[1]]

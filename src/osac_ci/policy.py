@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from osac_ci import yamlio
+from osac_ci.paths import any_match
 from osac_ci.rules.labels import QUEUE_BLOCKING_LABELS, REQUIRED_LABELS
 
 _JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -84,17 +85,24 @@ class ProtectedPaths(_Strict):
     request, so the PR cannot change who has to approve."""
 
     paths: tuple[str, ...] = Field(min_length=1, description="Globs of the protected files")
+    exclude_paths: tuple[str, ...] = Field(
+        default=(), description="Globs of files inside the protected ones that need no approval, for example docs"
+    )
     approvers: tuple[str, ...] = Field(min_length=1, description="'@login' or '@org/team'; one of them must approve")
     carry_over: Literal["never", "trivial-rebase"] = Field(
         default="never", description="Keep an approval after a rebase that leaves the PR's own changes unchanged"
     )
 
-    @field_validator("paths")
+    @field_validator("paths", "exclude_paths")
     @classmethod
     def _positive_globs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if any(not p or p.startswith("!") for p in value):
-            raise ValueError("paths must be non-empty globs without a '!' prefix")
+            raise ValueError("globs must be non-empty and without a '!' prefix (list exclusions in exclude_paths)")
         return value
+
+    def covers(self, path: str) -> bool:
+        """Does a change to ``path`` need the approvers? It matches ``paths`` and is not an excluded file."""
+        return any_match(self.paths, path) and not any_match(self.exclude_paths, path)
 
     @field_validator("approvers")
     @classmethod

@@ -49,6 +49,9 @@ def test_a_change_to_a_pipeline_file_needs_the_infrastructure_group(osac_policy:
     [
         ".github/AGENTS.md",
         ".github/e2e-readiness.md",
+        ".github/workflows/README.md",  # a README cannot change a check
+        ".github/actions/check-e2e-readiness/README.md",
+        ".github/scripts/notes.md",
         ".github/dependabot.yml",
         "docs/CODEOWNERS",
         "fulfillment-service/internal/a.go",
@@ -70,3 +73,14 @@ def test_moving_a_workflow_out_of_its_folder_is_still_a_pipeline_change(osac_pol
 def test_the_label_rules_are_unchanged(osac_policy: Policy) -> None:
     v = plan(snap(osac_policy, labels=frozenset(), changed_files=("a.go",)), osac_policy)
     assert v.state is State.AWAITING_APPROVAL and "missing label: lgtm" in v.headline
+
+
+def test_a_pipeline_file_that_only_looks_like_documentation_is_still_protected(osac_policy: Policy) -> None:
+    for file in (".github/workflows/readme.yml", ".github/scripts/md.sh", ".github/workflows/notes.md.yml"):
+        assert verdict(osac_policy, (file,)).state is State.AWAITING_APPROVAL, file
+
+
+def test_a_pr_that_changes_a_workflow_and_its_readme_still_needs_the_group(osac_policy: Policy) -> None:
+    files = (".github/workflows/README.md", ".github/workflows/unit-tests.yml")
+    assert verdict(osac_policy, files).state is State.AWAITING_APPROVAL
+    assert verdict(osac_policy, files, approved("infra-bob")).state is State.READY_TO_ENQUEUE

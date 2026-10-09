@@ -359,6 +359,7 @@ as a pass. The control that works is a person who is trusted for those files rea
 ```yaml
 protected_paths:
   - paths: [".github/**", "CODEOWNERS"]
+    exclude_paths: ["**/*.md"]              # optional: files inside the protected ones that need no approval
     approvers: ["@osac-project/wg-infra"]   # "@login" or "@org/team": one of them must approve
     carry_over: never                       # or trivial-rebase, as for `approval:`
 ```
@@ -372,7 +373,8 @@ commit.
 
 `policy/osac.yml` uses it for the files that define osac's checks (`.github/workflows`, `actions`, `scripts` and
 `filters`, `CODEOWNERS`, `.pre-commit-config.yaml`), with `@osac-project/wg-infra` as the approvers. The team is read
-with the organization token. Documentation in `.github/` is not covered.
+with the organization token. Markdown files are excluded (a README inside those folders cannot change a check), and
+documentation directly in `.github/` is not under any of the globs.
 
 `path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
 job that applies to the PR (its filters or globs match, or nothing narrows it, as for `pre-commit`) counts as failed
