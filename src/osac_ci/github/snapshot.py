@@ -12,6 +12,7 @@ import binascii
 import re
 import urllib.parse
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -53,19 +54,30 @@ def authorization_external_id(login: str, head_sha: str) -> str:
     return f"osac-ci-auth:v1:{login}:{head_sha}"
 
 
-def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust) -> str:
-    """Login of an org member who authorized exactly ``head_sha``, or ``""``.
+def find_authorizers(
+    org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust
+) -> tuple[str, ...]:
+    """Logins of the org members who authorized exactly ``head_sha``, newest first, each once.
 
-    The authorization is a successful check run named ``trust.check_name`` posted by the workflow app, whose external id
-    names the authorizer and the commit. The runs were listed for the head commit, and the id must name it too. The
-    authorizer must still be an org member now: leaving the org withdraws the authorization."""
+    An authorization is a successful check run named ``trust.check_name`` posted by the workflow app, whose external
+    id names the authorizer and the commit. The runs were listed for the head commit, and the id must name it too. The
+    authorizer must still be an org member now: leaving the org withdraws the authorization. Every one is kept, not just
+    the newest, so a replay can tell who had authorized at an earlier moment."""
+    found: list[str] = []
     for run in sorted(runs, key=lambda r: r.started_at or "", reverse=True):
         if (run.name, run.status, run.conclusion, run.app) != (trust.check_name, "completed", "success", AUTH_APP):
             continue
-        found = AUTH_ID.match(run.external_id)
-        if found and found["sha"] == head_sha and is_org_member(org_client, org, found["login"]):
-            return found["login"]
-    return ""
+        match = AUTH_ID.match(run.external_id)
+        if not match or match["sha"] != head_sha or match["login"] in found:
+            continue
+        if is_org_member(org_client, org, match["login"]):
+            found.append(match["login"])
+    return tuple(found)
+
+
+def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust) -> str:
+    """The newest org member who authorized exactly ``head_sha``, or ``""`` (see ``find_authorizers``)."""
+    return next(iter(find_authorizers(org_client, org, runs, head_sha, trust)), "")
 
 
 # A merge-queue entry lives on a branch GitHub creates: gh-readonly-queue/<base branch>/pr-<number>-<head sha>.
@@ -98,27 +110,41 @@ def _is_queue_cleanup(event: dict[str, Any], merged_at: datetime | None) -> bool
     return actor == QUEUE_BOT and abs(removed_at - merged_at) <= _CLEANUP_WINDOW
 
 
-def queued_at_end(events: Sequence[dict[str, Any]]) -> bool:
-    """Was the PR in the merge queue at the moment it merged (or is it queued now, if it has not merged)?
+def _queue_state(events: Sequence[dict[str, Any]]) -> tuple[bool, str]:
+    """Replay the issue events, oldest first, up to the ``merged`` event: is the PR queued at the end, and since when?
 
-    Replays the issue events, oldest first, up to the ``merged`` event. A removal by anyone other than the queue's
-    own post-merge cleanup (a human dequeuing and then merging by hand, an ejection, a force-push) means the PR
-    was taken out of the queue, so the merge was direct.
-    """
+    A removal by anyone other than the queue's own post-merge cleanup (a human dequeuing and then merging by hand,
+    an ejection, a force-push) means the PR was taken out of the queue."""
     merged_at = next((_when(e) for e in events if e.get("event") == "merged"), None)
-    queued = False
+    queued, since = False, ""
     for event in events:
         kind = event.get("event")
         if kind == "added_to_merge_queue":
-            queued = True
+            queued, since = True, str(event.get("created_at") or "")
         elif kind == "removed_from_merge_queue":
             if not _is_queue_cleanup(event, merged_at):
-                queued = False
+                queued, since = False, ""
         elif kind == "head_ref_force_pushed":
-            queued = False
+            queued, since = False, ""
         elif kind == "merged":
             break
-    return queued
+    return queued, since
+
+
+def queued_at_end(events: Sequence[dict[str, Any]]) -> bool:
+    """Was the PR in the merge queue at the moment it merged (or is it queued now, if it has not merged)?
+
+    A removal by anyone other than the queue's own post-merge cleanup means the PR was taken out of the queue, so the
+    merge was direct."""
+    return _queue_state(events)[0]
+
+
+def queue_entry_time(events: Sequence[dict[str, Any]]) -> str:
+    """When the queue entry that was still there at the end was created, or ``""`` if the PR was not queued then.
+
+    A push removes a PR from the queue, so for a queue-merged PR its head commit at that moment is its final head."""
+    queued, since = _queue_state(events)
+    return since if queued else ""
 
 
 CODEOWNERS_PATHS = (".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS")  # GitHub's lookup order
@@ -206,6 +232,25 @@ def _approval_inputs(
     return text, teams, fingerprints
 
 
+def _dismissals(raw_events: Sequence[dict[str, Any]]) -> dict[int, tuple[str, str]]:
+    """Review id -> (when it was dismissed, the state it had before), from the ``review_dismissed`` events."""
+    found: dict[int, tuple[str, str]] = {}
+    for event in raw_events:
+        if event.get("event") != "review_dismissed":
+            continue
+        review = event.get("dismissed_review") or {}
+        if isinstance(review.get("review_id"), int) and review.get("state"):
+            found[review["review_id"]] = (str(event.get("created_at") or ""), str(review["state"]).upper())
+    return found
+
+
+def _with_dismissal(review: Review, dismissals: dict[int, tuple[str, str]]) -> Review:
+    known = dismissals.get(review.id) if review.id is not None else None
+    if review.state != "DISMISSED" or known is None:
+        return review
+    return replace(review, dismissed_at=known[0], state_before_dismissal=known[1])
+
+
 def _review(raw: dict[str, Any]) -> Review | None:
     user = raw.get("user")
     if not user:  # deleted account: the legacy rules ignore reviews without a user too
@@ -290,8 +335,12 @@ def fetch_snapshot(
 
     reviews = tuple(r for raw in paginate(client, f"{base}/pulls/{number}/reviews") if (r := _review(raw)))
     raw_events = list(paginate(client, f"{base}/issues/{number}/events"))
+    dismissals = _dismissals(raw_events)
+    reviews = tuple(_with_dismissal(r, dismissals) for r in reviews)
     events = tuple(
-        LabelEvent(raw["event"], raw["label"]["name"], (raw.get("actor") or {}).get("login", ""))
+        LabelEvent(
+            raw["event"], raw["label"]["name"], (raw.get("actor") or {}).get("login", ""), raw.get("created_at") or ""
+        )
         for raw in raw_events
         if raw.get("label")
     )
@@ -303,6 +352,7 @@ def fetch_snapshot(
             raw.get("started_at"),
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
+            raw.get("completed_at"),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
@@ -315,9 +365,9 @@ def fetch_snapshot(
         author_member = pr.get("author_association") in {"MEMBER", "OWNER"}
         owner_member = False
 
-    authorized_by = ""
+    authorizers: tuple[str, ...] = ()
     if trust and trust.authorization == "sha-bound" and is_fork and not (author_member or owner_member):
-        authorized_by = find_authorizer(org_client, org, runs, head_sha, trust)
+        authorizers = find_authorizers(org_client, org, runs, head_sha, trust)
 
     base_ref: str = (pr.get("base") or {}).get("ref", "")  # only the native-approval inputs need it
     owners_text, team_members, fingerprints = (
@@ -341,9 +391,11 @@ def fetch_snapshot(
         changed_files=files,
         in_merge_queue=_in_merge_queue(client, pr["node_id"]),
         queued_per_events=queued_at_end(raw_events),
+        enqueued_at=queue_entry_time(raw_events),
         base_ref=base_ref,
         codeowners=owners_text,
         team_members=team_members,
         change_fingerprints=fingerprints,
-        authorized_by=authorized_by,
+        authorized_by=authorizers[0] if authorizers else "",
+        authorizers=authorizers,
     )

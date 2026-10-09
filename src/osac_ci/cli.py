@@ -199,6 +199,12 @@ def _parser() -> argparse.ArgumentParser:
     rep.add_argument("--explained", type=Path, help="YAML ledger of signed-off disagreements (PR number: reason)")
     rep.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     rep.add_argument("--no-membership-lookup", action="store_true")
+    rep.add_argument(
+        "--at",
+        choices=["final", "enqueue"],
+        default="final",
+        help="judge each PR as it is now (final) or as it stood when it was enqueued or merged (enqueue)",
+    )
     return parser
 
 
@@ -333,6 +339,7 @@ def main(argv: list[str] | None = None) -> int:
                 org=args.org,
                 explained=load_explained(args.explained),
                 lookup_membership=not args.no_membership_lookup,
+                at=args.at,
             )
         except (GitHubError, ValueError, OSError) as exc:
             print(f"error: replay failed: {exc}", file=sys.stderr)

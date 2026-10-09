@@ -5,9 +5,13 @@ the PR's final state and must say it was ready to merge. Any other verdict is a 
 either explained (listed with a reason in an explained-ledger that the infra group signs off) or unexplained;
 only unexplained ones fail the gate.
 
-Limitation, stated on purpose: this reads the PR's FINAL state (labels and checks as they are now), not the state
-at the moment it was enqueued. It can prove the planner never calls a legitimately merged PR blocked on today's
-data; a decision-time replay needs the event timeline and is a later step.
+Two modes. ``final`` (the default) reads the PR's final state, labels and checks as they are now: it proves the
+planner never calls a legitimately merged PR blocked on today's data, but not that it would have let the PR in when
+the decision was made. ``enqueue`` rebuilds each PR as it stood when it was enqueued (or merged, for a direct merge)
+from the timestamps on labels, reviews and check runs (see ``timeline.py``). There, a queue-merged PR agrees when
+today's enqueue rule held at that moment (the labels or approval, no draft), because that is the rule the system
+actually applied: it never reads check results. The full verdict is reported next to it, so the report also shows what
+the planner would have held back that today's flow let in.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import Mode, State
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import Policy
+from osac_ci.timeline import state_at
 
 EXPECTED = State.READY_TO_ENQUEUE
 FILTER_NOTE = "path filter:"  # prefix of the shadow-mode notes the planner adds (planner._filter_note)
@@ -41,6 +46,7 @@ class Row:
     agrees: bool
     via_queue: bool
     explanation: str | None = None
+    decision_at: str = ""  # enqueue mode: the moment judged (when it was enqueued, or merged for a direct merge)
     filter_notes: tuple[str, ...] = ()  # shadow mode: where the path filters and what the checks did disagree
 
     @property
@@ -54,6 +60,7 @@ class Report:
     repo: str
     days: int
     rows: tuple[Row, ...]
+    at: str = "final"  # "final" or "enqueue": which state of each PR the planner judged
 
     @property
     def disagreements(self) -> tuple[Row, ...]:
@@ -131,7 +138,10 @@ def replay(
     org: str | None = None,
     explained: Mapping[int, str] | None = None,
     lookup_membership: bool = True,
+    at: str = "final",
 ) -> Report:
+    if at not in ("final", "enqueue"):
+        raise ValueError(f"at must be 'final' or 'enqueue', got {at!r}")
     explained = explained or {}
     org = org or repo.split("/", 1)[0]
     rows = []
@@ -145,8 +155,14 @@ def replay(
             approval=policy.approval,
             trust=policy.trust,
         )
-        verdict = plan_or_error(snapshot, policy, Mode.PR)
-        agrees = verdict.state is EXPECTED
+        moment = ""
+        if at == "enqueue":
+            # The decision was the enqueue; a direct merge has none, so its decision is the merge itself.
+            moment = snapshot.enqueued_at if snapshot.queued_per_events and snapshot.enqueued_at else pr["merged_at"]
+        verdict = plan_or_error(state_at(snapshot, moment) if moment else snapshot, policy, Mode.PR)
+        # Today's enqueue step reads labels and draft state, never check results, so that is what a queue-merged PR
+        # is held to when judged at the moment it was enqueued. Everything else is held to the full verdict.
+        agrees = verdict.label_gate_ok if at == "enqueue" and snapshot.queued_per_events else verdict.state is EXPECTED
         rows.append(
             Row(
                 number=pr["number"],
@@ -156,21 +172,41 @@ def replay(
                 agrees=agrees,
                 via_queue=snapshot.queued_per_events,
                 explanation=None if agrees else explained.get(pr["number"]),
+                decision_at=moment,
                 filter_notes=tuple(n for n in verdict.notes if n.startswith(FILTER_NOTE)),
             )
         )
-    return Report(repo=repo, days=days, rows=tuple(rows))
+    return Report(repo=repo, days=days, rows=tuple(rows), at=at)
+
+
+def _explain(report: Report) -> list[str]:
+    if report.at == "enqueue":
+        held = [r for r in report.queue_rows if r.agrees and r.state is not EXPECTED]
+        return [
+            "Each PR is judged as it stood when it was enqueued (queue-merged) or merged (direct merge), rebuilt",
+            "from the timestamps on its labels, reviews and check runs. A queue-merged PR agrees when today's enqueue",
+            "rule held then (labels or approval, not a draft): that step never reads check results. The verdict",
+            "column is the full planner verdict at that moment. A PR counts as queue-merged when the queue still held",
+            "it at the end of its event history; a direct merge is a bypass, not a planner error.",
+            "",
+            f"- queue-merged PRs the planner would also have held back (checks or E2E not ready then): {len(held)}",
+        ]
+    return [
+        "Reads each PR's final state, not its state when it was enqueued. A PR counts as queue-merged when the",
+        "queue still held it at the end of its event history; a direct merge is a bypass, not a planner error.",
+    ]
 
 
 def render(report: Report) -> str:
     queue, bypass = report.queue_rows, report.bypass_rows
     queue_ok = sum(r.agrees for r in queue)
     blocked_bypass = [r for r in bypass if not r.agrees]
+    held = "today's enqueue rule held at the enqueue" if report.at == "enqueue" else "planner agrees (ready)"
     lines = [
         f"# Replay: {report.repo}, merged in the last {report.days} days",
         "",
         f"- merged PRs replayed: {len(report.rows)}",
-        f"- merged by the queue: {len(queue)}; planner agrees (ready): {queue_ok} ({report.queue_agreement:.1%})",
+        f"- merged by the queue: {len(queue)}; {held}: {queue_ok} ({report.queue_agreement:.1%})",
         f"- queue-merged disagreements: {len(queue) - queue_ok} "
         f"(explained: {len(queue) - queue_ok - len(report.unexplained)}, UNEXPLAINED: {len(report.unexplained)})",
         f"- merged directly, outside the queue (bypass): {len(bypass)} "
@@ -179,8 +215,7 @@ def render(report: Report) -> str:
         else "- no merged PRs in the window",
         f"  - of which the planner would have blocked: {len(blocked_bypass)}",
         "",
-        "Reads each PR's final state, not its state when it was enqueued. A PR counts as queue-merged when the",
-        "queue still held it at the end of its event history; a direct merge is a bypass, not a planner error.",
+        *_explain(report),
     ]
     by_state = Counter(r.state.value for r in report.rows)
     lines += ["", "| Verdict | PRs |", "|---|---|", *[f"| {s} | {c} |" for s, c in by_state.most_common()]]
@@ -188,7 +223,9 @@ def render(report: Report) -> str:
     if queue_bad:
         lines += [
             "",
-            "## Queue-merged PRs the planner disagrees with",
+            "## Queue-merged PRs whose enqueue rule did not hold then"
+            if report.at == "enqueue"
+            else "## Queue-merged PRs the planner disagrees with",
             "",
             "| PR | Verdict | Why | Explained |",
             "|---|---|---|---|",
@@ -236,6 +273,7 @@ def to_json(report: Report) -> str:
             "replayed": len(report.rows),
             "queue_merged": len(report.queue_rows),
             "bypass_merged": len(report.bypass_rows),
+            "at": report.at,
             "queue_agreement": report.queue_agreement,
             "unexplained": [r.number for r in report.unexplained],
             "filter_disagreements": {str(r.number): list(r.filter_notes) for r in report.filter_rows},
@@ -248,6 +286,7 @@ def to_json(report: Report) -> str:
                     "agrees": r.agrees,
                     "via_queue": r.via_queue,
                     "explanation": r.explanation,
+                    "decision_at": r.decision_at,
                 }
                 for r in report.rows
             ],

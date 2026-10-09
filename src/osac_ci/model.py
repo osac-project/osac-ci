@@ -49,6 +49,11 @@ class Review:
     submitted_at: str | None = None
     id: int | None = None
     commit_id: str | None = None
+    # GitHub does not add a review when it dismisses one: the original review turns into DISMISSED and keeps its
+    # submission time. These come from the ``review_dismissed`` event, so a replay can show the review as it was
+    # before the dismissal. Empty when no such event was found.
+    dismissed_at: str = ""
+    state_before_dismissal: str = ""  # APPROVED or CHANGES_REQUESTED
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class LabelEvent:
     event: str
     label: str
     actor: str
+    at: str = ""  # when it happened (ISO 8601, UTC): lets a replay rebuild the labels as of a moment
 
 
 @dataclass(frozen=True)
@@ -68,6 +74,7 @@ class CheckRun:
     started_at: str | None = None
     external_id: str = ""  # set by whoever posted the check run; used to read back an authorization
     app: str = ""  # slug of the app that posted it, for example github-actions
+    completed_at: str | None = None  # lets a replay tell that a check had not finished yet at a given moment
 
 
 @dataclass(frozen=True)
@@ -95,6 +102,9 @@ class Snapshot:
     # Replaying the issue events in order up to the merge: was the PR still in the queue when it merged? True means
     # the queue merged it; False means a direct merge (a bypass), even if it was queued earlier.
     queued_per_events: bool = False
+    # When the queue entry that led to the merge was created (empty when the PR was not queue-merged). Together with the
+    # timestamps on reviews, label events and check runs it lets a replay judge the PR as it stood at that moment.
+    enqueued_at: str = ""
     # Native-approval inputs (see rules/approval.py). All empty unless the policy has an `approval:` section.
     base_ref: str = ""
     codeowners: str | None = None  # CODEOWNERS text from the base branch; None when the repository has none
@@ -104,6 +114,9 @@ class Snapshot:
     change_fingerprints: Mapping[str, str] = field(default_factory=dict)  # commit sha -> fingerprint of its changes
     # Login of an org member who authorized exactly this head commit for secrets and E2E (sha-bound trust mode only).
     authorized_by: str = ""
+    # Every verified authorizer of this head, newest first (``authorized_by`` is the first). Kept so that a replay can
+    # tell who had authorized at an earlier moment, when the newest one had not yet.
+    authorizers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,3 +139,6 @@ class Verdict:
     blockers: tuple[str, ...] = ()
     jobs: tuple[JobEntry, ...] = ()
     notes: tuple[str, ...] = ()  # things worth knowing that do not block, for example an approval carried over
+    # Would today's enqueue rule (auto-queue.sh) have let this PR in? Not a draft, and the labels or approval are in
+    # order. It ignores check results, which that rule does not read. Always true in queue mode.
+    label_gate_ok: bool = True

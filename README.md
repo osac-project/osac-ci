@@ -235,11 +235,28 @@ GH_TOKEN=$(gh auth token) uv run osac-ci replay --policy policy/osac.yml --repo 
 
 PRs the merge queue merged are held to the planner: it must call each one ready, and every disagreement must be
 listed in `parity/explained.yaml`. PRs merged directly (outside the queue) are reported separately as bypasses,
-with the verdict the rules would have given. The run exits 1 only for unexplained queue-merged disagreements. It
-reads each PR's final state, not its state when it was enqueued.
+with the verdict the rules would have given. The run exits 1 only for unexplained queue-merged disagreements.
 
-First run, OSAC, last 60 days: 100 merged PRs; 85 through the queue (planner agrees on all 85); 15 merged
+By default (`--at final`) it reads each PR's final state. `--at enqueue` judges the decision that was actually made:
+each PR as it stood when it was enqueued (a direct merge: when it merged), rebuilt from the timestamps on its label
+events, reviews and check runs (`osac_ci/timeline.py`). A check that finished after that moment was still running
+then; a label applied after it is not credited to the decision. The head commit and the files need no rebuilding for a
+queue-merged PR, since a push removes a PR from the queue. A queue-merged PR agrees when today's enqueue rule held at
+that moment, which is what the system applied: `auto-queue.sh` reads labels and draft state and never a check result.
+The full verdict is shown next to it, so the report counts what the planner would have held back that today's flow let
+in. Direct merges are held to the full verdict at the moment they merged.
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci replay --policy policy/osac.yml --repo osac-project/osac --at enqueue
+```
+
+First run, OSAC, last 60 days, final state: 100 merged PRs; 85 through the queue (planner agrees on all 85); 15 merged
 directly, of which 12 the rules would have blocked.
+
+Decision time (`--at enqueue`), a later window of 100 PRs: 76 through the queue and today's enqueue rule held at the
+enqueue for all 76 (which also checks the reconstruction itself); the planner would additionally have held back 4 of
+them because checks or E2E were not ready then. 24 merged directly, of which the planner would have blocked 18 at the
+moment they merged (most while a required check was still running).
 
 ## Tests
 

@@ -330,3 +330,38 @@ def test_a_commit_that_shares_a_short_prefix_with_the_reviewed_one_is_not_author
         result = command(fake, text)
         assert result.handled and not result.granted
     assert posts(fake) == []
+
+
+# ---- every authorizer is kept, not just the newest ------------------------------------------------------------------
+
+
+def test_every_member_who_authorized_the_commit_is_found_newest_first() -> None:
+    from osac_ci.github.snapshot import find_authorizers
+
+    runs = [run("alice", started_at="2026-10-08T10:00:00Z"), run("bob", started_at="2026-10-08T11:00:00Z")]
+    got = find_authorizers(org("alice", "bob"), "example", runs, SHA, TRUST)
+    assert got == ("bob", "alice") and find_authorizer(org("alice", "bob"), "example", runs, SHA, TRUST) == "bob"
+
+
+def test_a_member_who_authorized_twice_is_listed_and_looked_up_once() -> None:
+    from osac_ci.github.snapshot import find_authorizers
+
+    fake = org("alice")
+    runs = [run("alice", started_at="2026-10-08T10:00:00Z"), run("alice", started_at="2026-10-08T11:00:00Z")]
+    assert find_authorizers(fake, "example", runs, SHA, TRUST) == ("alice",)
+    assert [c[1] for c in fake.calls] == ["/orgs/example/members/alice"]
+
+
+def test_a_newest_authorizer_who_left_the_org_is_skipped_but_the_earlier_one_stands() -> None:
+    from osac_ci.github.snapshot import find_authorizers
+
+    runs = [run("alice", started_at="2026-10-08T10:00:00Z"), run("bob", started_at="2026-10-08T11:00:00Z")]
+    assert find_authorizers(org("alice"), "example", runs, SHA, TRUST) == ("alice",)  # bob is not a member: 404
+
+
+def test_the_snapshot_carries_all_authorizers_and_the_newest_as_authorized_by() -> None:
+    # (the fake PR's author is alice, so the authorizers are other people: an org-member author needs none)
+    earlier = {**posted_auth("carol"), "started_at": "2026-10-08T09:00:00Z"}
+    later = {**posted_auth("bob"), "started_at": "2026-10-08T11:00:00Z"}
+    s = snapshot_with_runs(standard_fake(), earlier, later, org_client=org("carol", "bob"))
+    assert s.authorizers == ("bob", "carol") and s.authorized_by == "bob"

@@ -211,3 +211,9 @@ def test_unknown_changed_files_never_skip_a_path_gated_job(toy_policy) -> None: 
     unknown = plan(snap(toy_policy, changed_files=(), changed_files_known=False, check_runs=()), toy_policy)
     status = {e.check: e.status for e in known.jobs}["site"], {e.check: e.status for e in unknown.jobs}["site"]
     assert status == (JobStatus.NOT_APPLICABLE, JobStatus.WAITING)
+
+
+def test_a_planner_error_verdict_never_passes_the_enqueue_gate() -> None:
+    from osac_ci.planner import error_verdict
+
+    assert error_verdict("boom").label_gate_ok is False and error_verdict("boom", Mode.QUEUE).label_gate_ok is False
