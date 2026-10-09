@@ -202,11 +202,16 @@ on Enterprise Cloud), so a full sweep every 10 minutes would not fit. Budget it:
 - `--reserve R`: stop starting PRs once fewer than R REST requests are left. They are reported as *skipped*, not
   failed, and the next sweep picks them up. It is approximate: with several workers a few can read the same count before
   any has spent requests, so a sweep can overshoot by about the number of workers times the cost of one PR. A reserve
-  alone only protects the quota; use it with `--recent` and `--rotate` so the PRs listed last are not starved. The count comes from the response headers of the REST bucket (`core`);
+  alone only protects the quota; use it with `--recent` and `--rotate` so the PRs listed last are not starved. The recent
+  and rotated PRs are interleaved, so under quota pressure both groups keep being served and the rotation just covers
+  the backlog more slowly; the PRs left out are reported as skipped. `--limit` caps the PRs of one sweep after the
+  selection, so it never hides a PR from the rotation. The count comes from the response headers of the REST bucket (`core`);
   GraphQL has its own bucket and never stands in for it.
 
-For `osac` I would run every 30 minutes with `--recent 15 --rotate 15 --reserve 150`: about 30 PRs, 240 to 350 requests
-a sweep, 500 to 700 an hour, and the whole backlog covered in about 4 hours. Event-driven runs (PR events, `ci` finished,
+For `osac` I would run every 30 minutes with `--recent 15 --rotate 15 --reserve 150 --interval 1800`: about 30 PRs, 240
+to 350 requests a sweep, 500 to 700 an hour, and the whole backlog covered in about 4 hours. `--interval` must match the
+schedule: the rotation advances one slice per interval, so a 30-minute schedule with the default 600 seconds would skip
+two slices in three and never reach most of the backlog. Event-driven runs (PR events, `ci` finished,
 reviews) still update a PR at once; the sweep only repairs what they missed. A token with a higher limit (an app
 installation token) is the alternative if that is not enough.
 

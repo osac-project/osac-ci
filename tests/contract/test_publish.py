@@ -258,9 +258,10 @@ def test_select_prs_takes_the_most_recent_and_a_rotating_slice_of_the_rest() -> 
 
     prs = [{"number": n} for n in (50, 40, 30, 20, 10, 5, 4, 3, 2, 1)]  # newest updated first
     picks = [[p["number"] for p in select_prs(prs, recent=2, rotate=3, tick=t)] for t in range(3)]
-    assert picks[0] == [50, 40, 1, 2, 3]  # the two newest, then the others by number
-    assert picks[1] == [50, 40, 4, 5, 10]
-    assert picks[2] == [50, 40, 20, 30]  # the last slice is shorter
+    # recent and rotated alternate, so a sweep cut short by the quota still serves both
+    assert picks[0] == [50, 1, 40, 2, 3]  # the two newest, and the first slice of the others (by number)
+    assert picks[1] == [50, 4, 40, 5, 10]
+    assert picks[2] == [50, 20, 40, 30]  # the last slice is shorter
     assert [p["number"] for p in select_prs(prs, recent=2, rotate=3, tick=3)] == picks[0]  # and it wraps
 
 
@@ -289,7 +290,7 @@ def test_a_budgeted_sweep_publishes_only_the_selected_prs_and_says_it_is_partial
     fake = fake_with_publish_routes()
     open_prs(fake, [7, 6, 5, 4, 3, 2, 1])
     result = sweep(fake, READY, REPO, org="example", dry_run=True, recent=2, rotate=2, tick=0)
-    assert [o.pr for o in result] == [7, 6, 1, 2] and result.open_prs == 7
+    assert [o.pr for o in result] == [7, 1, 6, 2] and result.open_prs == 7
     assert "(this sweep covers 4 of 7 open PRs)" in describe(result)
 
 
@@ -390,3 +391,48 @@ def test_cli_still_takes_zero_for_every_sweep_value() -> None:
         ]
     )
     assert (parsed.recent, parsed.rotate, parsed.reserve, parsed.interval, parsed.limit) == (0, 0, 0, 0, 0)
+
+
+def test_a_limit_applies_after_the_selection_so_it_never_hides_a_pr_from_the_rotation() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, list(range(12, 0, -1)))  # twelve open PRs, newest first
+    # 3 rotated slices of 3 from the 9 others, tick 2 is the one holding PRs 7, 8, 9: all beyond the first ten listed
+    result = sweep(fake, READY, REPO, org="example", dry_run=True, recent=1, rotate=3, tick=2, limit=4)
+    assert [o.pr for o in result] == [12, 7, 8, 9] and result.open_prs == 12
+    assert "(this sweep covers 4 of 12 open PRs)" in describe(result)
+
+
+def test_a_limit_below_the_budget_keeps_both_kinds_of_pr() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, list(range(10, 0, -1)))
+    result = sweep(fake, READY, REPO, org="example", dry_run=True, recent=3, rotate=3, tick=0, limit=2)
+    assert [o.pr for o in result] == [10, 1]  # one recent and one rotated, not two recent
+
+
+def test_under_quota_pressure_both_kinds_of_pr_are_still_started() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [9, 8, 7, 6, 5, 4, 3, 2, 1])
+    # A PR costs 7 requests here. At 10 each, 330 left lets four PRs start above the reserve of 100, then the rest skip.
+    fake.remaining, fake.remaining_drop_per_call = 330, 10
+    result = sweep(fake, READY, REPO, org="example", dry_run=True, recent=3, rotate=3, tick=0, reserve=100, workers=1)
+    started = [o.pr for o in result if o.action != "skipped"]
+    assert started == [9, 1, 8, 2]  # recent and rotated alternate: back to back it would be [9, 8, 7] and no rotated PR
+    assert any(o.action == "skipped" for o in result)
+
+
+def test_cli_prints_the_quota_only_for_a_budgeted_sweep(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    def run_cli(*extra: str) -> str:
+        fake = fake_with_publish_routes()
+        open_prs(fake, [7, 6])
+        fake.remaining = 4000
+        monkeypatch.setattr(cli, "build_client", lambda: fake)
+        assert cli.main(["publish", *POLICY_ARGS, "--dry-run", *extra]) == 0
+        return capsys.readouterr().out
+
+    assert "requests left" not in run_cli("--number", "7")  # default output is unchanged
+    assert "requests left" not in run_cli("--all")
+    assert "requests left" not in run_cli("--all", "--limit", "1")
+    for flags in (["--recent", "1"], ["--rotate", "1"], ["--reserve", "10"]):
+        assert "requests left in this token's window: 4000" in run_cli("--all", *flags)
