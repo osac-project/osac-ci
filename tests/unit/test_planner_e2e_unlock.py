@@ -178,13 +178,29 @@ def test_the_legacy_ladder_is_untouched_by_the_reason_codes() -> None:
     assert {e.code for e in v.jobs} == {""}
 
 
-def test_the_next_action_lists_the_signals_of_every_locked_suite_once_each() -> None:
+def test_the_next_action_joins_different_suites_with_and_never_or() -> None:
     p = e2e(any_of=["coderabbit-approval"], per_suite={"bmaas/sanity": ["lgtm-label"]})
     v = plan(snap(p, labels=JIRA, check_runs=without_gates(p)), p)
-    # vmaas and caas need CodeRabbit, bmaas needs the label: all three are locked, so both signals show, once each
-    # (the order follows the jobs, which the helper's YAML round trip sorts, so it is not asserted)
-    parts = v.next_action.removeprefix("get ").split(" or ")
+    # vmaas and caas need CodeRabbit, bmaas needs the label: the PR needs BOTH, so "or" would mislead. vmaas and
+    # caas have the same requirement, listed once. (Order follows the jobs, which the helper's YAML round trip sorts.)
+    parts = v.next_action.removeprefix("get ").split(" and ")
     assert sorted(parts) == ["a CodeRabbit approval on the current commit", "the lgtm label"]
+    assert " or " not in v.next_action
+
+
+def test_alternatives_of_one_suite_stay_an_or_inside_parentheses_when_other_suites_add_requirements() -> None:
+    p = e2e(any_of=["coderabbit-approval", "lgtm-label"], per_suite={"bmaas/sanity": ["lgtm-label"]})
+    v = plan(snap(p, labels=JIRA, check_runs=without_gates(p)), p)
+    assert sorted(v.next_action.removeprefix("get ").split(" and ")) == [
+        "(a CodeRabbit approval on the current commit or the lgtm label)",
+        "the lgtm label",
+    ]
+
+
+def test_a_single_requirement_has_no_parentheses() -> None:
+    p = e2e(any_of=["coderabbit-approval", "lgtm-label"])
+    v = plan(snap(p, labels=JIRA, check_runs=without_gates(p)), p)
+    assert v.next_action == "get a CodeRabbit approval on the current commit or the lgtm label"
 
 
 def test_the_next_action_follows_only_the_suites_that_are_still_locked() -> None:

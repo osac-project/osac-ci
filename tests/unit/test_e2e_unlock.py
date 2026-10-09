@@ -5,7 +5,7 @@ from helpers import HEAD, OTHER
 
 from osac_ci.model import LabelEvent, Review, Snapshot
 from osac_ci.policy import Approval, E2EUnlock
-from osac_ci.rules.e2e_unlock import decide, describe
+from osac_ci.rules.e2e_unlock import decide, describe, describe_requirements
 
 pytestmark = pytest.mark.unit
 
@@ -190,3 +190,33 @@ def test_an_unreadable_owner_team_is_an_error_not_an_unlock() -> None:
     s = snapshot(review("bob"), codeowners="* @org/team\n", changed_files=("a.go",), team_members={"org/team": None})
     with pytest.raises(ValueError, match="cannot read the members"):
         go_with(s, Approval())
+
+
+def test_describe_requirements_uses_and_between_groups_and_or_within_one() -> None:
+    assert describe_requirements([("coderabbit-approval",)]) == "a CodeRabbit approval on the current commit"
+    assert describe_requirements([("lgtm-label", "coderabbit-approval")]) == (
+        "the lgtm label or a CodeRabbit approval on the current commit"
+    )
+    assert describe_requirements([("lgtm-label",), ("coderabbit-approval",)]) == (
+        "the lgtm label and a CodeRabbit approval on the current commit"
+    )
+    assert describe_requirements([("lgtm-label", "coderabbit-approval"), ("lgtm-label",)]) == (
+        "(the lgtm label or a CodeRabbit approval on the current commit) and the lgtm label"
+    )
+
+
+def test_the_reason_names_the_unmet_requirement_when_someone_has_validly_approved() -> None:
+    # bob approved the current changes; dave's approval is out of date; the code owner has not approved.
+    s = snapshot(
+        review("bob"), review("dave", commit=OTHER),
+        codeowners="* @alice\n", changed_files=("main.go",), change_fingerprints={HEAD: "fp", OTHER: "different"},
+    )  # fmt: skip
+    d = go_with(s, Approval())
+    assert not d.allowed
+    assert "needs an approval from a code owner (@alice)" in d.reason and "out of date" not in d.reason
+
+
+def test_the_reason_names_the_stale_approval_when_no_approval_is_valid() -> None:
+    s = snapshot(review("dave", commit=OTHER), change_fingerprints={HEAD: "fp", OTHER: "different"})
+    d = go_with(s, Approval())
+    assert not d.allowed and "approval from dave is out of date" in d.reason

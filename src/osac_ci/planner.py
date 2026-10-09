@@ -215,12 +215,11 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
             # An approval or a CodeRabbit review cannot unlock anything until the change request is resolved.
             override = (_CHANGES_REQUESTED_NEXT, "author and the reviewer who requested changes")
         elif policy.e2e.unlock.mode == "policy":
-            # Every locked suite may have its own signals: list them all, in order, without repeats.
+            # Each locked suite needs one of its own signals, so alternatives stay grouped per suite ("or") and the
+            # distinct requirements of different suites are joined with "and".
             by_check = {j.check: j for j in policy.jobs.values()}
-            signals = list(
-                dict.fromkeys(s for e in locked for s in policy.e2e.unlock.signals_for(by_check[e.check].suite))
-            )
-            override = (f"get {e2e_unlock.describe(signals)}", "reviewer")
+            groups = list(dict.fromkeys(policy.e2e.unlock.signals_for(by_check[e.check].suite) for e in locked))
+            override = (f"get {e2e_unlock.describe_requirements(groups)}", "reviewer")
         return _verdict(
             State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries, notes, native, override
         )
