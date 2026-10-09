@@ -13,6 +13,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from osac_ci import yamlio
 from osac_ci.rules.labels import QUEUE_BLOCKING_LABELS, REQUIRED_LABELS
 
 _JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -169,9 +170,9 @@ class PathFilters(_Strict):
     skipped_applicable: Literal["pass", "fail"] = Field(
         default="pass",
         description=(
-            "enforce only. What a skipped check means for a job whose filters say it applies: GitHub counts it as "
-            "passed ('pass'); 'fail' reads it as a job that did not do its work, for example a workflow changed to "
-            "skip itself"
+            "enforce only. What a skipped check means for a job that applies to the PR (its filters or globs match, or "
+            "nothing narrows it): GitHub counts it as passed ('pass'); 'fail' reads it as a job that did not do its "
+            "work, for example a workflow changed to skip itself"
         ),
     )
     file: str | None = Field(default=None, description="A ci-filters.yml-style file, relative to the policy file")
@@ -251,7 +252,7 @@ def _inside(base: Path, name: str) -> Path:
 
 def _load_filters_file(path: Path) -> dict[str, tuple[str, ...]]:
     try:
-        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw: Any = yamlio.load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise PolicyError(f"cannot read path filters file {path}: {exc}") from exc
     ok = isinstance(raw, dict) and all(
@@ -265,7 +266,7 @@ def _load_filters_file(path: Path) -> dict[str, tuple[str, ...]]:
 def parse_policy(text: str, *, base: Path | None = None) -> Policy:
     """Parse and validate a policy. ``base`` is the directory of the policy file, for ``path_filters.file``."""
     try:
-        raw = yaml.safe_load(text)
+        raw = yamlio.load(text)
     except yaml.YAMLError as exc:
         raise PolicyError(f"policy is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):

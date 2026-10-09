@@ -81,3 +81,37 @@ def test_shadow_mode_never_acts_on_the_option(osac_policy: Policy) -> None:
         policy, changed_files=("fulfillment-service/a.go",), check_runs=with_check(policy, "Run unit tests", SKIPPED)
     )
     assert plan(s, policy).state is State.READY_TO_ENQUEUE
+
+
+def test_a_job_that_runs_on_every_pr_and_was_skipped_fails(osac_policy: Policy) -> None:
+    """pre-commit has no filter at all: nothing narrows it, so a skip is a workflow that did not do its work."""
+    policy = strict(osac_policy)
+    skipped = CheckRun("pre-commit", "completed", "skipped")
+    s = snap(policy, changed_files=("docs/readme.md",), check_runs=with_check(policy, "pre-commit", skipped))
+    v = plan(s, policy)
+    assert v.state is State.CHECKS_FAILED and "pre-commit" in v.headline
+
+
+def test_a_filtered_job_with_no_file_list_keeps_its_skip(osac_policy: Policy) -> None:
+    policy = strict(osac_policy)
+    s = snap(policy, changed_files=(), check_runs=with_check(policy, "Run unit tests", SKIPPED))
+    assert plan(s, policy).state is State.READY_TO_ENQUEUE
+
+
+def test_a_glob_job_with_an_unreadable_file_list_keeps_its_skip() -> None:
+    policy = parse_policy(
+        "version: 1\nrepo: o/r\npath_filters: {mode: enforce, skipped_applicable: fail}\n"
+        "merge: {required_labels: []}\njobs: {ui: {check: ui, paths: ['ui/**']}}\n"
+    )
+    skipped = (CheckRun("ui", "completed", "skipped"),)
+    s = snap(policy, changed_files=(), changed_files_known=False, check_runs=skipped)
+    assert plan(s, policy).state is State.READY_TO_ENQUEUE
+
+
+def test_a_queue_commit_is_judged_the_same_way(osac_policy: Policy) -> None:
+    from osac_ci.model import Mode
+
+    policy = strict(osac_policy)
+    skipped = CheckRun("pre-commit", "completed", "skipped")
+    s = snap(policy, changed_files=("a.go",), check_runs=with_check(policy, "pre-commit", skipped))
+    assert plan(s, policy, Mode.QUEUE).state is State.QUEUE_FAILED
