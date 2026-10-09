@@ -22,6 +22,7 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from itertools import zip_longest
 from typing import Any
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, rate_remaining
@@ -204,7 +205,12 @@ def select_prs(
     With no budget (both ``None``) every PR. Otherwise the ``recent`` most recently updated ones (``prs`` is listed
     newest first), because activity is where a verdict goes stale, plus a slice of ``rotate`` of the others. The slice
     advances with ``tick`` (a counter that grows by one per sweep interval) and wraps, so with no other state every PR
-    is looked at within ceil(others / rotate) sweeps, as long as it stays among the others."""
+    is looked at within ceil(others / rotate) sweeps, as long as it stays among the others.
+
+    The two groups are interleaved (recent, rotated, recent, rotated, ...), not listed one after the other. A sweep that
+    runs low on requests stops starting PRs, and with the groups back to back the same recent PRs would always start
+    first and every rotated PR would be skipped for good. Interleaved, both keep being served while the quota lasts;
+    under pressure the rotation just covers the backlog more slowly, and the PRs left out are reported as skipped."""
     if recent is None and rotate is None:
         return list(prs)
     recent = max(0, recent or 0)  # a negative count must never slice from the end
@@ -215,7 +221,9 @@ def select_prs(
         return first
     slices = -(-len(others) // rotate)
     start = (tick % slices) * rotate
-    return first + others[start : start + rotate]
+    rotated = others[start : start + rotate]
+    mixed = [pr for pair in zip_longest(first, rotated) for pr in pair if pr is not None]
+    return mixed
 
 
 def sweep(
@@ -245,10 +253,10 @@ def sweep(
     The reserve is approximate: with several workers, a few can read the same remaining count before any of them has
     spent requests, so a sweep can overshoot it by about ``workers`` times the cost of one PR (7 to 11 requests)."""
     prs = list_open_prs(client, repo, include_drafts=True)
-    if limit is not None:
-        prs = prs[:limit]
     open_prs = len(prs)
     prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick)
+    if limit is not None:
+        prs = prs[:limit]  # after the selection: truncating first would hide every PR past the limit from the rotation
 
     def one(pr: dict[str, Any]) -> Outcome:
         number = pr["number"]

@@ -270,8 +270,10 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         print(describe(outcomes), end="")
         left = rate_remaining(client)
-        if left is not None:
-            print(f"requests left in this token's window: {left}")
+        if left is not None and args.all and (args.recent is not None or args.rotate is not None or args.reserve):
+            print(
+                f"requests left in this token's window: {left}"
+            )  # only for a budgeted sweep: other output is unchanged
         return 1 if any(o.action == "failed" for o in outcomes) else 0
 
     if args.command == "publish-queue":
