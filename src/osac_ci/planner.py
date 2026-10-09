@@ -307,4 +307,5 @@ def plan_or_error(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> V
 
 def error_verdict(message: str, mode: Mode = Mode.PR) -> Verdict:
     """The verdict for anything that stops the planner from answering, including failing to read the PR."""
-    return _verdict(State.PLANNER_ERROR, f"planner error: {message}", mode, (), ())
+    # Fail closed: a planner that could not decide must never read as "the enqueue gate held" (replays use this flag).
+    return replace(_verdict(State.PLANNER_ERROR, f"planner error: {message}", mode, (), ()), label_gate_ok=False)

@@ -240,3 +240,31 @@ def test_cli_replay_takes_an_at_flag(monkeypatch: pytest.MonkeyPatch, capsys: py
         ["replay", "--policy", "policy/toy.yml", "--repo", REPO, "--org", "example", "--at", "enqueue", "--json"]
     )
     assert code == 0 and json.loads(capsys.readouterr().out)["at"] == "enqueue"
+
+
+def test_a_planner_error_never_counts_as_the_enqueue_gate_holding(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Fail closed: a crash while judging a queue-merged PR must show up as a disagreement, not as agreement.
+    import osac_ci.planner as planner
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("the planner broke")
+
+    monkeypatch.setattr(planner, "plan", boom)
+    events = [ev("labeled", "2026-10-06T09:30:00Z", "approved"), *QUEUED]
+    for at in ("enqueue", "final"):
+        row = one(events, GREEN, at=at)
+        assert row.state is State.PLANNER_ERROR and not row.agrees and row.unexplained
+
+
+def test_cli_replay_exits_1_when_the_planner_errors_on_a_queue_merged_pr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import osac_ci.planner as planner
+
+    monkeypatch.setattr(planner, "plan", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("the planner broke")))
+    monkeypatch.setattr(
+        cli, "build_client", lambda: world([ev("labeled", "2026-10-06T09:30:00Z", "approved"), *QUEUED], GREEN)
+    )
+    monkeypatch.setattr(cli, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: NOW)}))
+    code = cli.main(["replay", "--policy", "policy/toy.yml", "--repo", REPO, "--org", "example", "--at", "enqueue"])
+    assert code == 1 and "UNEXPLAINED: 1" in capsys.readouterr().out
