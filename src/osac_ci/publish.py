@@ -198,7 +198,7 @@ def publish_queue(
 
 
 def select_prs(
-    prs: Sequence[dict[str, Any]], *, recent: int | None, rotate: int | None, tick: int
+    prs: Sequence[dict[str, Any]], *, recent: int | None, rotate: int | None, tick: int, limit: int | None = None
 ) -> list[dict[str, Any]]:
     """Which open PRs one sweep looks at.
 
@@ -210,18 +210,32 @@ def select_prs(
     The two groups are interleaved (recent, rotated, recent, rotated, ...), not listed one after the other. A sweep that
     runs low on requests stops starting PRs, and with the groups back to back the same recent PRs would always start
     first and every rotated PR would be skipped for good. Interleaved, both keep being served while the quota lasts;
-    under pressure the rotation just covers the backlog more slowly, and the PRs left out are reported as skipped."""
+    under pressure the rotation just covers the backlog more slowly, and the PRs left out are reported as skipped.
+
+    ``limit`` caps the whole sweep and is shared between the two groups the same way (half each, with what one group
+    cannot use going to the other). The rotated slice is then only as long as the limit lets through, so the rotation
+    still steps through every PR of the others: truncating the interleaved list afterwards would process the first
+    PR of each slice and never reach the rest."""
     if recent is None and rotate is None:
-        return list(prs)
+        return list(prs) if limit is None else list(prs[: max(0, limit)])
     recent = max(0, recent or 0)  # a negative count must never slice from the end
     rotate = max(0, rotate or 0)
-    first = list(prs[:recent])
+    take_recent, take_rotate = recent, rotate
+    if limit is not None:
+        limit = max(0, limit)
+        if rotate and recent:
+            take_recent = min(recent, -(-limit // 2))
+            take_rotate = min(rotate, limit - take_recent)
+            take_recent = min(recent, limit - take_rotate)  # what the rotated group cannot use goes to the recent one
+        else:
+            take_recent, take_rotate = min(recent, limit), min(rotate, limit)
+    first = list(prs[:recent][:take_recent])
     others = sorted(prs[recent:], key=lambda pr: pr["number"])
-    if not rotate or not others:
+    if not take_rotate or not others:
         return first
-    slices = -(-len(others) // rotate)
-    start = (tick % slices) * rotate
-    rotated = others[start : start + rotate]
+    slices = -(-len(others) // take_rotate)
+    start = (tick % slices) * take_rotate
+    rotated = others[start : start + take_rotate]
     mixed = [pr for pair in zip_longest(first, rotated) for pr in pair if pr is not None]
     return mixed
 
@@ -254,9 +268,7 @@ def sweep(
     spent requests, so a sweep can overshoot it by about ``workers`` times the cost of one PR (7 to 11 requests)."""
     prs = list_open_prs(client, repo, include_drafts=True)
     open_prs = len(prs)
-    prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick)
-    if limit is not None:
-        prs = prs[:limit]  # after the selection: truncating first would hide every PR past the limit from the rotation
+    prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick, limit=limit)
 
     def one(pr: dict[str, Any]) -> Outcome:
         number = pr["number"]

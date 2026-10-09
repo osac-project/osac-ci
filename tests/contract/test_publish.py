@@ -436,3 +436,50 @@ def test_cli_prints_the_quota_only_for_a_budgeted_sweep(
     assert "requests left" not in run_cli("--all", "--limit", "1")
     for flags in (["--recent", "1"], ["--rotate", "1"], ["--reserve", "10"]):
         assert "requests left in this token's window: 4000" in run_cli("--all", *flags)
+
+
+def test_a_small_limit_shrinks_the_rotated_slice_so_every_pr_is_still_reached() -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in range(12, 0, -1)]  # recent 3 -> 12, 11, 10; the 9 others are 1..9
+    reached: set[int] = set()
+    for tick in range(9):
+        picked = [p["number"] for p in select_prs(prs, recent=3, rotate=3, tick=tick, limit=2)]
+        assert len(picked) == 2 and picked[0] == 12  # one recent, one rotated
+        reached.add(picked[1])
+    assert reached == set(range(1, 10))  # truncating afterwards would only ever reach 1, 4 and 7
+
+
+@pytest.mark.parametrize(
+    ("recent", "rotate", "limit", "sizes"),
+    [
+        (3, 3, 2, (1, 1)),
+        (3, 3, 3, (2, 1)),  # an odd limit gives the extra one to the recent group
+        (3, 3, 6, (3, 3)),
+        (3, 3, 100, (3, 3)),  # a limit above the budget changes nothing
+        (5, 1, 4, (3, 1)),  # the rotated group cannot use its half, so the recent group gets the rest
+        (1, 5, 4, (1, 3)),
+        (3, 0, 2, (2, 0)),
+        (0, 3, 2, (0, 2)),
+        (3, 3, 0, (0, 0)),
+    ],
+)
+def test_the_limit_is_shared_between_the_two_groups(
+    recent: int, rotate: int, limit: int, sizes: tuple[int, int]
+) -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in range(30, 0, -1)]
+    picked = [p["number"] for p in select_prs(prs, recent=recent, rotate=rotate, tick=0, limit=limit)]
+    recent_numbers = {p["number"] for p in prs[:recent]}
+    assert (sum(n in recent_numbers for n in picked), sum(n not in recent_numbers for n in picked)) == sizes
+    assert len(picked) <= limit
+
+
+def test_a_limit_without_a_budget_still_caps_the_sweep() -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in (5, 4, 3, 2, 1)]
+    assert select_prs(prs, recent=None, rotate=None, tick=0, limit=2) == prs[:2]
+    assert select_prs(prs, recent=None, rotate=None, tick=0, limit=0) == []
+    assert select_prs(prs, recent=None, rotate=None, tick=0) == prs
