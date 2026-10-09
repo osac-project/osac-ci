@@ -375,6 +375,16 @@ job that applies to the PR (its filters or globs match, or nothing narrows it, a
 instead of passed. A readiness-gated E2E job is exempt, since it is
 skipped on purpose until it is unlocked.
 
+### Mandatory for one folder only
+
+A job with `paths` is required only when a changed file matches, so a check can be mandatory for exactly the folder it
+belongs to and never wait for anything else. In `policy/osac.yml` the `osac-ui` lint, proxy lint, typecheck and unit tests
+work this way: an `osac-ui` change must pass them, and a backend-only change is never held up by them (they are
+`not-applicable`). The ruleset lists its checks unconditionally and relies on every workflow reporting a skip as a pass;
+a folder-scoped job needs neither. Those workflows run on `pull_request` with a trigger-level `paths:` and never on the
+merge queue, so the jobs are required at `pr` time only (`required_at: [pr]`); requiring them on the queue commit would
+wait for checks that never report.
+
 ### Who may use secrets and start expensive jobs (`trust:`)
 
 A PR from a fork may use secrets, and start E2E, when its author is an org member, the fork is owned by an org member,

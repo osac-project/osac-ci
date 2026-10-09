@@ -34,6 +34,10 @@
   | integration-aap | Run integration test (osac-aap) | passed | passed |
   | integration-installer | Run integration test (osac-installer) | passed | passed |
   | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | osac-ui-lint | Lint | not-applicable | no changed file matches this job's paths |
+  | osac-ui-lint-proxy | Lint proxy (Go) | not-applicable | no changed file matches this job's paths |
+  | osac-ui-typecheck | Typecheck | not-applicable | no changed file matches this job's paths |
+  | unit-tests-osac-ui | Run unit tests (osac-ui) | not-applicable | no changed file matches this job's paths |
   | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
   | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
   | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |
@@ -75,6 +79,10 @@
   | integration-aap | Run integration test (osac-aap) | passed | passed |
   | integration-installer | Run integration test (osac-installer) | passed | passed |
   | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | osac-ui-lint | Lint | not-applicable | no changed file matches this job's paths |
+  | osac-ui-lint-proxy | Lint proxy (Go) | not-applicable | no changed file matches this job's paths |
+  | osac-ui-typecheck | Typecheck | not-applicable | no changed file matches this job's paths |
+  | unit-tests-osac-ui | Run unit tests (osac-ui) | not-applicable | no changed file matches this job's paths |
   | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
   | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
   | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |
@@ -123,6 +131,10 @@
   | integration-aap | Run integration test (osac-aap) | passed | passed |
   | integration-installer | Run integration test (osac-installer) | passed | passed |
   | integration-bmf | Run integration test (bare-metal-fulfillment-operator) | passed | passed |
+  | osac-ui-lint | Lint | not-applicable | no changed file matches this job's paths |
+  | osac-ui-lint-proxy | Lint proxy (Go) | not-applicable | no changed file matches this job's paths |
+  | osac-ui-typecheck | Typecheck | not-applicable | no changed file matches this job's paths |
+  | unit-tests-osac-ui | Run unit tests (osac-ui) | not-applicable | no changed file matches this job's paths |
   | helm-lint-installer | Lint Helm charts (osac-installer) | passed | passed |
   | helm-crd-sync-operator | Check Helm CRD sync (osac-operator) | passed | passed |
   | helm-crd-sync-bmf | Check Helm CRD sync (bare-metal-fulfillment-operator) | passed | passed |

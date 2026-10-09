@@ -40,7 +40,7 @@ def test_snapshot_from_dict_rejects_unknown_keys() -> None:
 def test_cli_policy_check_and_explain(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     policy = str(ROOT / "policy" / "osac.yml")
     assert main(["policy", "check", policy]) == 0
-    assert "25 jobs" in capsys.readouterr().out
+    assert "29 jobs" in capsys.readouterr().out
 
     snapshot_file = tmp_path / "s.json"
     snapshot_file.write_text(

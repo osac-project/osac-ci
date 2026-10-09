@@ -6,7 +6,7 @@ import pytest
 from helpers import snap
 
 from osac_ci.model import CheckRun, JobStatus, State
-from osac_ci.paths import filters_hold
+from osac_ci.paths import applicable, filters_hold
 from osac_ci.planner import plan
 from osac_ci.policy import Policy, PolicyError, load_policy, parse_policy
 
@@ -259,9 +259,13 @@ def applicable_jobs(osac_policy: Policy, *files: str) -> set[str]:
     """Jobs whose named filters hold for these files, as the workflows' `if:` expressions would decide."""
     out = set()
     for job_id, job in osac_policy.jobs.items():
-        if not (job.filters or job.filters_any) or filters_hold(
-            files, osac_policy.path_filters.filters, job.filters, job.filters_any
-        ):
+        if job.paths:  # a folder-scoped job (osac-ui) uses globs, not the shared filters
+            holds = applicable(files, job.paths, job.exclude_paths)
+        else:
+            holds = not (job.filters or job.filters_any) or filters_hold(
+                files, osac_policy.path_filters.filters, job.filters, job.filters_any
+            )
+        if holds:
             out.add(job_id)
     return out
 
@@ -308,5 +312,5 @@ def test_the_installer_helm_job_runs_for_any_chart_change(osac_policy: Policy) -
 
 
 def test_every_job_but_two_names_filters_and_the_defaults_are_shadow(osac_policy: Policy) -> None:
-    unfiltered = {j for j, job in osac_policy.jobs.items() if not (job.filters or job.filters_any)}
+    unfiltered = {j for j, job in osac_policy.jobs.items() if not (job.filters or job.filters_any or job.paths)}
     assert unfiltered == ALWAYS and osac_policy.path_filters.mode == "shadow"

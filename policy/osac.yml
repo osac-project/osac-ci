@@ -2,7 +2,8 @@
 #
 # Encodes the merge-required contexts of the live `ci-status-checks` ruleset (26). `check-labels` is not a job
 # here: its meaning lives in `merge:` below, so a missing label is reported as "awaiting approval" rather than as a
-# failed check. tests/unit/test_osac_policy.py proves jobs + check-labels == the recorded ruleset.
+# failed check. tests/unit/test_osac_policy.py proves that, leaving out the folder-scoped jobs (osac-ui below), jobs +
+# check-labels == the recorded ruleset.
 #
 # Path filters: each workflow decides today whether it applies with dorny/paths-filter on the shared ci-filters.yml
 # and reports a skipped or green check, so the planner reads the outcome. Each job below names the filters its
@@ -88,6 +89,14 @@ jobs:
   integration-bmf:
     check: "Run integration test (bare-metal-fulfillment-operator)"
     filters: [code, integration-tests-bare-metal-fulfillment-operator]
+
+  # Required only for the folder they belong to. These workflows run on pull_request with a trigger-level `paths:` and
+  # never on the merge queue, so they are required at pr time only. They are not in the ruleset's 26: today a broken
+  # osac-ui lint or typecheck does not block the merge. Listing them makes them mandatory exactly when osac-ui changes.
+  osac-ui-lint: {check: Lint, paths: ["osac-ui/**"], required_at: [pr]}
+  osac-ui-lint-proxy: {check: "Lint proxy (Go)", paths: ["osac-ui/**"], required_at: [pr]}
+  osac-ui-typecheck: {check: Typecheck, paths: ["osac-ui/**"], required_at: [pr]}
+  unit-tests-osac-ui: {check: "Run unit tests (osac-ui)", paths: ["osac-ui/**"], required_at: [pr]}
 
   helm-lint-installer:
     check: "Lint Helm charts (osac-installer)"

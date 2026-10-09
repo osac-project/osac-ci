@@ -14,8 +14,13 @@ def _ruleset_contexts() -> set[str]:
     return {c["context"] for c in rule["parameters"]["required_status_checks"]}
 
 
+def _folder_scoped(job) -> bool:  # type: ignore[no-untyped-def]
+    """Jobs the policy requires only when their folder changes; they are not in the ruleset."""
+    return bool(job.paths) and job.required_at == ("pr",)
+
+
 def test_policy_checks_plus_check_labels_equal_the_recorded_ruleset(osac_policy) -> None:  # type: ignore[no-untyped-def]
-    policy_contexts = {job.check for job in osac_policy.jobs.values()} | {"check-labels"}
+    policy_contexts = {job.check for job in osac_policy.jobs.values() if not _folder_scoped(job)} | {"check-labels"}
     assert policy_contexts == _ruleset_contexts()
     assert len(_ruleset_contexts()) == 26
 
@@ -28,3 +33,10 @@ def test_exactly_three_cost_gated_e2e_jobs(osac_policy) -> None:  # type: ignore
     e2e = {j.check for j in osac_policy.jobs.values() if j.kind == "e2e"}
     assert e2e == {"e2e-vmaas-gate", "e2e-caas-gate", "e2e-bmaas-gate"}
     assert all(j.needs_readiness for j in osac_policy.jobs.values() if j.kind == "e2e")
+
+
+def test_the_only_jobs_beyond_the_ruleset_are_the_osac_ui_ones(osac_policy) -> None:  # type: ignore[no-untyped-def]
+    extra = {j.check for j in osac_policy.jobs.values() if _folder_scoped(j)}
+    assert extra == {"Lint", "Lint proxy (Go)", "Typecheck", "Run unit tests (osac-ui)"}
+    assert extra.isdisjoint(_ruleset_contexts())
+    assert all(j.paths == ("osac-ui/**",) for j in osac_policy.jobs.values() if _folder_scoped(j))
