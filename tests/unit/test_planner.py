@@ -203,3 +203,11 @@ def test_label_event_fixture_types(osac_policy) -> None:  # type: ignore[no-unty
         snap(osac_policy, labels=OK_LABELS - {"lgtm"} | {"approved"}, label_events=events, check_runs=runs), osac_policy
     )
     assert v.state is State.AWAITING_APPROVAL  # lgtm label itself is still a merge requirement
+
+
+def test_unknown_changed_files_never_skip_a_path_gated_job(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    # toy's `site` job needs docs/**. With the file list unknown (a commit over the compare cap) it must still count.
+    known = plan(snap(toy_policy, changed_files=("a.go",), check_runs=()), toy_policy)
+    unknown = plan(snap(toy_policy, changed_files=(), changed_files_known=False, check_runs=()), toy_policy)
+    status = {e.check: e.status for e in known.jobs}["site"], {e.check: e.status for e in unknown.jobs}["site"]
+    assert status == (JobStatus.NOT_APPLICABLE, JobStatus.WAITING)

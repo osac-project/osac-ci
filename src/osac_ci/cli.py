@@ -24,11 +24,11 @@ from typing import Any
 
 from osac_ci.authorize import authorize, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response
-from osac_ci.github.snapshot import fetch_snapshot
+from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
-from osac_ci.publish import CHECK_NAME, describe, publish_pr, sweep
+from osac_ci.publish import CHECK_NAME, describe, publish_pr, publish_queue, sweep
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
@@ -148,6 +148,15 @@ def _parser() -> argparse.ArgumentParser:
         "--lookup-membership", action="store_true", help="look up org membership (needs an org-scoped token)"
     )
 
+    que = sub.add_parser("publish-queue", help="post the verdict of a merge-queue commit as the OSAC CI check run")
+    que.add_argument("--policy", type=Path, required=True)
+    que.add_argument("--repo", required=True, help="owner/name")
+    que.add_argument("--sha", required=True, help="the queue commit (40 hex digits)")
+    que.add_argument("--branch", required=True, help="the queue branch, gh-readonly-queue/<base>/pr-<n>-<sha>")
+    que.add_argument("--check-name", default=CHECK_NAME)
+    que.add_argument("--note", default="")
+    que.add_argument("--dry-run", action="store_true")
+
     auth = sub.add_parser(
         "authorize", help="handle an /ok-to-test <sha> comment (the comment text is read from the environment)"
     )
@@ -228,6 +237,28 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         print(describe(outcomes), end="")
         return 1 if any(o.action == "failed" for o in outcomes) else 0
+
+    if args.command == "publish-queue":
+        base = parse_queue_branch(args.branch)
+        if base is None:
+            print(f"error: {args.branch!r} is not a merge-queue branch", file=sys.stderr)
+            return 2
+        try:
+            outcome = publish_queue(
+                build_client(),
+                policy,
+                args.repo,
+                args.sha,
+                base,
+                check_name=args.check_name,
+                note=args.note,
+                dry_run=args.dry_run,
+            )
+        except (GitHubError, ValueError) as exc:
+            print(f"error: publish-queue failed: {exc}", file=sys.stderr)
+            return 3
+        print(describe([outcome]), end="")
+        return 0
 
     if args.command == "authorize":
         try:

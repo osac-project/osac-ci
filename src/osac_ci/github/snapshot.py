@@ -68,6 +68,17 @@ def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun]
     return ""
 
 
+# A merge-queue entry lives on a branch GitHub creates: gh-readonly-queue/<base branch>/pr-<number>-<head sha>.
+QUEUE_BRANCH = re.compile(r"^gh-readonly-queue/(?P<base>.+)/pr-(?P<number>\d+)-(?P<sha>[0-9a-f]{40})$")
+COMMIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def parse_queue_branch(name: str) -> str | None:
+    """The base branch of a merge-queue branch name, or ``None`` when the name is not one."""
+    found = QUEUE_BRANCH.match(name)
+    return found["base"] if found else None
+
+
 QUEUE_BOT = "github-merge-queue[bot]"
 _CLEANUP_WINDOW = timedelta(seconds=2)
 
@@ -206,6 +217,40 @@ def _review(raw: dict[str, Any]) -> Review | None:
         submitted_at=raw.get("submitted_at"),
         id=raw.get("id"),
         commit_id=raw.get("commit_id"),
+    )
+
+
+def fetch_queue_snapshot(client: GitHubClient, repo: str, sha: str, base_ref: str) -> Snapshot:
+    """What the planner needs to judge a merge-queue commit: the checks on it and the files the queue group changes.
+
+    A queue commit is not a pull request, so there are no labels, reviews or authors to read. The changed files are the
+    difference to the base branch, which covers every PR stacked in the entry. When that list cannot be read completely
+    (the compare API stops at 300 files) it is marked unknown so that no job is skipped on a guess."""
+    repo = check_repo(repo)
+    if not COMMIT_SHA.match(sha):
+        raise ValueError(f"invalid commit sha: {sha!r}")
+    runs = tuple(
+        CheckRun(
+            raw["name"],
+            raw["status"],
+            raw.get("conclusion"),
+            raw.get("started_at"),
+            raw.get("external_id") or "",
+            (raw.get("app") or {}).get("slug", ""),
+        )
+        for raw in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
+    )
+    response = client.request("GET", f"/repos/{repo}/compare/{_quote(base_ref)}...{sha}", params={"per_page": "1"})
+    files = response.data.get("files") if response.status == 200 and isinstance(response.data, dict) else None
+    known = files is not None and len(files) < _COMPARE_FILE_CAP
+    return Snapshot(
+        repo=repo,
+        number=0,
+        head_sha=sha,
+        check_runs=runs,
+        changed_files=tuple(f["filename"] for f in files) if known and files else (),
+        changed_files_known=known,
+        base_ref=base_ref,
     )
 
 

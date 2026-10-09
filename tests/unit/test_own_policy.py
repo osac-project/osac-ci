@@ -119,3 +119,34 @@ def test_a_command_can_never_be_cancelled_by_another_comment_or_run() -> None:
     }
     assert "issue.number" not in workflow["concurrency"]["group"]
     assert not _workflow("osac-ci-check.yml")["concurrency"]["group"].startswith("osac-ci-authorize-")
+
+
+def test_the_queue_workflow_runs_from_check_run_events_with_the_built_in_token_only() -> None:
+    path = ROOT / ".github" / "workflows" / "osac-ci-queue.yml"
+    workflow = _workflow("osac-ci-queue.yml")
+    triggers = _triggers(workflow)
+    assert set(triggers) == {"check_run", "workflow_dispatch"} and triggers["check_run"] == {"types": ["completed"]}
+    # a merge_group workflow would run the file from the queue commit, which holds the PR's own changes
+    assert "merge_group" not in triggers and "pull_request_target" not in triggers
+    job = workflow["jobs"]["publish"]
+    text = path.read_text(encoding="utf-8")
+    assert "environment" not in job and "secrets." not in text  # no org key: a queue commit needs no org lookups
+    assert job["permissions"] == {"contents": "read", "checks": "write"}
+    checkouts = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkouts and all(s["with"]["ref"] == "${{ github.event.repository.default_branch }}" for s in checkouts)
+
+
+def test_the_queue_workflow_only_reacts_to_queue_branches_and_never_to_its_own_checks() -> None:
+    cond = _workflow("osac-ci-queue.yml")["jobs"]["publish"]["if"]
+    assert "startsWith(github.event.check_run.check_suite.head_branch, 'gh-readonly-queue/')" in cond
+    assert "github.event.check_run.name != 'OSAC CI'" in cond  # else our own post would trigger another run
+    assert "github.event.check_run.name != 'OSAC CI authorization'" in cond
+
+
+def test_the_queue_workflow_passes_event_values_as_environment_and_groups_runs_by_commit() -> None:
+    workflow = _workflow("osac-ci-queue.yml")
+    step = next(s for s in workflow["jobs"]["publish"]["steps"] if s.get("name", "").startswith("Post the verdict"))
+    assert "${{" not in step["run"] and "github.event" not in step["run"]
+    assert step["env"]["SHA"] == "${{ github.event.check_run.head_sha || inputs.sha }}"
+    assert step["env"]["BRANCH"] == "${{ github.event.check_run.check_suite.head_branch || inputs.branch }}"
+    assert workflow["concurrency"]["group"] == "osac-ci-queue-${{ github.event.check_run.head_sha || inputs.sha }}"

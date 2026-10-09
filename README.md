@@ -146,6 +146,7 @@ named `OSAC CI` on its head commit (`--dry-run` prints instead of posting).
 | checks or E2E running | `in_progress` | machines are working |
 | awaiting approval, needs authorization, draft, a check failed | `completed / action_required` | a person acts; blocked but not red, and the summary says why |
 | planner failed | `completed / failure` | fail closed, with the cause and a re-run hint |
+| queue commit: required checks passed / pending / one failed | `success` / `in_progress` / `failure` | see below |
 
 The newest check run of a name decides, so publishing again repairs a stale verdict, and an unchanged verdict is not
 posted twice. `.github/workflows/osac-ci-check.yml` runs it for this repository's own PRs (policy
@@ -160,6 +161,26 @@ Without the token the owner requirement cannot be checked and the verdict is a p
 
 Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's;
 the next event or sweep corrects it.
+
+## Merge-queue commits
+
+The queue runs the required checks on its own commit (`gh-readonly-queue/<base>/pr-<n>-<sha>`) and waits for all of
+them, so a required `OSAC CI` has to be reported on that commit too, or the entry waits for its timeout (measured in
+the sandbox). `osac-ci publish-queue --repo R --sha SHA --branch BRANCH` evaluates the commit in queue mode (the jobs
+required at `queue`; the files are the difference to the base branch, so they cover every PR in the entry) and posts
+the verdict on it:
+
+- `success` once every required check passed, `in_progress` while one is pending or has not reported,
+- `failure` when one failed. This one is red on purpose: an `action_required` check would leave the entry waiting for
+  its timeout instead of being ejected at once.
+- A commit that cannot be read is a visible `failure` naming the cause, never a pass. When the list of changed files
+  cannot be read completely (the compare API stops at 300 files) no path-gated job is skipped on a guess.
+
+`.github/workflows/osac-ci-queue.yml` runs it on `check_run` events of queue branches, which fire exactly when a
+required check completes and always run the workflow from the default branch. It uses the built-in token only (no
+secret, no organization lookups) and ignores its own checks. A `merge_group` workflow is deliberately not used: it would
+run the file from the queue commit, which holds the pull request's own changes. `workflow_dispatch` takes a commit
+and a queue branch for a manual run.
 
 ## Open-PR report
 

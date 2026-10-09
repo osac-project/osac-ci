@@ -15,9 +15,11 @@ def test_every_state_has_exactly_one_outcome() -> None:
     assert set(OUTCOME) == set(State)
 
 
-def test_only_a_planner_failure_is_red() -> None:
+def test_only_real_failures_are_red() -> None:
     red = {s for s, (_, c) in OUTCOME.items() if c == "failure"}
-    assert red == {State.PLANNER_ERROR}
+    # A broken planner, and a failed required check on a queue commit: there it must be red so the queue ejects the
+    # entry at once instead of waiting for its timeout on an action_required check.
+    assert red == {State.PLANNER_ERROR, State.QUEUE_FAILED}
 
 
 def test_a_blocked_pr_never_reports_success_or_neutral() -> None:
@@ -28,7 +30,6 @@ def test_a_blocked_pr_never_reports_success_or_neutral() -> None:
         State.AWAITING_APPROVAL,
         State.AWAITING_E2E_SIGNAL,
         State.E2E_FAILED,
-        State.QUEUE_FAILED,
     }
     assert all(OUTCOME[s] == ("completed", "action_required") for s in blocked)
 
