@@ -204,8 +204,9 @@ on Enterprise Cloud), so a full sweep every 10 minutes would not fit. Budget it:
   any has spent requests, so a sweep can overshoot by about the number of workers times the cost of one PR. A reserve
   alone only protects the quota; use it with `--recent` and `--rotate` so the PRs listed last are not starved. The recent
   and rotated PRs are interleaved, so under quota pressure both groups keep being served and the rotation just covers
-  the backlog more slowly; the PRs left out are reported as skipped. `--limit` caps the PRs of one sweep after the
-  selection, so it never hides a PR from the rotation. The count comes from the response headers of the REST bucket (`core`);
+  the backlog more slowly; the PRs left out are reported as skipped. `--limit` caps the PRs of one sweep and is
+  shared between the two groups, so the rotated slice shrinks to what the limit allows and the rotation still steps
+  through every PR instead of stopping at the first of each slice. The count comes from the response headers of the REST bucket (`core`);
   GraphQL has its own bucket and never stands in for it.
 
 For `osac` I would run every 30 minutes with `--recent 15 --rotate 15 --reserve 150 --interval 1800`: about 30 PRs, 240
