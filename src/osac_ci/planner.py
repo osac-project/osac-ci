@@ -173,7 +173,7 @@ def _verdict(
     next_override: tuple[str, str] | None = None,
 ) -> Verdict:
     next_action, who = next_override or _NEXT[state]
-    if native_approval and state is State.AWAITING_APPROVAL:
+    if native_approval and state is State.AWAITING_APPROVAL and next_override is None:
         next_action, who = _NATIVE_APPROVAL_NEXT
     return Verdict(state, headline, next_action, who, mode, blockers, jobs, notes)
 

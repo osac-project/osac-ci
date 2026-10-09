@@ -252,3 +252,13 @@ def test_an_unreadable_approver_team_is_kept_as_unknown_not_empty() -> None:
     rule = ProtectedPaths(paths=("docs/**",), approvers=("@example/infra",))
     s = fetch_snapshot(standard_fake(), REPO, 7, org="example", protected=(rule,))  # no route: the team is unreadable
     assert s.team_members == {"example/infra": None}
+
+
+def test_a_team_slug_that_is_a_path_segment_is_unreadable_not_looked_up() -> None:
+    from osac_ci.github.snapshot import fetch_team_members
+
+    fake = FakeGitHub()
+    fake.add("GET", "/orgs/example/members", [{"login": "everyone"}])
+    for slug in ("..", ".", "a/b", ""):
+        assert fetch_team_members(fake, f"example/{slug}") is None
+    assert fake.calls == []
