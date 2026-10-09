@@ -19,7 +19,7 @@ from osac_ci.github.snapshot import (
     find_overrides,
     override_external_id,
 )
-from osac_ci.model import CheckRun, OverrideGrant
+from osac_ci.model import OverrideGrant
 from osac_ci.policy import Override, Policy, ProtectedPaths, parse_policy
 
 pytestmark = pytest.mark.contract
@@ -83,61 +83,65 @@ def test_an_unreadable_owners_file_is_kept_as_none() -> None:
 # ---- reading an override back -------------------------------------------------------------------------------------
 
 
-def run(login: str = "dave", sha: str = SHA, reason: str = REASON, **kw: Any) -> CheckRun:
+def comment(
+    login: str = "dave", sha: str = SHA, reason: str = REASON, *, at: str = "2026-10-08T10:00:00Z", **kw: Any
+) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "name": "OSAC CI override", "status": "completed", "conclusion": "success", "app": "github-actions",
-        "external_id": override_external_id(login, sha), "started_at": "2026-10-08T10:00:00Z",
-        "title": f"{OVERRIDE_TITLE_PREFIX}{login}: {reason}",
-    }  # fmt: skip
+        "user": {"login": login, "type": "User"},
+        "body": f"/override {sha} {reason}",
+        "created_at": at,
+        "updated_at": at,
+    }
     base.update(kw)
-    return CheckRun(**base)
+    return base
 
 
 ALLOWED = {"dave", "erin"}
 
 
 def test_a_valid_override_is_found_with_its_reason() -> None:
-    assert find_overrides([run()], SHA, OVERRIDE, ALLOWED, "alice") == (OverrideGrant("dave", REASON),)
+    assert find_overrides([comment()], SHA, ALLOWED, "alice") == (OverrideGrant("dave", REASON),)
 
 
 @pytest.mark.parametrize(
     "bad",
     [
-        run(name="something else"),
-        run(conclusion="failure"),
-        run(status="in_progress"),
-        run(app="some-other-app"),  # only the workflow's built-in token counts
-        run(sha="d" * 40),  # an override of another commit
-        run(login="mallory"),  # not an approver
-        run(external_id=""),
-        run(external_id=f"osac-ci-override:v2:dave:{SHA}"),
-        run(external_id=f"osac-ci-override:v1:../../x:{SHA}"),
-        run(external_id=f"osac-ci-auth:v1:dave:{SHA}"),  # an /ok-to-test authorization is not an override
+        comment(sha="d" * 40),  # an override of another commit
+        comment(login="mallory"),  # not an approver
+        comment(body=f"/override {SHA[:7]} {REASON}"),  # a prefix is forgeable
+        comment(body=f"/override {SHA}"),  # no reason
+        comment(body=f"/override {SHA} short"),
+        comment(body=f"please /override {SHA} {REASON}"),
+        comment(body=f"/ok-to-test {SHA}"),
+        comment(body=""),
+        comment(user={"login": "dave", "type": "Bot"}),  # a bot account is never a person
+        comment(user=None),
+        comment(updated_at="2026-10-08T11:00:00Z"),  # edited since it was written
     ],
 )
-def test_anything_else_is_not_an_override(bad: CheckRun) -> None:
-    assert find_overrides([bad], SHA, OVERRIDE, ALLOWED, "alice") == ()
+def test_anything_else_is_not_an_override(bad: dict[str, Any]) -> None:
+    assert find_overrides([bad], SHA, ALLOWED, "alice") == ()
 
 
 def test_the_authors_own_override_does_not_count() -> None:
-    assert find_overrides([run("dave")], SHA, OVERRIDE, ALLOWED, "Dave") == ()
+    assert find_overrides([comment("dave")], SHA, ALLOWED, "Dave") == ()
 
 
 def test_an_approver_who_has_since_left_the_team_no_longer_counts() -> None:
-    assert find_overrides([run("dave")], SHA, OVERRIDE, {"erin"}, "alice") == ()
+    assert find_overrides([comment("dave")], SHA, {"erin"}, "alice") == ()
+
+
+def test_a_comment_from_an_approver_is_matched_without_regard_to_case_of_the_login() -> None:
+    (grant,) = find_overrides([comment("Dave")], SHA, ALLOWED, "alice")
+    assert grant.login == "Dave"
 
 
 def test_the_newest_comes_first_and_each_person_once() -> None:
-    old = run("dave", started_at="2026-10-08T09:00:00Z")
-    newer = run("erin", started_at="2026-10-08T10:00:00Z")
-    again = run("dave", started_at="2026-10-08T11:00:00Z", title=f"{OVERRIDE_TITLE_PREFIX}dave: second reason, longer")
-    got = find_overrides([old, newer, again], SHA, OVERRIDE, ALLOWED, "alice")
+    old = comment("dave", reason="first reason, long enough", at="2026-10-08T09:00:00Z")
+    newer = comment("erin", at="2026-10-08T10:00:00Z")
+    again = comment("dave", reason="second reason, longer", at="2026-10-08T11:00:00Z")
+    got = find_overrides([old, newer, again], SHA, ALLOWED, "alice")
     assert [g.login for g in got] == ["dave", "erin"] and got[0].reason == "second reason, longer"
-
-
-def test_a_missing_or_foreign_title_gives_a_visible_placeholder() -> None:
-    (grant,) = find_overrides([run(title="Something else entirely")], SHA, OVERRIDE, ALLOWED, "alice")
-    assert grant.reason == "no reason recorded"
 
 
 def test_reasons_are_one_clean_line_of_at_most_140_characters() -> None:
@@ -145,18 +149,35 @@ def test_reasons_are_one_clean_line_of_at_most_140_characters() -> None:
     assert len(clean_reason("x" * 500)) == 140
 
 
-def test_the_snapshot_finds_overrides_through_the_team_lookup() -> None:
+def test_a_check_run_cannot_stand_in_for_the_comment() -> None:
+    """The case from review: a workflow added by the pull request posts as the same app and can write any check run,
+    including one that names an approver. It is not evidence; only the approver's own comment is."""
     fake = standard_fake()
     rule = ProtectedPaths(paths=("a.go",), approvers=(TEAM,))
-    data = {"total_count": 1, "check_runs": [{
+    forged = {"total_count": 1, "check_runs": [{
         "name": "OSAC CI override", "status": "completed", "conclusion": "success", "app": {"slug": "github-actions"},
         "external_id": override_external_id("dave", SHA), "started_at": "2026-10-08T10:00:00Z",
         "output": {"title": f"{OVERRIDE_TITLE_PREFIX}dave: {REASON}"},
     }]}  # fmt: skip
-    fake.add("GET", f"{BASE}/commits/{SHA}/check-runs", data)
+    fake.add("GET", f"{BASE}/commits/{SHA}/check-runs", forged)
+    fake.add("GET", f"{BASE}/issues/7/comments", [])
+    fake.add("GET", "/orgs/example/teams/infra/members", [{"login": "dave"}])
+    assert snapshot(fake, rule, override_policy=OVERRIDE).overrides == ()
+
+
+def test_a_comment_by_the_workflow_account_is_not_an_override_either() -> None:
+    """A workflow can comment, but as github-actions[bot], which is neither a person nor an approver."""
+    bot = comment(user={"login": "github-actions[bot]", "type": "Bot"})
+    assert find_overrides([bot], SHA, ALLOWED, "alice") == ()
+
+
+def test_the_snapshot_finds_overrides_through_comments_and_the_team_lookup() -> None:
+    fake = standard_fake()
+    rule = ProtectedPaths(paths=("a.go",), approvers=(TEAM,))
+    fake.add("GET", f"{BASE}/issues/7/comments", [comment("Dave")])
     fake.add("GET", "/orgs/example/teams/infra/members", [{"login": "Dave"}])
     s = snapshot(fake, rule, override_policy=OVERRIDE)
-    assert s.overrides == (OverrideGrant("dave", REASON),)
+    assert s.overrides == (OverrideGrant("Dave", REASON),)
     assert s.team_members["example/infra"] == frozenset({"Dave"})
 
 
@@ -166,11 +187,11 @@ def test_an_unreadable_override_team_is_an_error() -> None:
         snapshot(standard_fake(), rule, override_policy=OVERRIDE)  # no team route: unreadable
 
 
-def test_overrides_are_not_looked_up_when_no_protected_file_changed() -> None:
+def test_overrides_and_comments_are_not_read_when_no_protected_file_changed() -> None:
     fake = standard_fake()
     rule = ProtectedPaths(paths=("elsewhere/**",), approvers=(TEAM,))
     s = snapshot(fake, rule, override_policy=OVERRIDE)
-    assert s.overrides == () and not [c for c in fake.calls if "teams" in c[1]]
+    assert s.overrides == () and not [c for c in fake.calls if "teams" in c[1] or c[1].endswith("/comments")]
 
 
 # ---- the /override command ----------------------------------------------------------------------------------------

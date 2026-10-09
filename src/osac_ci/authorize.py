@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from osac_ci.commands import OVERRIDE_COMMAND, OVERRIDE_START, parse_override
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
 from osac_ci.github.snapshot import (
     OVERRIDE_TITLE_PREFIX,
@@ -26,11 +27,6 @@ from osac_ci.github.snapshot import (
 from osac_ci.policy import Policy
 from osac_ci.rules.fork import COMMAND
 
-OVERRIDE_COMMAND = "/override"
-_OVERRIDE_START = re.compile(rf"^{re.escape(OVERRIDE_COMMAND)}(?:\s|$)")
-_OVERRIDE = re.compile(
-    rf"^{re.escape(OVERRIDE_COMMAND)}[ \t]+(?P<sha>[0-9a-fA-F]{{40}})[ \t]+(?P<reason>\S[^\r\n]{{9,139}})[ \t]*$"
-)
 _COMMAND = re.compile(rf"^{re.escape(COMMAND)}[ \t]+(?P<sha>[0-9a-fA-F]{{40}})[ \t]*$")
 
 
@@ -132,7 +128,7 @@ def override(
     text = body.strip()
     if policy.override is None:
         return _ignore("overrides are not enabled in this policy")
-    if not _OVERRIDE_START.match(text):
+    if not OVERRIDE_START.match(text):
         return _ignore("not an override command")
     if commenter.lower() not in override_approver_logins(org_client, policy.override, {}):
         return _ignore("the commenter may not override")
@@ -144,8 +140,8 @@ def override(
     if pr["user"]["login"].lower() == commenter.lower():
         return Authorization(True, False, "You opened this pull request, so someone else has to override it.", head)
 
-    found = _OVERRIDE.match(text)
-    if found is None:
+    parsed = parse_override(text)
+    if parsed is None:
         return Authorization(
             True,
             False,
@@ -153,15 +149,15 @@ def override(
             f"`{OVERRIDE_COMMAND} {head} <reason, 10 to 140 characters, on one line>`.",
             head,
         )
-    if found["sha"].lower() != head:
+    sha, reason = parsed
+    if sha != head:
         return Authorization(
             True,
             False,
-            f"The head is now `{head}`, not `{found['sha'].lower()}`: the commit you looked at was replaced. "
+            f"The head is now `{head}`, not `{sha}`: the commit you looked at was replaced. "
             f"Review the new one and comment `{OVERRIDE_COMMAND} {head} <reason>`.",
             head,
         )
-    reason = " ".join(found["reason"].split())
     if not dry_run:
         body_out = {
             "name": policy.override.check_name,

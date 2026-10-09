@@ -75,7 +75,6 @@ class CheckRun:
     external_id: str = ""  # set by whoever posted the check run; used to read back an authorization
     app: str = ""  # slug of the app that posted it, for example github-actions
     completed_at: str | None = None  # lets a replay tell that a check had not finished yet at a given moment
-    title: str = ""  # the check run's output title; an override keeps its reason there
 
 
 @dataclass(frozen=True)

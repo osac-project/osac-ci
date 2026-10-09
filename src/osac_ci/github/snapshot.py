@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
+from osac_ci.commands import parse_override
 from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, LabelEvent, OverrideGrant, Review, Snapshot
@@ -188,7 +189,6 @@ def fetch_owner_approvers(client: GitHubClient, repo: str, base_ref: str, path: 
         return None
 
 
-OVERRIDE_ID = re.compile(r"^osac-ci-override:v1:(?P<login>[A-Za-z0-9][A-Za-z0-9-]{0,38}):(?P<sha>[0-9a-f]{40})$")
 OVERRIDE_TITLE_PREFIX = "Protected-path approval overridden by "
 
 
@@ -221,27 +221,27 @@ def override_approver_logins(
 
 
 def find_overrides(
-    runs: Sequence[CheckRun], head_sha: str, override: Override, allowed: set[str], author: str
+    comments: Sequence[dict[str, Any]], head_sha: str, allowed: set[str], author: str
 ) -> tuple[OverrideGrant, ...]:
-    """Valid overrides of exactly ``head_sha``, newest first: a successful run of the override check posted by the
-    workflow app whose external id names an approver and the commit. The approver must still be one now, and the PR's
-    author never counts."""
+    """Valid overrides of exactly ``head_sha``, newest first, each person once.
+
+    The proof is the approver's own comment ``/override <full sha> <reason>``, not a check run: every workflow of the
+    repository posts check runs as the same app, so a workflow added by the pull request itself could write one that
+    names an approver. GitHub sets the author of a comment, and a workflow cannot write as another person. The comment
+    must be complete, name the head commit, never have been edited (an edit may have changed what was approved), come
+    from someone who is an approver now, and not from the pull request's author."""
     found: list[OverrideGrant] = []
-    for run in sorted(runs, key=lambda r: r.started_at or "", reverse=True):
-        if (run.name, run.status, run.conclusion, run.app) != (override.check_name, "completed", "success", AUTH_APP):
+    for comment in sorted(comments, key=lambda c: str(c.get("created_at") or ""), reverse=True):
+        user = comment.get("user") or {}
+        login = str(user.get("login") or "")
+        if not login or user.get("type") != "User" or comment.get("updated_at") != comment.get("created_at"):
             continue
-        match = OVERRIDE_ID.match(run.external_id)
-        if not match or match["sha"] != head_sha:
+        parsed = parse_override(str(comment.get("body") or ""))
+        if parsed is None or parsed[0] != head_sha:
             continue
-        login = match["login"]
         if login.lower() not in allowed or login.lower() == author.lower() or any(g.login == login for g in found):
             continue
-        reason = (
-            run.title[len(OVERRIDE_TITLE_PREFIX) + len(login) + 2 :]
-            if run.title.startswith(f"{OVERRIDE_TITLE_PREFIX}{login}: ")
-            else ""
-        )
-        found.append(OverrideGrant(login, clean_reason(reason) or "no reason recorded"))
+        found.append(OverrideGrant(login, clean_reason(parsed[1])))
     return tuple(found)
 
 
@@ -455,7 +455,6 @@ def fetch_snapshot(
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
             raw.get("completed_at"),
-            (raw.get("output") or {}).get("title") or "",
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
@@ -496,7 +495,8 @@ def fetch_snapshot(
     if matched and override is not None:
         team_members = dict(team_members)
         allowed = override_approver_logins(org_client, override, team_members)
-        grants = find_overrides(runs, head_sha, override, allowed, author)
+        comments = list(paginate(client, f"{base}/issues/{number}/comments"))
+        grants = find_overrides(comments, head_sha, allowed, author)
 
     return Snapshot(
         repo=repo,

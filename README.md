@@ -407,12 +407,19 @@ override:
 ```
 
 An approver comments `/override <full 40-character commit sha> <reason>`, with a reason of 10 to 140 characters on one
-line. A workflow checks that the commenter is an approver now, that the commenter did not open the pull request, and
-that the commit is the pull request's current head; then it records the waiver as a check run named
-`OSAC CI override` on that commit and refreshes the verdict. The check run names the person and the reason, which is the
-audit trail, and the verdict notes it ("protected-path approval waived by ..."). A new push has a new commit and needs a
-new override. The full SHA is required for the same reason as for `/ok-to-test`: a short prefix can be forged. The
-override lifts only the protected-path approval. A failed check, a missing label or a draft stay what they are.
+line. The comment itself is what authorizes: whenever a verdict is computed, the pull request's comments are read and a
+comment counts only if GitHub says an approver wrote it (the policy's team, as it is now), the pull request's author is
+not that person, the comment names the current head commit in full, and it has never been edited. A workflow cannot
+write a comment as another person, and it can write any check run: every workflow of the repository posts checks as the
+same app, so a workflow added by the pull request itself could forge a check run that names an approver. That is why a
+check run is never accepted as the proof.
+
+A workflow also answers the comment and records the waiver as a check run named `OSAC CI override`, with the person and
+the reason, so the commit shows who waived what and why. That check run is the audit record and nothing more. The
+verdict notes the waiver ("protected-path approval waived by ..."). A new push has a new commit and needs a new
+override, the full SHA is required for the same reason as for `/ok-to-test` (a short prefix can be forged), and an edited
+comment has to be written again. The override lifts only the protected-path approval. A failed check, a missing label or
+a draft stay what they are.
 
 `path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
 job that applies to the PR (its filters or globs match, or nothing narrows it, as for `pre-commit`) counts as failed
