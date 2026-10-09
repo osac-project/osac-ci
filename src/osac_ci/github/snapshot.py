@@ -12,6 +12,7 @@ import binascii
 import re
 import urllib.parse
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -231,6 +232,25 @@ def _approval_inputs(
     return text, teams, fingerprints
 
 
+def _dismissals(raw_events: Sequence[dict[str, Any]]) -> dict[int, tuple[str, str]]:
+    """Review id -> (when it was dismissed, the state it had before), from the ``review_dismissed`` events."""
+    found: dict[int, tuple[str, str]] = {}
+    for event in raw_events:
+        if event.get("event") != "review_dismissed":
+            continue
+        review = event.get("dismissed_review") or {}
+        if isinstance(review.get("review_id"), int) and review.get("state"):
+            found[review["review_id"]] = (str(event.get("created_at") or ""), str(review["state"]).upper())
+    return found
+
+
+def _with_dismissal(review: Review, dismissals: dict[int, tuple[str, str]]) -> Review:
+    known = dismissals.get(review.id) if review.id is not None else None
+    if review.state != "DISMISSED" or known is None:
+        return review
+    return replace(review, dismissed_at=known[0], state_before_dismissal=known[1])
+
+
 def _review(raw: dict[str, Any]) -> Review | None:
     user = raw.get("user")
     if not user:  # deleted account: the legacy rules ignore reviews without a user too
@@ -315,6 +335,8 @@ def fetch_snapshot(
 
     reviews = tuple(r for raw in paginate(client, f"{base}/pulls/{number}/reviews") if (r := _review(raw)))
     raw_events = list(paginate(client, f"{base}/issues/{number}/events"))
+    dismissals = _dismissals(raw_events)
+    reviews = tuple(_with_dismissal(r, dismissals) for r in reviews)
     events = tuple(
         LabelEvent(
             raw["event"], raw["label"]["name"], (raw.get("actor") or {}).get("login", ""), raw.get("created_at") or ""

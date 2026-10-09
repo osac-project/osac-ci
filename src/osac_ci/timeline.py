@@ -4,7 +4,7 @@ A replay that reads a merged PR's final state can only say the planner would not
 that was actually made (enqueuing, or merging directly) it needs the PR as it was then:
 
 * labels: replay the ``labeled`` / ``unlabeled`` events up to the moment;
-* reviews: only those submitted by then (a dismissal is a review of its own, so it counts from its own time);
+* reviews: only those submitted by then, and a review dismissed after the moment as it was before the dismissal;
 * check runs: one that started after the moment did not exist yet, and one that finished after it was still running.
 
 The head commit needs no reconstruction for a queue-merged PR: a push removes a PR from the queue, so the head when it
@@ -42,6 +42,19 @@ def _review_known(review: Review, moment: str) -> bool:
     return not review.submitted_at or review.submitted_at <= moment
 
 
+def _review_at(review: Review, moment: str) -> Review:
+    """GitHub turns a dismissed review itself into DISMISSED and keeps its submission time, so a review dismissed after
+    the moment must be shown as it was before. Without the dismissal event nothing is known, and it stays as it is."""
+    if (
+        review.state == "DISMISSED"
+        and review.dismissed_at
+        and review.state_before_dismissal
+        and review.dismissed_at > moment
+    ):
+        return replace(review, state=review.state_before_dismissal, dismissed_at="", state_before_dismissal="")
+    return review
+
+
 def _authorizers_at(snapshot: Snapshot, runs: tuple[CheckRun, ...]) -> tuple[str, ...]:
     """An authorization is a check run, so it exists only from the moment that run completed. The authorizers were
     derived from the final check runs: of those, the ones whose completed successful run stood at the moment, newest
@@ -71,7 +84,7 @@ def state_at(snapshot: Snapshot, moment: str) -> Snapshot:
         snapshot,
         labels=_labels_at(events),
         label_events=events,
-        reviews=tuple(r for r in snapshot.reviews if _review_known(r, moment)),
+        reviews=tuple(_review_at(r, moment) for r in snapshot.reviews if _review_known(r, moment)),
         check_runs=runs,
         authorized_by=standing[0] if (standing := _authorizers_at(snapshot, runs)) else "",
         authorizers=standing,

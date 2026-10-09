@@ -154,3 +154,75 @@ def test_organization_lookups_use_the_org_client_and_everything_else_the_main_on
     assert not [c for c in main.calls if c[1].startswith("/orgs/")]  # the PR token never asks about the org
     assert {c[1] for c in org.calls} == {"/orgs/example/members/alice", "/orgs/example/teams/data/members"}
     assert not [c for c in org.calls if c[1].startswith("/repos/")]  # the org token never touches the repository
+
+
+# ---- dismissals ------------------------------------------------------------------------------------------------------
+
+
+def review(id_: int, state: str, user: str = "bob") -> dict[str, object]:
+    return {
+        "id": id_,
+        "state": state,
+        "user": {"login": user, "type": "User"},
+        "commit_id": SHA,
+        "submitted_at": "2026-10-08T10:00:00Z",
+    }
+
+
+def dismissal(review_id: int, before: str, at: str = "2026-10-08T14:00:00Z") -> dict[str, object]:
+    return {
+        "event": "review_dismissed",
+        "created_at": at,
+        "dismissed_review": {"review_id": review_id, "state": before},
+    }
+
+
+def test_a_dismissed_review_gets_its_dismissal_time_and_prior_state_from_the_event() -> None:
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/pulls/7/reviews", [review(7, "DISMISSED"), review(8, "APPROVED", "carol")])
+    fake.add("GET", f"{BASE}/issues/7/events", [dismissal(7, "approved")])
+    by_id = {r.id: r for r in fetch_snapshot(fake, REPO, 7, org="example").reviews}
+    assert (by_id[7].state, by_id[7].dismissed_at, by_id[7].state_before_dismissal) == (
+        "DISMISSED",
+        "2026-10-08T14:00:00Z",
+        "APPROVED",
+    )
+    assert (by_id[8].dismissed_at, by_id[8].state_before_dismissal) == ("", "")  # an ordinary review is untouched
+
+
+def test_a_change_request_dismissal_keeps_its_prior_state() -> None:
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/pulls/7/reviews", [review(7, "DISMISSED")])
+    fake.add("GET", f"{BASE}/issues/7/events", [dismissal(7, "changes_requested")])
+    (r,) = fetch_snapshot(fake, REPO, 7, org="example").reviews
+    assert r.state_before_dismissal == "CHANGES_REQUESTED"
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"event": "review_dismissed", "created_at": "t", "dismissed_review": {"state": "approved"}},  # no review id
+        {
+            "event": "review_dismissed",
+            "created_at": "t",
+            "dismissed_review": {"review_id": 99, "state": "approved"},
+        },  # another review
+        {"event": "review_dismissed", "created_at": "t", "dismissed_review": {"review_id": 7}},  # no prior state
+        {"event": "review_dismissed", "created_at": "t"},
+        {"event": "labeled", "created_at": "t", "label": {"name": "x"}},
+    ],
+)
+def test_events_that_do_not_identify_the_review_change_nothing(event: dict[str, object]) -> None:
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/pulls/7/reviews", [review(7, "DISMISSED")])
+    fake.add("GET", f"{BASE}/issues/7/events", [event])
+    (r,) = fetch_snapshot(fake, REPO, 7, org="example").reviews
+    assert (r.dismissed_at, r.state_before_dismissal) == ("", "")
+
+
+def test_a_review_that_is_not_dismissed_ignores_a_stray_event() -> None:
+    fake = standard_fake()
+    fake.add("GET", f"{BASE}/pulls/7/reviews", [review(7, "APPROVED")])
+    fake.add("GET", f"{BASE}/issues/7/events", [dismissal(7, "approved")])
+    (r,) = fetch_snapshot(fake, REPO, 7, org="example").reviews
+    assert (r.state, r.dismissed_at) == ("APPROVED", "")

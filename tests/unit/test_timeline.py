@@ -230,3 +230,57 @@ def test_the_earlier_authorizer_makes_a_fork_trusted_at_the_moment_between(toy_p
              authorizers=("bob", "alice"), check_runs=s.check_runs, is_fork=True)  # fmt: skip
     assert fork_secrets_authorized(state_at(s, T), Trust(authorization="sha-bound"))  # Alice's run stood at 12:00
     assert not fork_secrets_authorized(state_at(s, "2026-10-05T10:00:00Z"), Trust(authorization="sha-bound"))
+
+
+# ---- GitHub turns a dismissed review itself into DISMISSED and keeps its submission time ----------
+
+
+def dismissed(state_before: str, at: str | None, submitted: str = "2026-10-05T10:00:00Z", user: str = "bob") -> Review:
+    return Review(
+        user,
+        "DISMISSED",
+        "User",
+        submitted,
+        1,
+        "c1",
+        dismissed_at=at or "",
+        state_before_dismissal=state_before if at else "",
+    )
+
+
+def test_a_review_dismissed_after_the_moment_is_shown_as_it_was_before(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    review = dismissed("APPROVED", "2026-10-05T14:00:00Z")
+    (got,) = state_at(snap(toy_policy, reviews=(review,)), T).reviews
+    assert got.state == "APPROVED" and got.dismissed_at == ""
+
+
+def test_a_review_dismissed_before_the_moment_stays_dismissed(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    review = dismissed("APPROVED", "2026-10-05T11:00:00Z")
+    (got,) = state_at(snap(toy_policy, reviews=(review,)), T).reviews
+    assert got.state == "DISMISSED"
+
+
+def test_a_change_request_dismissed_later_was_still_blocking_at_the_moment(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    review = dismissed("CHANGES_REQUESTED", "2026-10-05T14:00:00Z")
+    (got,) = state_at(snap(toy_policy, reviews=(review,)), T).reviews
+    assert got.state == "CHANGES_REQUESTED"
+
+
+def test_a_dismissed_review_with_no_dismissal_event_is_left_as_it_is(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    review = dismissed("APPROVED", None)  # nothing is known about when or from what
+    (got,) = state_at(snap(toy_policy, reviews=(review,)), T).reviews
+    assert got.state == "DISMISSED"
+
+
+def test_a_review_dismissed_exactly_at_the_moment_counts_as_dismissed(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    (got,) = state_at(snap(toy_policy, reviews=(dismissed("APPROVED", T),)), T).reviews
+    assert got.state == "DISMISSED"
+
+
+def test_an_approval_dismissed_after_the_enqueue_still_counts_at_the_enqueue(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    from osac_ci.policy import Approval
+    from osac_ci.rules.approval import evaluate
+
+    s = snap(toy_policy, author="author", reviews=(dismissed("APPROVED", "2026-10-05T14:00:00Z"),), head_sha="c1")
+    assert not evaluate(s, Approval()).approved  # on today's data the approval is gone
+    assert evaluate(state_at(s, T), Approval()).approved  # but it stood when the PR was enqueued

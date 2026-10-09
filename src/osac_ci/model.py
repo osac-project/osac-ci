@@ -49,6 +49,11 @@ class Review:
     submitted_at: str | None = None
     id: int | None = None
     commit_id: str | None = None
+    # GitHub does not add a review when it dismisses one: the original review turns into DISMISSED and keeps its
+    # submission time. These come from the ``review_dismissed`` event, so a replay can show the review as it was
+    # before the dismissal. Empty when no such event was found.
+    dismissed_at: str = ""
+    state_before_dismissal: str = ""  # APPROVED or CHANGES_REQUESTED
 
 
 @dataclass(frozen=True)
