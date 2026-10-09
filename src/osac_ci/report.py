@@ -109,6 +109,7 @@ def build_report(
                 org=org,
                 lookup_membership=lookup_membership,
                 approval=policy.approval,
+                protected=policy.protected_paths,
                 trust=policy.trust,
             )
             verdict = plan_or_error(snapshot, policy, Mode.PR)

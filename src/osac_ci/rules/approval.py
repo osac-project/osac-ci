@@ -49,7 +49,7 @@ def _latest_stances(reviews: tuple[Review, ...], author: str) -> dict[str, Revie
     return latest
 
 
-def _logins(snapshot: Snapshot, owner: str) -> set[str]:
+def logins_of(snapshot: Snapshot, owner: str) -> set[str]:
     if owner.startswith("@") and "/" in owner:
         members = snapshot.team_members.get(owner[1:])
         if members is None:
@@ -123,7 +123,7 @@ def evaluate(snapshot: Snapshot, policy: Approval, *, block_on_changes_requested
             owners = codeowners.owners_of(rules, path)
             if owners is None:
                 continue
-            allowed = set().union(*(_logins(snapshot, o) for o in owners))
+            allowed = set().union(*(logins_of(snapshot, o) for o in owners))
             if not (allowed & valid.keys()):
                 uncovered.setdefault(owners, []).append(path)
         for owners, paths in uncovered.items():

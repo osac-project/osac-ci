@@ -349,6 +349,31 @@ name in `filters` and at least one in `filters_any`. A job uses either globs (`p
 `policy/osac-filters.yml` is a copy of the `osac` file `.github/filters/ci-filters.yml` (its header records the osac
 commit). Refresh it when that file changes, and move to `enforce` only when the replay shows the mapping agrees.
 
+### Protecting the pipeline's own files (`protected_paths:`)
+
+A pull request can change the workflows, filters and scripts that produce the checks it is judged by. A check that
+reports success then proves little: a job changed to end with `exit 0` still reports success under its old name. Deleting
+a job is caught (a required check that never reports keeps the PR blocked), but weakening one is not, and a skip counts
+as a pass. The control that works is a person who is trusted for those files reading the change:
+
+```yaml
+protected_paths:
+  - paths: [".github/**", "CODEOWNERS"]
+    approvers: ["@osac-project/wg-infra"]   # "@login" or "@org/team": one of them must approve
+    carry_over: never                       # or trivial-rebase, as for `approval:`
+```
+
+When a changed file matches `paths`, the PR needs an approval from one of `approvers` that covers the current changes
+(given on this commit, or carried over a rebase when the rule allows it). The author never approves their own PR, a
+review that requests changes is not an approval, and a team that cannot be read is a `planner-error`. The verdict is
+`awaiting-approval` and names the approvers. The rule lives in the policy, so the PR cannot change who has to approve,
+and it works with label approval as well as native approval. It is evaluated at pull request time, not on a merge-queue
+commit.
+
+`path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
+job whose filters say it applies counts as failed instead of passed. A readiness-gated E2E job is exempt, since it is
+skipped on purpose until it is unlocked.
+
 ### Who may use secrets and start expensive jobs (`trust:`)
 
 A PR from a fork may use secrets, and start E2E, when its author is an org member, the fork is owned by an org member,

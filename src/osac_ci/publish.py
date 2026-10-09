@@ -144,6 +144,7 @@ def publish_pr(
             org=org,
             lookup_membership=lookup_membership,
             approval=policy.approval,
+            protected=policy.protected_paths,
             org_client=org_client,
             trust=policy.trust,
         )

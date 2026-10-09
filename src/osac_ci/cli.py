@@ -362,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                 org=args.org or args.repo.split("/", 1)[0],
                 lookup_membership=not args.no_membership_lookup,
                 approval=policy.approval,
+                protected=policy.protected_paths,
                 org_client=build_org_client(),
                 trust=policy.trust,
             )
