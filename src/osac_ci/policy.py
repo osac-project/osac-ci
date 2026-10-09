@@ -74,6 +74,35 @@ class Approval(_Strict):
     )
 
 
+class ProtectedPaths(_Strict):
+    """Files whose change needs approval from named people, whatever the rest of the approval rules say.
+
+    A pull request may change the very workflows and scripts that produce the checks it is judged by, so a check that
+    reports success proves little for such a change. Changing a file that matches ``paths`` therefore needs an approval
+    of the current changes from one of ``approvers`` (see rules/protected.py). The policy is not part of the pull
+    request, so the PR cannot change who has to approve."""
+
+    paths: tuple[str, ...] = Field(min_length=1, description="Globs of the protected files")
+    approvers: tuple[str, ...] = Field(min_length=1, description="'@login' or '@org/team'; one of them must approve")
+    carry_over: Literal["never", "trivial-rebase"] = Field(
+        default="never", description="Keep an approval after a rebase that leaves the PR's own changes unchanged"
+    )
+
+    @field_validator("paths")
+    @classmethod
+    def _positive_globs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not p or p.startswith("!") for p in value):
+            raise ValueError("paths must be non-empty globs without a '!' prefix")
+        return value
+
+    @field_validator("approvers")
+    @classmethod
+    def _handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not re.fullmatch(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9._-]+)?", a) for a in value):
+            raise ValueError("approvers must look like @login or @org/team")
+        return value
+
+
 Signal = Literal["human-approval", "coderabbit-approval", "lgtm-label", "e2e-ready-label"]
 
 
@@ -137,6 +166,14 @@ class PathFilters(_Strict):
     filters do not hold is not applicable, so nothing waits for it."""
 
     mode: Literal["shadow", "enforce"] = "shadow"
+    skipped_applicable: Literal["pass", "fail"] = Field(
+        default="pass",
+        description=(
+            "enforce only. What a skipped check means for a job whose filters say it applies: GitHub counts it as "
+            "passed ('pass'); 'fail' reads it as a job that did not do its work, for example a workflow changed to "
+            "skip itself"
+        ),
+    )
     file: str | None = Field(default=None, description="A ci-filters.yml-style file, relative to the policy file")
     filters: dict[str, tuple[str, ...]] = Field(default_factory=dict)
 
@@ -149,6 +186,7 @@ class Policy(_Strict):
     trust: Trust = Trust()
     e2e: E2E = E2E()
     path_filters: PathFilters = PathFilters()
+    protected_paths: tuple[ProtectedPaths, ...] = ()
     jobs: dict[str, Job]
 
     @model_validator(mode="after")
@@ -163,6 +201,12 @@ class Policy(_Strict):
         used = set(unlock.any_of).union(*unlock.per_suite.values())
         if "human-approval" in used and self.approval is None:
             raise ValueError("e2e.unlock uses human-approval, which needs an approval: section")
+        return self
+
+    @model_validator(mode="after")
+    def _skipped_rule_needs_enforce(self) -> Policy:
+        if self.path_filters.skipped_applicable == "fail" and self.path_filters.mode != "enforce":
+            raise ValueError("path_filters.skipped_applicable: fail needs path_filters.mode: enforce")
         return self
 
     @model_validator(mode="after")

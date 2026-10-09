@@ -24,7 +24,7 @@ from osac_ci.model import (
 )
 from osac_ci.paths import applicable, filters_hold
 from osac_ci.policy import Job, Policy
-from osac_ci.rules import approval, e2e_unlock, readiness
+from osac_ci.rules import approval, e2e_unlock, protected, readiness
 from osac_ci.rules.fork import authorization_command, fork_secrets_authorized
 from osac_ci.rules.labels import missing_required, present_blocking
 
@@ -104,6 +104,22 @@ def _filter_note(job: Job, run: CheckRun | None, holds: bool | None) -> str:
     return ""
 
 
+def _skipped_but_applicable(
+    job: Job, run: CheckRun | None, holds: bool | None, snapshot: Snapshot, policy: Policy
+) -> bool:
+    """Enforce mode with ``skipped_applicable: fail``: a job the path rules say applies, whose check was skipped,
+    did not do its work. GitHub counts a skip as a pass, so a workflow changed to skip itself would go unnoticed.
+    A readiness-gated job is skipped on purpose until it is unlocked, so it is exempt."""
+    settings = policy.path_filters
+    if settings.mode != "enforce" or settings.skipped_applicable != "fail" or job.needs_readiness:
+        return False
+    if run is None or run.status != "completed" or run.conclusion != "skipped":
+        return False
+    if holds is not None:
+        return holds
+    return bool(job.paths) and snapshot.changed_files_known and bool(snapshot.changed_files)
+
+
 def _evaluate(
     job_id: str,
     job: Job,
@@ -123,6 +139,14 @@ def _evaluate(
         return JobEntry(job_id, job.check, JobStatus.NOT_APPLICABLE, f"path filters do not hold ({names})")
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"
+    if _skipped_but_applicable(job, run, holds, snapshot, policy):
+        names = ", ".join((*job.filters, *job.filters_any)) or ", ".join(job.paths)
+        return JobEntry(
+            job_id,
+            job.check,
+            JobStatus.FAILED,
+            f"skipped, but the path rules ({names}) say it applies to these files",
+        )
     if mode is Mode.PR and job.kind == "e2e" and job.needs_readiness and not finished:
         if not fork_secrets_authorized(snapshot, policy.trust):
             return JobEntry(job_id, job.check, JobStatus.WAITING, _AUTH_DETAIL)
@@ -223,6 +247,10 @@ def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
     label_problems = [f"missing label: {m}" for m in missing] + [f"blocking label: {b}" for b in blocking]
     if decision:
         label_problems += decision.problems
+    guard = protected.evaluate(snapshot, policy.protected_paths) if policy.protected_paths else None
+    if guard:
+        label_problems += guard.problems
+        notes = notes + guard.notes
     blockers += label_problems
 
     failed_cheap, failed_e2e = where(JobStatus.FAILED, "cheap"), where(JobStatus.FAILED, "e2e")
@@ -265,8 +293,14 @@ def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
             native,
         )
     if label_problems:
+        override = None
+        if guard and guard.problems:
+            override = (
+                f"get an approval from {', '.join(guard.approvers)} for the protected files",
+                "protected-path approver",
+            )
         return _verdict(
-            State.AWAITING_APPROVAL, "; ".join(label_problems), mode, tuple(blockers), entries, notes, native
+            State.AWAITING_APPROVAL, "; ".join(label_problems), mode, tuple(blockers), entries, notes, native, override
         )
     locked = [e for e in waiting_e2e if e.detail.startswith(("waiting:", "denied:"))]
     if locked:

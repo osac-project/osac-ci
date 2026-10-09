@@ -226,3 +226,29 @@ def test_a_review_that_is_not_dismissed_ignores_a_stray_event() -> None:
     fake.add("GET", f"{BASE}/issues/7/events", [dismissal(7, "approved")])
     (r,) = fetch_snapshot(fake, REPO, 7, org="example").reviews
     assert (r.state, r.dismissed_at) == ("APPROVED", "")
+
+
+def test_protected_paths_read_the_approver_teams_only_when_their_files_changed() -> None:
+    from osac_ci.policy import ProtectedPaths
+
+    rule = ProtectedPaths(paths=("docs/**",), approvers=("@example/infra", "@carol"), carry_over="trivial-rebase")
+    fake = standard_fake()
+    fake.add("GET", "/orgs/example/teams/infra/members", [{"login": "dave"}])
+    fake.add("GET", f"{BASE}/compare/main...{SHA}", compare("@@ -1 +1 @@\n-a\n+b"))
+    s = fetch_snapshot(fake, REPO, 7, org="example", protected=(rule,))
+    assert s.team_members == {"example/infra": frozenset({"dave"})}  # a login needs no team lookup
+    assert set(s.change_fingerprints) == {SHA} and s.codeowners is None
+
+    other = ProtectedPaths(paths=("tools/**",), approvers=("@example/infra",))
+    quiet = standard_fake()
+    s = fetch_snapshot(quiet, REPO, 7, org="example", protected=(other,))
+    assert s.team_members == {} and s.change_fingerprints == {}
+    assert not [c for c in quiet.calls if "teams" in c[1] or "compare" in c[1]]
+
+
+def test_an_unreadable_approver_team_is_kept_as_unknown_not_empty() -> None:
+    from osac_ci.policy import ProtectedPaths
+
+    rule = ProtectedPaths(paths=("docs/**",), approvers=("@example/infra",))
+    s = fetch_snapshot(standard_fake(), REPO, 7, org="example", protected=(rule,))  # no route: the team is unreadable
+    assert s.team_members == {"example/infra": None}

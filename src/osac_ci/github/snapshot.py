@@ -19,7 +19,8 @@ from typing import Any
 from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
-from osac_ci.policy import Approval, Trust
+from osac_ci.paths import any_match
+from osac_ci.policy import Approval, ProtectedPaths, Trust
 from osac_ci.rules import codeowners
 
 _QUEUE_QUERY = """
@@ -220,6 +221,13 @@ def _approval_inputs(
             for owner in codeowners.owners_of(rules, path) or ():
                 if owner.startswith("@") and "/" in owner and owner[1:] not in teams:
                     teams[owner[1:]] = fetch_team_members(org_client, owner[1:])
+    return text, teams, _fingerprints(client, repo, base_ref, head_sha, reviews)
+
+
+def _fingerprints(
+    client: GitHubClient, repo: str, base_ref: str, head_sha: str, reviews: Sequence[Review]
+) -> dict[str, str]:
+    """Change fingerprints of the head and of every commit that got an approval."""
     commits = [head_sha]
     for review in reviews:
         if review.state == "APPROVED" and review.commit_id and review.commit_id not in commits:
@@ -229,7 +237,7 @@ def _approval_inputs(
         value = fetch_change_fingerprint(client, repo, base_ref, sha)
         if value is not None:
             fingerprints[sha] = value
-    return text, teams, fingerprints
+    return fingerprints
 
 
 def _dismissals(raw_events: Sequence[dict[str, Any]]) -> dict[int, tuple[str, str]]:
@@ -309,6 +317,7 @@ def fetch_snapshot(
     approval: Approval | None = None,
     org_client: GitHubClient | None = None,
     trust: Trust | None = None,
+    protected: Sequence[ProtectedPaths] = (),
 ) -> Snapshot:
     """Read everything the planner needs.
 
@@ -317,6 +326,9 @@ def fetch_snapshot(
 
     ``approval`` is the policy's native-approval section; when given, CODEOWNERS (from the base branch), the members
     of owner teams and the change fingerprints of the head and of every approved commit are read as well.
+
+    ``protected`` are the policy's protected-path rules; for each rule whose files changed, the members of its approver
+    teams are read (and the change fingerprints, when the rule carries approvals over a rebase).
 
     ``org_client`` is used only for the organization lookups (membership and team members). It lets a token that can
     read the organization, and nothing else, be kept apart from the one that reads and posts on the pull request.
@@ -373,6 +385,17 @@ def fetch_snapshot(
     owners_text, team_members, fingerprints = (
         _approval_inputs(client, org_client, repo, base_ref, head_sha, reviews, files) if approval else (None, {}, {})
     )
+    matched = [rule for rule in protected if any(any_match(rule.paths, f) for f in files)]
+    if matched:
+        if not base_ref:
+            raise ValueError("the pull request has no base branch, cannot judge protected paths")
+        team_members = dict(team_members)
+        for rule in matched:
+            for owner in rule.approvers:
+                if "/" in owner and owner[1:] not in team_members:
+                    team_members[owner[1:]] = fetch_team_members(org_client, owner[1:])
+        if not fingerprints and any(rule.carry_over == "trivial-rebase" for rule in matched):
+            fingerprints = _fingerprints(client, repo, base_ref, head_sha, reviews)
 
     return Snapshot(
         repo=repo,
