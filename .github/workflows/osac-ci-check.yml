@@ -81,5 +81,5 @@ jobs:
           fi
           if [ -n "$PR_NUMBER" ]; then target=(--number "$PR_NUMBER"); else target=(--all); fi
           uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" "${target[@]}" \
-            --lookup-membership --require-org-token --reserve 200 \
+            --lookup-membership --require-org-token --recent 20 --rotate 20 --reserve 200 \
             --note "Informational for now: this check is not required to merge."

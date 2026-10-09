@@ -118,7 +118,7 @@ def test_the_remaining_requests_are_also_read_from_an_error_response() -> None:
     assert client.request("GET", "/x").status == 403 and client.rate_limit_remaining() == 0
 
 
-@pytest.mark.parametrize("value", ["", "abc", "-1", "1.5"])
+@pytest.mark.parametrize("value", ["", "abc", "-1", "1.5", "²", "٣", "１２３"])  # the last three are non-ASCII digits
 def test_a_malformed_remaining_header_is_ignored(value: str) -> None:
     def opener(request: urllib.request.Request, timeout: float) -> _Raw:
         return _WithHeaders(b"{}", {"X-RateLimit-Remaining": value})

@@ -344,3 +344,43 @@ def test_cli_passes_the_budget_and_reports_the_requests_left(
         "PR #7",
         "PR #6",
     ]  # tick 2 of 3 slices of [4, 5, 6]
+
+
+@pytest.mark.parametrize(("recent", "rotate"), [(-1, 0), (-5, -2), (0, -2), (None, -1), (-1, None), (2, -3)])
+def test_select_prs_never_slices_from_the_end_or_divides_by_zero_on_negative_counts(
+    recent: int | None, rotate: int | None
+) -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in (4, 3, 2, 1)]
+    got = [p["number"] for p in select_prs(prs, recent=recent, rotate=rotate, tick=3)]
+    assert len(got) == len(set(got)) and set(got) <= {1, 2, 3, 4}
+    assert got[: max(0, recent or 0)] == [4, 3, 2, 1][: max(0, recent or 0)]  # the recent ones come first, none lost
+
+
+@pytest.mark.parametrize("flag", ["--recent", "--rotate", "--reserve", "--interval", "--limit"])
+def test_cli_rejects_a_negative_sweep_value_at_the_boundary(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as stop:
+        cli.main(["publish", *POLICY_ARGS, "--all", flag, "-1"])
+    assert stop.value.code == 2 and "must not be negative" in capsys.readouterr().err
+
+
+def test_cli_still_takes_zero_for_every_sweep_value() -> None:
+    parsed = cli._parser().parse_args(
+        [
+            "publish",
+            *POLICY_ARGS,
+            "--all",
+            "--recent",
+            "0",
+            "--rotate",
+            "0",
+            "--reserve",
+            "0",
+            "--interval",
+            "0",
+            "--limit",
+            "0",
+        ]
+    )
+    assert (parsed.recent, parsed.rotate, parsed.reserve, parsed.interval, parsed.limit) == (0, 0, 0, 0, 0)

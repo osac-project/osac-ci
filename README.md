@@ -200,7 +200,9 @@ on Enterprise Cloud), so a full sweep every 10 minutes would not fit. Budget it:
 - `--rotate M`: plus M of the others, a different slice each sweep (the slice advances once per `--interval` seconds,
   default 600, and wraps), so every PR is looked at within ceil(others / M) sweeps with no stored state.
 - `--reserve R`: stop starting PRs once fewer than R REST requests are left. They are reported as *skipped*, not
-  failed, and the next sweep picks them up. The count comes from the response headers of the REST bucket (`core`);
+  failed, and the next sweep picks them up. It is approximate: with several workers a few can read the same count before
+  any has spent requests, so a sweep can overshoot by about the number of workers times the cost of one PR. A reserve
+  alone only protects the quota; use it with `--recent` and `--rotate` so the PRs listed last are not starved. The count comes from the response headers of the REST bucket (`core`);
   GraphQL has its own bucket and never stands in for it.
 
 For `osac` I would run every 30 minutes with `--recent 15 --rotate 15 --reserve 150`: about 30 PRs, 240 to 350 requests
