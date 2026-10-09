@@ -21,7 +21,7 @@ from osac_ci.model import (
     State,
     Verdict,
 )
-from osac_ci.paths import applicable
+from osac_ci.paths import applicable, filters_hold
 from osac_ci.policy import Job, Policy
 from osac_ci.rules import approval, e2e_unlock, readiness
 from osac_ci.rules.fork import authorization_command, fork_secrets_authorized
@@ -76,6 +76,33 @@ def _from_check(run: CheckRun | None) -> tuple[JobStatus, str]:
     return JobStatus.FAILED, f"conclusion: {run.conclusion}"
 
 
+_FAILED_RUN = frozenset({"failure", "timed_out"})
+
+
+def _filters_verdict(job: Job, snapshot: Snapshot, policy: Policy) -> bool | None:
+    """True or False when the job's named path filters decide applicability, None when they cannot (the job names no
+    filter, or the PR lists no changed files, which is never a reason to skip anything)."""
+    if not (job.filters or job.filters_any) or not snapshot.changed_files:
+        return None
+    return filters_hold(snapshot.changed_files, policy.path_filters.filters, job.filters, job.filters_any)
+
+
+def _filter_note(job: Job, run: CheckRun | None, holds: bool | None) -> str:
+    """Shadow mode: say where the filters and the check's own outcome disagree. Only two cases are unambiguous. A
+    workflow that finds nothing to do usually still reports success, so a passing check proves nothing either way.
+    (A failure on irrelevant files can also mean the workflow's own filter step failed: it then fails its checks.)"""
+    if holds is None or run is None or run.status != "completed":
+        return ""
+    names = ", ".join((*job.filters, *job.filters_any))
+    if not holds and run.conclusion in _FAILED_RUN:
+        why = f"but its conclusion was {run.conclusion}"
+        return f"path filter: {names} say {job.check} does not apply to these files, {why}"
+    # A readiness-gated job is skipped on purpose until it is unlocked, so a skip there says nothing about the filters.
+    if holds and run.conclusion == "skipped" and not job.needs_readiness:
+        return f"path filter: {names} say {job.check} applies to these files, but it was skipped"
+    return ""
+
+
 def _evaluate(
     job_id: str,
     job: Job,
@@ -89,6 +116,10 @@ def _evaluate(
         return None
     if not applicable(snapshot.changed_files, job.paths, job.exclude_paths):
         return JobEntry(job_id, job.check, JobStatus.NOT_APPLICABLE, "no changed file matches this job's paths")
+    holds = _filters_verdict(job, snapshot, policy)
+    if holds is False and policy.path_filters.mode == "enforce":
+        names = ", ".join((*job.filters, *job.filters_any))
+        return JobEntry(job_id, job.check, JobStatus.NOT_APPLICABLE, f"path filters do not hold ({names})")
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"
     if mode is Mode.PR and job.kind == "e2e" and job.needs_readiness and not finished:
@@ -102,7 +133,8 @@ def _evaluate(
         if not decision.allowed:
             return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason, decision.code)
     status, detail = _from_check(run)
-    return JobEntry(job_id, job.check, status, detail)
+    note = _filter_note(job, run, holds) if policy.path_filters.mode == "shadow" else ""
+    return JobEntry(job_id, job.check, status, detail, note=note)
 
 
 def _verdict(
@@ -130,13 +162,13 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     # With native approval an approved PR unlocks E2E the way the `lgtm` label does today.
     decision = approval.evaluate(snapshot, policy.approval) if policy.approval and mode is Mode.PR else None
     labels = snapshot.labels | {"lgtm"} if decision and decision.approved else snapshot.labels
-    notes = decision.notes if decision else ()
     native = decision is not None
     entries = tuple(
         entry
         for job_id, job in policy.jobs.items()
         if (entry := _evaluate(job_id, job, snapshot, mode, checks, labels, policy)) is not None
     )
+    notes = (decision.notes if decision else ()) + tuple(e.note for e in entries if e.note)
     kind = {job.check: job.kind for job in policy.jobs.values()}
 
     def where(status: JobStatus, job_kind: str | None = None) -> list[JobEntry]:
@@ -148,7 +180,9 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
 
     if mode is Mode.QUEUE:
         if failed:
-            return _verdict(State.QUEUE_FAILED, f"queue check failed: {_names(failed)}", mode, tuple(blockers), entries)
+            return _verdict(
+                State.QUEUE_FAILED, f"queue check failed: {_names(failed)}", mode, tuple(blockers), entries, notes
+            )
         if pending:
             return _verdict(
                 State.QUEUE_CHECKS_RUNNING,
@@ -156,8 +190,9 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
                 mode,
                 tuple(blockers),
                 entries,
+                notes,
             )
-        return _verdict(State.QUEUE_PASSED, "all queue checks passed", mode, (), entries)
+        return _verdict(State.QUEUE_PASSED, "all queue checks passed", mode, (), entries, notes)
 
     if snapshot.is_draft:
         return _verdict(
@@ -174,7 +209,13 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     failed_cheap, failed_e2e = where(JobStatus.FAILED, "cheap"), where(JobStatus.FAILED, "e2e")
     if failed_cheap:
         return _verdict(
-            State.CHECKS_FAILED, f"required checks failed: {_names(failed_cheap)}", mode, tuple(blockers), entries
+            State.CHECKS_FAILED,
+            f"required checks failed: {_names(failed_cheap)}",
+            mode,
+            tuple(blockers),
+            entries,
+            notes,
+            native,
         )
     if failed_e2e:
         return _verdict(

@@ -83,6 +83,16 @@ def filter_applies(files: Iterable[str], patterns: Sequence[str]) -> bool:
     return any(filter_matches(patterns, f) for f in files)
 
 
+def filters_hold(
+    files: Sequence[str], filters: Mapping[str, Sequence[str]], all_of: Sequence[str], any_of: Sequence[str]
+) -> bool:
+    """Do the named filters of a job hold for these changed files? Every name in ``all_of`` and, when ``any_of`` is
+    given, at least one of its names must match some changed file (how the workflows combine their gates)."""
+    return all(filter_applies(files, filters[n]) for n in all_of) and (
+        not any_of or any(filter_applies(files, filters[n]) for n in any_of)
+    )
+
+
 def applicable(files: Iterable[str], include: Iterable[str], exclude: Iterable[str]) -> bool:
     """True when at least one changed file is included and not excluded. No include globs means always applicable."""
     include = tuple(include)

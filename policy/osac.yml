@@ -4,14 +4,22 @@
 # here: its meaning lives in `merge:` below, so a missing label is reported as "awaiting approval" rather than as a
 # failed check. tests/unit/test_osac_policy.py proves jobs + check-labels == the recorded ruleset.
 #
-# Jobs here do not use path filters yet. Today each workflow's own `changes` job decides applicability and reports a
-# skipped or green check, so the planner reads the outcome. The matcher in osac_ci/paths.py already reproduces the real
-# dorny/paths-filter on ci-filters.yml (tests/contract/test_paths_oracle.py); wiring named filters into jobs is next.
+# Path filters: each workflow decides today whether it applies with dorny/paths-filter on the shared ci-filters.yml
+# and reports a skipped or green check, so the planner reads the outcome. Each job below names the filters its
+# workflow gates on (filters = all of them, filters_any = at least one, as the workflows' `if:` expressions combine
+# them). In `shadow` mode the filters decide nothing: a verdict note says where a filter and what the check did
+# disagree (a failure on files the filters call irrelevant, or a skip on files they call relevant), and
+# `osac-ci replay` counts those. Switch to `enforce` once the replay shows the mapping agrees. Jobs without filters
+# (pre-commit, dependency-review) always apply.
 # Approval is by the `lgtm` / `approved` labels (merge.required_labels). To move to native reviews plus CODEOWNERS with
 # approvals that survive a rebase, add an `approval:` section and drop those two labels (see README).
 # Changes here alter merge behavior: they need review by @osac-project/wg-infra (see CODEOWNERS).
 version: 1
 repo: osac-project/osac
+
+path_filters:
+  mode: shadow
+  file: osac-filters.yml
 
 merge:
   required_labels: [lgtm, approved, jira/valid-reference]
@@ -28,39 +36,70 @@ jobs:
     check: e2e-vmaas-gate
     needs_readiness: true
     suite: vmaas
+    filters: [vmaas-outside-known-safe]
+    filters_any: [e2e-code, e2e-suite]
   e2e-caas:
     kind: e2e
     check: e2e-caas-gate
     needs_readiness: true
     suite: caas
+    filters: [caas-outside-known-safe]
+    filters_any: [e2e-code, e2e-suite]
   e2e-bmaas:
     kind: e2e
     check: e2e-bmaas-gate
     needs_readiness: true
     suite: bmaas/sanity
+    filters: [bmaas-outside-known-safe]
+    filters_any: [e2e-code, e2e-suite]
 
   pre-commit: {check: pre-commit}
-  proto-generated: {check: "Check generated code (proto)"}
-  python-checks: {check: "Check Python code"}
-  go-proto-checks: {check: "Check Go and proto code"}
-  build-binaries: {check: "Build binaries"}
-  ansible-lint: {check: ansible-lint}
+  proto-generated: {check: "Check generated code (proto)", filters: [proto-check]}
+  python-checks: {check: "Check Python code", filters: [fulfillment-service-checks]}
+  go-proto-checks: {check: "Check Go and proto code", filters: [fulfillment-service-checks]}
+  build-binaries: {check: "Build binaries", filters: [fulfillment-service-checks]}
+  ansible-lint: {check: ansible-lint, filters: [ansible-osac-aap]}
   dependency-review: {check: dependency-review}
-  darwin-keychain: {check: "Run darwin keychain tests"}
+  darwin-keychain: {check: "Run darwin keychain tests", filters: [darwin-keychain]}
 
-  unit-tests: {check: "Run unit tests"}
-  unit-tests-metering: {check: "Run unit tests (osac-metering)"}
-  unit-tests-metering-adapters: {check: "Run unit tests (osac-metering/adapters)"}
-  unit-tests-metering-schema: {check: "Run unit tests (osac-metering/schema)"}
-  unit-tests-operator: {check: "Run unit tests (osac-operator)"}
-  unit-tests-bmf: {check: "Run unit tests (bare-metal-fulfillment-operator)"}
+  unit-tests: {check: "Run unit tests", filters: [code, unit-tests-fulfillment-service]}
+  unit-tests-metering: {check: "Run unit tests (osac-metering)", filters: [code, unit-tests-osac-metering]}
+  unit-tests-metering-adapters:
+    check: "Run unit tests (osac-metering/adapters)"
+    filters: [code, unit-tests-osac-metering-adapters]
+  unit-tests-metering-schema:
+    check: "Run unit tests (osac-metering/schema)"
+    filters: [code, unit-tests-osac-metering-schema]
+  unit-tests-operator: {check: "Run unit tests (osac-operator)", filters: [build-osac-operator]}
+  unit-tests-bmf:
+    check: "Run unit tests (bare-metal-fulfillment-operator)"
+    filters: [build-bare-metal-fulfillment-operator]
 
-  integration-fulfillment-service: {check: "Run integration test (fulfillment-service)"}
-  integration-operator: {check: "Run integration test (osac-operator)"}
-  integration-aap: {check: "Run integration test (osac-aap)"}
-  integration-installer: {check: "Run integration test (osac-installer)"}
-  integration-bmf: {check: "Run integration test (bare-metal-fulfillment-operator)"}
+  integration-fulfillment-service:
+    check: "Run integration test (fulfillment-service)"
+    filters: [code, integration-tests-fulfillment-service]
+  integration-operator:
+    check: "Run integration test (osac-operator)"
+    filters: [code, integration-tests-osac-operator]
+  integration-aap:
+    check: "Run integration test (osac-aap)"
+    filters: [code, integration-tests-osac-aap]
+  integration-installer: {check: "Run integration test (osac-installer)", filters: [code]}
+  integration-bmf:
+    check: "Run integration test (bare-metal-fulfillment-operator)"
+    filters: [code, integration-tests-bare-metal-fulfillment-operator]
 
-  helm-lint-installer: {check: "Lint Helm charts (osac-installer)"}
-  helm-crd-sync-operator: {check: "Check Helm CRD sync (osac-operator)"}
-  helm-crd-sync-bmf: {check: "Check Helm CRD sync (bare-metal-fulfillment-operator)"}
+  helm-lint-installer:
+    check: "Lint Helm charts (osac-installer)"
+    filters_any:
+      - helm-osac-installer
+      - helm-osac-operator
+      - helm-bare-metal-fulfillment-operator
+      - helm-fulfillment-service
+      - helm-osac-aap
+      - helm-osac-csi-driver
+      - helm-osac-metering
+  helm-crd-sync-operator: {check: "Check Helm CRD sync (osac-operator)", filters: [helm-osac-operator]}
+  helm-crd-sync-bmf:
+    check: "Check Helm CRD sync (bare-metal-fulfillment-operator)"
+    filters: [helm-bare-metal-fulfillment-operator]

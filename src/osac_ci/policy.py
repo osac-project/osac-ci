@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -32,6 +32,12 @@ class Job(_Strict):
     required_at: tuple[Literal["pr", "queue"], ...] = ("pr", "queue")
     paths: tuple[str, ...] = Field(default=(), description="Include globs; empty means always applicable")
     exclude_paths: tuple[str, ...] = ()
+    filters: tuple[str, ...] = Field(
+        default=(), description="Named path filters that must ALL match some changed file (see path_filters)"
+    )
+    filters_any: tuple[str, ...] = Field(
+        default=(), description="Named path filters of which at least ONE must match some changed file"
+    )
     needs_readiness: bool = Field(default=False, description="Expensive job gated by the E2E unlock signals")
     suite: str | None = None
     markers: str | None = None
@@ -119,6 +125,22 @@ class Trust(_Strict):
     check_name: str = Field(default="OSAC CI authorization", min_length=1)
 
 
+class PathFilters(_Strict):
+    """Named path filters in the format of osac's ``.github/filters/ci-filters.yml``.
+
+    Each filter is a list of globs evaluated the way ``dorny/paths-filter`` does with ``predicate-quantifier: every``
+    (see osac_ci/paths.py). A job names the filters its workflow gates on, and runs when every name in ``filters``
+    and at least one name in ``filters_any`` holds, which is how the workflows combine them today.
+
+    ``shadow`` (default) keeps trusting each check's own outcome and only reports where the filters and the outcome
+    disagree: evidence for the mapping, with no effect on a verdict. ``enforce`` makes the filters decide: a job whose
+    filters do not hold is not applicable, so nothing waits for it."""
+
+    mode: Literal["shadow", "enforce"] = "shadow"
+    file: str | None = Field(default=None, description="A ci-filters.yml-style file, relative to the policy file")
+    filters: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+
+
 class Policy(_Strict):
     version: Literal[1]
     repo: str = Field(min_length=3)
@@ -126,6 +148,7 @@ class Policy(_Strict):
     approval: Approval | None = None
     trust: Trust = Trust()
     e2e: E2E = E2E()
+    path_filters: PathFilters = PathFilters()
     jobs: dict[str, Job]
 
     @model_validator(mode="after")
@@ -140,6 +163,18 @@ class Policy(_Strict):
         used = set(unlock.any_of).union(*unlock.per_suite.values())
         if "human-approval" in used and self.approval is None:
             raise ValueError("e2e.unlock uses human-approval, which needs an approval: section")
+        return self
+
+    @model_validator(mode="after")
+    def _jobs_use_known_filters(self) -> Policy:
+        known = set(self.path_filters.filters)
+        for job_id, job in self.jobs.items():
+            named = (*job.filters, *job.filters_any)
+            unknown = sorted(set(named) - known)
+            if unknown:
+                raise ValueError(f"job {job_id!r} names path filters that are not defined: {unknown}")
+            if named and (job.paths or job.exclude_paths):
+                raise ValueError(f"job {job_id!r} uses both globs (paths) and named filters; use one")
         return self
 
     @field_validator("jobs")
@@ -157,13 +192,37 @@ class Policy(_Strict):
         return jobs
 
 
-def parse_policy(text: str) -> Policy:
+def _load_filters_file(path: Path) -> dict[str, tuple[str, ...]]:
+    try:
+        raw: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise PolicyError(f"cannot read path filters file {path}: {exc}") from exc
+    ok = isinstance(raw, dict) and all(
+        isinstance(k, str) and isinstance(v, list) and v and all(isinstance(p, str) for p in v) for k, v in raw.items()
+    )
+    if not ok:
+        raise PolicyError(f"{path}: expected a mapping of filter name to a non-empty list of patterns")
+    return {k: tuple(v) for k, v in raw.items()}
+
+
+def parse_policy(text: str, *, base: Path | None = None) -> Policy:
+    """Parse and validate a policy. ``base`` is the directory of the policy file, for ``path_filters.file``."""
     try:
         raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise PolicyError(f"policy is not valid YAML: {exc}") from exc
     if not isinstance(raw, dict):
         raise PolicyError("policy must be a YAML mapping")
+    section = raw.get("path_filters")
+    if isinstance(section, dict) and section.get("file"):
+        if base is None:
+            raise PolicyError("path_filters.file needs the policy to be loaded from a file (it is relative to it)")
+        loaded = _load_filters_file(base / str(section["file"]))
+        inline = section.get("filters") or {}
+        clash = sorted(set(loaded) & set(inline))
+        if clash:
+            raise PolicyError(f"path filters defined both inline and in {section['file']}: {clash}")
+        raw["path_filters"] = {**section, "filters": {**inline, **loaded}}
     try:
         return Policy.model_validate(raw)
     except ValidationError as exc:
@@ -176,4 +235,4 @@ def load_policy(path: Path) -> Policy:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise PolicyError(f"cannot read policy {path}: {exc}") from exc
-    return parse_policy(text)
+    return parse_policy(text, base=path.parent)
