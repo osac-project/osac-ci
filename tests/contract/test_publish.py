@@ -217,3 +217,13 @@ def test_without_the_require_flag_the_main_client_is_used_for_org_lookups(monkey
     assert isinstance(cli.build_org_client(required=True), cli._NoOrgToken)  # type: ignore[attr-defined]
     monkeypatch.setenv(cli.ORG_TOKEN_ENV, "x")
     assert isinstance(cli.build_org_client(required=True), cli.HttpClient)
+
+
+def test_a_failing_check_listing_does_not_hide_the_fail_closed_verdict() -> None:
+    # Reading the PR already failed (so the verdict is a planner-error), and so does the lookup of the existing run:
+    # there is nothing to compare with, so the failure is posted anyway instead of the job dying before it.
+    fake = fake_with_publish_routes()
+    fake.add("GET", CHECKS, {"message": "boom"}, status=500)
+    out = publish(fake)
+    (body,) = posted(fake)
+    assert out.action == "created" and out.state.value == "planner-error" and body["conclusion"] == "failure"

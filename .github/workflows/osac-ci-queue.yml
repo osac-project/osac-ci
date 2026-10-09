@@ -1,0 +1,70 @@
+---
+name: osac-ci-queue
+
+# Posts the planner's verdict for a merge-queue commit as the "OSAC CI" check run on that commit.
+# Informational for now: the check is not required, so a bug here cannot block a merge.
+#
+# The queue runs the required checks on its own commit and waits for all of them, so the verdict has to be on that
+# commit too, and it has to change when the last required check finishes. A `check_run` event says exactly that, and it
+# always runs the workflow from the default branch. A `merge_group` workflow would run the file from the queue commit
+# itself, which contains the pull request's own changes, so it is not used.
+#
+# Safety rules for this file (it runs with write access to checks):
+# * it never checks out or runs pull request code: checkout is pinned to the default branch;
+# * it uses the built-in token only: no environment, no secret, no organization lookups (a queue commit has no author
+#   or reviews to judge);
+# * the commit and branch come from the event, but are validated by the program (40 hex digits, a queue branch name)
+#   and passed through environment variables, never the script text;
+# * the verdict is computed from live API state, so a stale event cannot post a stale result.
+on:
+  check_run:
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Merge-queue commit to evaluate (40 hex digits)
+        required: true
+      branch:
+        description: Its queue branch, gh-readonly-queue/<base>/pr-<n>-<sha>
+        required: true
+
+permissions:
+  contents: read
+
+# One group per commit. A newer run reads newer state, so an older one may be cancelled.
+concurrency:
+  group: osac-ci-queue-${{ github.event.check_run.head_sha || inputs.sha }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: publish
+    # Only checks of a queue branch, and never our own checks (their completion would only trigger another run).
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' || (
+        startsWith(github.event.check_run.check_suite.head_branch, 'gh-readonly-queue/')
+        && github.event.check_run.name != 'OSAC CI'
+        && github.event.check_run.name != 'OSAC CI authorization') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read  # check out the default branch
+      checks: write  # post the OSAC CI check run on the queue commit
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Post the verdict on the queue commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.event.check_run.head_sha || inputs.sha }}
+          BRANCH: ${{ github.event.check_run.check_suite.head_branch || inputs.branch }}
+        run: |
+          uv run osac-ci publish-queue --policy policy/osac-ci.yml --repo "$REPO" --sha "$SHA" --branch "$BRANCH" \
+            --note "Informational for now: this check is not required to merge."

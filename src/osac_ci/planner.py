@@ -87,7 +87,7 @@ def _evaluate(
 ) -> JobEntry | None:
     if mode.value not in job.required_at:
         return None
-    if not applicable(snapshot.changed_files, job.paths, job.exclude_paths):
+    if snapshot.changed_files_known and not applicable(snapshot.changed_files, job.paths, job.exclude_paths):
         return JobEntry(job_id, job.check, JobStatus.NOT_APPLICABLE, "no changed file matches this job's paths")
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"

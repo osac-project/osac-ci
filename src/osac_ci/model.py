@@ -88,6 +88,9 @@ class Snapshot:
     label_events: tuple[LabelEvent, ...] = ()
     check_runs: tuple[CheckRun, ...] = ()
     changed_files: tuple[str, ...] = ()
+    # False when the list could not be read completely (a merge-queue commit with more files than the compare API
+    # returns). Path rules then cannot narrow anything: every job counts, never skipped on a guess.
+    changed_files_known: bool = True
     in_merge_queue: bool = False
     # Replaying the issue events in order up to the merge: was the PR still in the queue when it merged? True means
     # the queue merged it; False means a direct merge (a bypass), even if it was queued earlier.

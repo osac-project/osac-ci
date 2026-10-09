@@ -10,6 +10,10 @@ How a state shows up (measured in the sandbox, see the design doc):
 
 The newest check run of a name decides, so publishing again always repairs a stale verdict. Everything is computed
 from live API state, never from the event that triggered the run, and an unchanged verdict is not posted again.
+
+The same check name is posted on merge-queue commits (``publish_queue``), where the required checks are the jobs
+required at ``queue``: ``success`` once they all passed, ``in_progress`` while any is pending, ``failure`` when one
+failed.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
-from osac_ci.github.snapshot import fetch_snapshot
+from osac_ci.github.snapshot import COMMIT_SHA, fetch_queue_snapshot, fetch_snapshot
 from osac_ci.model import Mode, State, Verdict
 from osac_ci.planner import error_verdict, plan_or_error
 from osac_ci.policy import Policy
@@ -50,7 +54,9 @@ OUTCOME: dict[State, tuple[str, str | None]] = {
     State.AWAITING_APPROVAL: PERSON_NEEDED,
     State.AWAITING_E2E_SIGNAL: PERSON_NEEDED,
     State.E2E_FAILED: PERSON_NEEDED,
-    State.QUEUE_FAILED: PERSON_NEEDED,
+    # A failed required check on a queue commit is a real failure, not an unmet condition, and it must be red: an
+    # action_required check would leave the entry waiting for its timeout instead of being ejected.
+    State.QUEUE_FAILED: BROKEN,
     State.PLANNER_ERROR: BROKEN,
 }
 
@@ -90,11 +96,16 @@ def payload(verdict: Verdict, head_sha: str, *, check_name: str = CHECK_NAME, no
 
 
 def _latest_external_id(client: GitHubClient, repo: str, head_sha: str, check_name: str) -> str | None:
-    data = get(
-        client,
-        f"/repos/{repo}/commits/{head_sha}/check-runs",
-        {"check_name": check_name, "filter": "latest", "per_page": "10"},
-    )
+    """The id of the newest run of this check on the commit, to avoid posting the same verdict twice. If the listing
+    fails there is nothing to compare with: post anyway, so a failing API never hides a fail-closed verdict."""
+    try:
+        data = get(
+            client,
+            f"/repos/{repo}/commits/{head_sha}/check-runs",
+            {"check_name": check_name, "filter": "latest", "per_page": "10"},
+        )
+    except GitHubError:
+        return None
     runs = sorted(data.get("check_runs", ()), key=lambda r: r.get("id", 0))
     return runs[-1].get("external_id") if runs else None
 
@@ -141,6 +152,40 @@ def publish_pr(
     if response.status != 201:
         raise GitHubError(response.status, f"POST /repos/{repo}/check-runs")
     return Outcome(number, head_sha, verdict.state, status, conclusion, "created", body["output"]["title"])
+
+
+def publish_queue(
+    client: GitHubClient,
+    policy: Policy,
+    repo: str,
+    sha: str,
+    base_ref: str,
+    *,
+    check_name: str = CHECK_NAME,
+    note: str = "",
+    dry_run: bool = False,
+) -> Outcome:
+    """Evaluate a merge-queue commit and post the verdict on it, unless the newest run already says the same.
+
+    Fails closed like ``publish_pr``: if the commit cannot be read the check is a visible failure naming the cause,
+    never a pass. The snapshot never needs a token that can read the organization."""
+    repo = check_repo(repo)
+    if not COMMIT_SHA.match(sha):
+        raise ValueError(f"invalid commit sha: {sha!r}")  # nothing can be posted on it, so refuse before any request
+    try:
+        verdict = plan_or_error(fetch_queue_snapshot(client, repo, sha, base_ref), policy, Mode.QUEUE)
+    except (GitHubError, KeyError, ValueError) as exc:
+        verdict = error_verdict(f"could not read queue commit {sha[:7]}: {exc}", Mode.QUEUE)
+    body = payload(verdict, sha, check_name=check_name, note=note)
+    status, conclusion = body["status"], body.get("conclusion")
+    if dry_run:
+        return Outcome(0, sha, verdict.state, status, conclusion, "dry-run", body["output"]["title"])
+    if _latest_external_id(client, repo, sha, check_name) == body["external_id"]:
+        return Outcome(0, sha, verdict.state, status, conclusion, "unchanged")
+    response = client.request("POST", f"/repos/{repo}/check-runs", body=body)
+    if response.status != 201:
+        raise GitHubError(response.status, f"POST /repos/{repo}/check-runs")
+    return Outcome(0, sha, verdict.state, status, conclusion, "created", body["output"]["title"])
 
 
 def sweep(
