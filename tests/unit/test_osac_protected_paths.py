@@ -16,12 +16,30 @@ def approved(user: str, commit: str = HEAD) -> Review:
 
 
 def verdict(policy: Policy, files: tuple[str, ...], *reviews: Review):  # type: ignore[no-untyped-def]
-    return plan(snap(policy, author="alice", changed_files=files, team_members=TEAM, reviews=reviews), policy)
+    s = snap(policy, author="alice", changed_files=files, team_members=TEAM, owner_approvers=UI_OWNERS, reviews=reviews)
+    return plan(s, policy)
 
 
-def test_one_rule_names_the_infrastructure_group(osac_policy: Policy) -> None:
-    (rule,) = osac_policy.protected_paths
-    assert rule.approvers == ("@osac-project/wg-infra",) and rule.carry_over == "never"
+UI_WORKFLOWS = (".github/workflows/osac-ui-lint.yaml", ".github/workflows/osac-ui-typecheck.yaml")
+UI_OWNERS = {"osac-ui/OWNERS": frozenset({"rawagner", "eliorerz"})}
+
+
+def test_the_shared_pipeline_belongs_to_the_group_and_the_ui_workflows_also_to_the_ui_maintainers(
+    osac_policy: Policy,
+) -> None:
+    shared, ui = osac_policy.protected_paths
+    assert shared.approvers == ui.approvers == ("@osac-project/wg-infra",)
+    assert shared.approvers_from == () and ui.approvers_from == ("osac-ui/OWNERS",)
+    assert set(ui.paths) == set(UI_WORKFLOWS) and set(UI_WORKFLOWS) <= set(shared.exclude_paths)
+
+
+def test_each_change_is_judged_by_exactly_one_rule(osac_policy: Policy) -> None:
+    for file in (*UI_WORKFLOWS, ".github/workflows/unit-tests.yml", ".github/actions/x/action.yml", "CODEOWNERS"):
+        assert sum(rule.covers(file) for rule in osac_policy.protected_paths) == 1, file
+
+
+def test_the_override_is_for_the_group(osac_policy: Policy) -> None:
+    assert osac_policy.override is not None and osac_policy.override.approvers == ("@osac-project/wg-infra",)
 
 
 @pytest.mark.parametrize(
@@ -29,6 +47,8 @@ def test_one_rule_names_the_infrastructure_group(osac_policy: Policy) -> None:
     [
         ".github/workflows/unit-tests.yml",
         ".github/workflows/osac-ci.yml",
+        ".github/workflows/osac-ui-publish-image.yaml",  # publishes an image with secrets: not delegated
+        ".github/workflows/build-image.yaml",
         ".github/actions/check-e2e-readiness/action.yml",
         ".github/scripts/auto-queue.sh",
         ".github/filters/ci-filters.yml",
@@ -84,3 +104,34 @@ def test_a_pr_that_changes_a_workflow_and_its_readme_still_needs_the_group(osac_
     files = (".github/workflows/README.md", ".github/workflows/unit-tests.yml")
     assert verdict(osac_policy, files).state is State.AWAITING_APPROVAL
     assert verdict(osac_policy, files, approved("infra-bob")).state is State.READY_TO_ENQUEUE
+
+
+@pytest.mark.parametrize("file", UI_WORKFLOWS)
+def test_the_ui_maintainers_can_approve_their_own_lint_and_typecheck(osac_policy: Policy, file: str) -> None:
+    assert verdict(osac_policy, (file,)).state is State.AWAITING_APPROVAL
+    assert verdict(osac_policy, (file,), approved("RawAgner")).state is State.READY_TO_ENQUEUE
+    assert verdict(osac_policy, (file,), approved("infra-bob")).state is State.READY_TO_ENQUEUE
+    assert verdict(osac_policy, (file,), approved("somebody")).state is State.AWAITING_APPROVAL
+
+
+def test_the_ui_maintainers_cannot_approve_anything_else_in_the_pipeline(osac_policy: Policy) -> None:
+    for file in (
+        ".github/workflows/unit-tests.yml",
+        ".github/workflows/osac-ui-publish-image.yaml",
+        ".github/actions/x/action.yml",
+        "CODEOWNERS",
+    ):
+        assert verdict(osac_policy, (file,), approved("rawagner")).state is State.AWAITING_APPROVAL, file
+
+
+def test_a_waiver_lifts_only_the_protected_approval(osac_policy: Policy) -> None:
+    from osac_ci.model import OverrideGrant
+
+    grant = OverrideGrant("infra-bob", "release is blocked")
+    files = (".github/workflows/unit-tests.yml",)
+    ok = plan(snap(osac_policy, changed_files=files, team_members=TEAM, overrides=(grant,)), osac_policy)
+    assert ok.state is State.READY_TO_ENQUEUE and any("waived by infra-bob" in n for n in ok.notes)
+    no_label = plan(
+        snap(osac_policy, labels=frozenset(), changed_files=files, team_members=TEAM, overrides=(grant,)), osac_policy
+    )
+    assert no_label.state is State.AWAITING_APPROVAL and "missing label: lgtm" in no_label.headline

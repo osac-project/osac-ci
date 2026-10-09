@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci.authorize import authorize, reply
+from osac_ci.authorize import authorize, override, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
@@ -216,6 +216,16 @@ def _parser() -> argparse.ArgumentParser:
     auth.add_argument("--org", help="org used for the membership check (default: the repo owner)")
     auth.add_argument("--dry-run", action="store_true", help="decide, but post neither the check nor the reply")
 
+    ovr = sub.add_parser(
+        "override",
+        help="handle an /override <sha> <reason> comment: waive the protected-path approval (text from env)",
+    )
+    ovr.add_argument("--policy", type=Path, required=True)
+    ovr.add_argument("--repo", required=True, help="owner/name")
+    ovr.add_argument("--number", type=int, required=True)
+    ovr.add_argument("--commenter", required=True, help="login of whoever commented")
+    ovr.add_argument("--dry-run", action="store_true", help="decide, but post neither the check nor the reply")
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -364,6 +374,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"PR #{args.number}: {state}: {result.message}")
         return 0
 
+    if args.command == "override":
+        try:
+            client = build_client()
+            result = override(
+                client,
+                build_org_client(required=True) or client,
+                policy,
+                args.repo,
+                args.number,
+                args.commenter,
+                os.environ.get(COMMENT_ENV, ""),
+                dry_run=args.dry_run,
+            )
+            if result.handled and not args.dry_run:
+                reply(client, args.repo, args.number, result.message)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: override failed: {exc}", file=sys.stderr)
+            return 3
+        state = "granted" if result.granted else ("refused" if result.handled else "ignored")
+        print(f"PR #{args.number}: {state}: {result.message}")
+        return 0
+
     if args.command == "replay":
         try:
             report = replay(
@@ -400,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 lookup_membership=not args.no_membership_lookup,
                 approval=policy.approval,
                 protected=policy.protected_paths,
+                override=policy.override,
                 org_client=build_org_client(),
                 trust=policy.trust,
             )

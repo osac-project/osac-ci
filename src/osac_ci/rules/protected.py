@@ -29,8 +29,25 @@ def matched_files(snapshot: Snapshot, rule: ProtectedPaths) -> list[str]:
     return [path for path in snapshot.changed_files if rule.covers(path)]
 
 
+def allowed_logins(snapshot: Snapshot, rule: ProtectedPaths) -> set[str]:
+    """Everyone who may approve for this rule: its handles (logins, expanded teams) and the approvers of its OWNERS
+    files. A team or file that could not be read is an error, never an empty list."""
+    allowed = set().union(*(approval.logins_of(snapshot, owner) for owner in rule.approvers))
+    for path in rule.approvers_from:
+        listed = snapshot.owner_approvers.get(path)
+        if listed is None:
+            raise ValueError(
+                f"cannot read the approvers in {path} on the base branch; check the credential and the path"
+            )
+        allowed |= listed
+    return allowed
+
+
 def evaluate(snapshot: Snapshot, rules: tuple[ProtectedPaths, ...]) -> ProtectedDecision:
-    """Problems for every rule whose files changed and that none of its approvers has approved."""
+    """Problems for every rule whose files changed and that none of its approvers has approved.
+
+    A valid override (a person the policy trusts to waive it, for exactly this commit) turns the problems into a note
+    that names who did it and why; it never hides anything else about the pull request."""
     problems: list[str] = []
     notes: list[str] = []
     who: list[str] = []
@@ -40,12 +57,15 @@ def evaluate(snapshot: Snapshot, rules: tuple[ProtectedPaths, ...]) -> Protected
             continue
         policy = Approval(min_approvals=1, require_code_owners=False, carry_over=rule.carry_over)
         found = approval.approvers(snapshot, policy)
-        allowed = set().union(*(approval.logins_of(snapshot, owner) for owner in rule.approvers))
-        if allowed & found.valid.keys():
+        if allowed_logins(snapshot, rule) & found.valid.keys():
             notes += found.notes
             continue
         shown = ", ".join(files[:_SHOWN_FILES]) + (" ..." if len(files) > _SHOWN_FILES else "")
         problems += found.stale
         problems.append(f"changes protected files ({shown}): needs an approval from {', '.join(rule.approvers)}")
         who += [a for a in rule.approvers if a not in who]
+    if problems and snapshot.overrides:
+        grant = snapshot.overrides[0]
+        notes.append(f"protected-path approval waived by {grant.login}: {grant.reason}")
+        return ProtectedDecision((), tuple(dict.fromkeys(notes)), ())
     return ProtectedDecision(tuple(dict.fromkeys(problems)), tuple(dict.fromkeys(notes)), tuple(who))

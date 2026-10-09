@@ -23,10 +23,17 @@ path_filters:
   file: osac-filters.yml
 
 # The files that define the checks every pull request is judged by. A PR can change them, and then a passing check
-# proves little (a job changed to end with `exit 0` still reports success), so a change needs an approval from the
-# infrastructure group. Markdown inside those folders (a README) cannot change a check and is not covered, and neither
-# is documentation next to them (.github/*.md). The rule is in this file, not in the PR, so a PR cannot change who has
-# to approve. Needs the organization token, to read the team.
+# proves little (a job changed to end with `exit 0` still reports success), so a change needs an approval. The rule is
+# in this file, not in the PR, so a PR cannot change who has to approve. It needs the organization token, to read teams.
+#
+# The shared pipeline needs the infrastructure group: the actions, scripts and filters, CODEOWNERS, pre-commit, and every
+# workflow that reports a required check, runs with secrets or publishes an image. Markdown inside those folders (a
+# README) cannot change a check and is not covered, and neither is documentation next to them (.github/*.md).
+#
+# A component's own workflows may also be approved by that component's maintainers, read from the component's OWNERS
+# file on the base branch. Only workflows that run on pull_request, use no secret and report no required check qualify,
+# which today is the osac-ui lint and typecheck. A file listed in the second rule is excluded from the first, so each
+# change is judged by exactly one rule.
 protected_paths:
   - paths:
       - ".github/workflows/**"
@@ -35,8 +42,23 @@ protected_paths:
       - ".github/filters/**"
       - "CODEOWNERS"
       - ".pre-commit-config.yaml"
-    exclude_paths: ["**/*.md"]
+    exclude_paths:
+      - "**/*.md"
+      - ".github/workflows/osac-ui-lint.yaml"
+      - ".github/workflows/osac-ui-typecheck.yaml"
     approvers: ["@osac-project/wg-infra"]
+  - paths:
+      - ".github/workflows/osac-ui-lint.yaml"
+      - ".github/workflows/osac-ui-typecheck.yaml"
+    approvers: ["@osac-project/wg-infra"]
+    approvers_from: ["osac-ui/OWNERS"]
+
+# An urgent change that cannot wait for an approval (for example when the author is the only infrastructure person
+# available) can be waived for one exact commit: an approver comments `/override <full commit sha> <reason>`. The waiver
+# is a check run on that commit naming who and why, which is the audit trail; a new push needs a new one, and the PR's
+# author cannot waive their own PR. It lifts only this protected-path approval, never a failed check or a missing label.
+override:
+  approvers: ["@osac-project/wg-infra"]
 
 merge:
   required_labels: [lgtm, approved, jira/valid-reference]
