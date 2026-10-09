@@ -38,6 +38,8 @@ def test_policy_parses_the_section_and_rejects_bad_input() -> None:
         "{paths: ['x'], approvers: []}",
         "{paths: ['x'], approvers: ['bob']}",
         "{paths: ['x'], approvers: ['@o/t/extra']}",
+        "{paths: ['x'], approvers: ['@o/..']}",
+        "{paths: ['x'], approvers: ['@o/.']}",
         "{paths: ['x'], approvers: ['@o/t'], surprise: 1}",
     ):
         with pytest.raises(PolicyError):
@@ -163,3 +165,16 @@ def test_failed_checks_are_still_shown_before_the_approval_wait(guarded: Policy)
 def test_the_queue_commit_is_not_judged_by_reviews(guarded: Policy) -> None:
     s = snap(guarded, changed_files=(WORKFLOW,), team_members=TEAM_MEMBERS)
     assert plan(s, guarded, Mode.QUEUE).state is State.QUEUE_PASSED
+
+
+def test_a_protected_change_keeps_its_own_next_step_under_native_approval(guarded: Policy) -> None:
+    """Native approval is satisfied, the protected rule is not: the next step must name the protected approvers."""
+    from osac_ci.policy import Approval
+
+    policy = guarded.model_copy(update={"approval": Approval(require_code_owners=False)})
+    s = snap(policy, changed_files=(WORKFLOW,), team_members=TEAM_MEMBERS, reviews=(approved_by("somebody"),))
+    v = plan(s, policy)
+    assert (
+        v.state is State.AWAITING_APPROVAL and v.next_action == f"get an approval from {TEAM} for the protected files"
+    )
+    assert v.who_must_act == "protected-path approver"

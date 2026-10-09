@@ -172,10 +172,14 @@ def fetch_codeowners(client: GitHubClient, repo: str, base_ref: str) -> str | No
     return None
 
 
+_TEAM_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
 def fetch_team_members(client: GitHubClient, team: str) -> frozenset[str] | None:
     """Logins in ``org/team``; ``None`` when the credential cannot read the team (never an empty guess)."""
     org, _, slug = team.partition("/")
-    if not org or not slug:
+    # A slug of dots is a path segment ("..") that a server may resolve to another endpoint: treat it as unreadable.
+    if not org or not slug or not _TEAM_SLUG.fullmatch(slug):
         return None
     path = f"/orgs/{urllib.parse.quote(org, safe='')}/teams/{urllib.parse.quote(slug, safe='')}/members"
     try:

@@ -98,7 +98,7 @@ class ProtectedPaths(_Strict):
     @field_validator("approvers")
     @classmethod
     def _handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not re.fullmatch(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9._-]+)?", a) for a in value):
+        if any(not re.fullmatch(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", a) for a in value):
             raise ValueError("approvers must look like @login or @org/team")
         return value
 
