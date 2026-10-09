@@ -465,8 +465,12 @@ group and the sweep budget.
 A `workflow_run` event does not name a pull request that comes from a fork, and the usual "which pull request contains
 this commit" lookup is empty for one. The action therefore finds it from the run's head owner and branch. Without a
 pull request, `sweep: "true"` evaluates open pull requests within the `recent`, `rotate`, `reserve` and `interval`
-budget described below. The action never checks out the calling repository, so it cannot run pull request code. It
-makes no organization lookups: membership is approximated from the author association GitHub reports.
+budget described below. The action never checks out the calling repository, so it cannot run pull request code.
+
+By default it makes no organization lookups and approximates membership from the author association GitHub reports (a
+member whose membership is private looks like an outsider). With `lookup-membership: "true"` and an `org-token` (a
+short-lived token of the read-only app, minted by the calling workflow) it looks membership and owner teams up, and a
+missing or unusable token turns the verdict into a visible `planner-error`.
 
 ### Merge-queue commits
 

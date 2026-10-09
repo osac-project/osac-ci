@@ -12,6 +12,16 @@ inputs:
   github-token:
     description: Token that can write checks and read pull requests (normally the job's built-in token)
     required: true
+  org-token:
+    description: >-
+      Token that can read organization membership and teams (a short-lived app token). Used only when
+      lookup-membership is "true"
+    default: ""
+  lookup-membership:
+    description: >-
+      "true" to look up organization membership and owner teams with org-token. A missing or unusable token then makes
+      the verdict a visible planner-error, never a pass. Otherwise membership is approximated from the author association
+    default: "false"
   repo:
     description: Repository to evaluate, owner/name
     required: true
@@ -69,9 +79,7 @@ runs:
           # open pull request that has this owner and branch as its head (the owner narrows it to one fork).
           NUMBER=$(gh api -X GET "repos/$REPO/pulls" -f state=open -f head="$HEAD_OWNER:$HEAD_BRANCH" --jq '.[0].number // empty')
           if [ -z "$NUMBER" ]; then
-            echo "::notice::No open pull request has this branch as its head; nothing to evaluate."
-            echo "mode=none" >> "$GITHUB_OUTPUT"
-            exit 0
+            echo "::notice::No open pull request has this branch as its head."
           fi
         fi
         case "$NUMBER" in
@@ -99,16 +107,20 @@ runs:
         RESERVE: ${{ inputs.reserve }}
         INTERVAL: ${{ inputs.interval }}
         NOTE: ${{ inputs.note }}
+        LOOKUP_MEMBERSHIP: ${{ inputs.lookup-membership }}
+        OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
         note=()
         if [ -n "$NOTE" ]; then note=(--note "$NOTE"); fi
+        lookup=()
+        if [ "$LOOKUP_MEMBERSHIP" = "true" ]; then lookup=(--lookup-membership --require-org-token); fi
         if [ "$MODE" = "one" ]; then
           target=(--number "$NUMBER")
         else
           target=(--all --recent "$RECENT" --rotate "$ROTATE" --reserve "$RESERVE" --interval "$INTERVAL")
         fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
-        uv run --locked --project "$root" osac-ci publish --policy "$root/$POLICY" --repo "$REPO" "${target[@]}" "${note[@]}"
+        uv run --locked --project "$root" osac-ci publish --policy "$root/$POLICY" --repo "$REPO" "${target[@]}" "${lookup[@]}" "${note[@]}"
