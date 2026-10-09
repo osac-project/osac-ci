@@ -115,7 +115,7 @@ class HttpClient:
 
     def _note_rate_limit(self, headers: Mapping[str, str]) -> None:
         value = headers.get("x-ratelimit-remaining")
-        if value is not None and value.isdigit():
+        if value is not None and value.isascii() and value.isdigit():  # "²".isdigit() is true and int("²") raises
             self._remaining[headers.get("x-ratelimit-resource", "core")] = int(value)
 
     def request(

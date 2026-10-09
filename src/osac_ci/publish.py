@@ -207,8 +207,10 @@ def select_prs(
     is looked at within ceil(others / rotate) sweeps, as long as it stays among the others."""
     if recent is None and rotate is None:
         return list(prs)
-    first = list(prs[: recent or 0])
-    others = sorted(prs[recent or 0 :], key=lambda pr: pr["number"])
+    recent = max(0, recent or 0)  # a negative count must never slice from the end
+    rotate = max(0, rotate or 0)
+    first = list(prs[:recent])
+    others = sorted(prs[recent:], key=lambda pr: pr["number"])
     if not rotate or not others:
         return first
     slices = -(-len(others) // rotate)
@@ -238,7 +240,10 @@ def sweep(
 
     One PR failing never stops the others; it is reported as ``failed``. When the client knows how many requests it has
     left and that falls below ``reserve``, the PRs not started yet are reported as ``skipped``, not failed: running
-    out of quota must not turn a sweep red or leave a half-written state, and the next sweep picks them up."""
+    out of quota must not turn a sweep red or leave a half-written state, and the next sweep picks them up.
+
+    The reserve is approximate: with several workers, a few can read the same remaining count before any of them has
+    spent requests, so a sweep can overshoot it by about ``workers`` times the cost of one PR (7 to 11 requests)."""
     prs = list_open_prs(client, repo, include_drafts=True)
     if limit is not None:
         prs = prs[:limit]

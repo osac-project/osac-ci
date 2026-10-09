@@ -73,6 +73,13 @@ class _NoOrgToken:
         raise GitHubError(0, f"{ORG_TOKEN_ENV} is not available (the organization app token could not be created)")
 
 
+def _non_negative(text: str) -> int:
+    value = int(text)
+    if value < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative, got {value}")
+    return value
+
+
 def build_org_client(*, required: bool = False) -> GitHubClient | None:
     """A client for organization lookups only, when ``OSAC_CI_ORG_TOKEN`` is set; otherwise the main client is used.
 
@@ -138,14 +145,21 @@ def _parser() -> argparse.ArgumentParser:
     pub.add_argument("--check-name", default=CHECK_NAME)
     pub.add_argument("--note", default="", help="text placed above the verdict in the check summary")
     pub.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
-    pub.add_argument("--limit", type=int, help="with --all: stop after this many PRs")
-    pub.add_argument("--recent", type=int, help="with --all: look at this many most recently updated PRs per sweep")
+    pub.add_argument("--limit", type=_non_negative, help="with --all: stop after this many PRs")
     pub.add_argument(
-        "--rotate", type=int, help="with --all: plus this many of the others, a different slice each sweep"
+        "--recent", type=_non_negative, help="with --all: look at this many most recently updated PRs per sweep"
     )
-    pub.add_argument("--interval", type=int, default=600, help="seconds between sweeps, for the rotation (default 600)")
     pub.add_argument(
-        "--reserve", type=int, default=0, help="with --all: skip the PRs not started once fewer requests are left"
+        "--rotate", type=_non_negative, help="with --all: plus this many of the others, a different slice each sweep"
+    )
+    pub.add_argument(
+        "--interval", type=_non_negative, default=600, help="seconds between sweeps, for the rotation (default 600)"
+    )
+    pub.add_argument(
+        "--reserve",
+        type=_non_negative,
+        default=0,
+        help="with --all: skip the PRs not started once fewer requests are left (approximate with several workers)",
     )
     pub.add_argument("--dry-run", action="store_true", help="print what would be posted, post nothing")
     pub.add_argument(
