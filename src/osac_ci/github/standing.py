@@ -25,7 +25,9 @@ query($owner: String!, $name: String!, $after: String, $check: String!, $app: In
         headRefOid
         commits(last: 1) { nodes { commit {
           checkSuites(last: 20, filterBy: {appId: $app, checkName: $check}) { nodes {
-            checkRuns(last: 10, filterBy: {checkName: $check}) { nodes { status conclusion startedAt completedAt } }
+            checkRuns(last: 10, filterBy: {checkName: $check}) {
+              nodes { databaseId status conclusion startedAt completedAt }
+            }
           } }
         } } }
       }
@@ -42,8 +44,9 @@ def _newest_run(node: dict[str, Any]) -> LastVerdict | None:
             runs += (suite.get("checkRuns") or {}).get("nodes") or []
     if not runs:
         return None
-    # The newest check run of a name decides, wherever it was posted.
-    newest = max(runs, key=lambda r: str(r.get("startedAt") or r.get("completedAt") or ""))
+    # The newest check run of a name decides, wherever it was posted. A run's database id only grows, so it orders the
+    # whole set; a queued run has no time at all, and the times only break a tie (and order runs that have no id).
+    newest = max(runs, key=lambda r: (r.get("databaseId") or 0, str(r.get("startedAt") or r.get("completedAt") or "")))
     return LastVerdict(
         status=str(newest["status"]).lower(),
         conclusion=str(newest["conclusion"]).lower() if newest.get("conclusion") else None,

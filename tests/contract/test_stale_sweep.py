@@ -256,3 +256,52 @@ def test_the_sweep_hands_the_app_to_the_listing() -> None:
     other = listing_with_pr_routes([node(1, "2026-10-09T09:00:00Z", [run_node(at="2026-10-09T10:00:00Z")])])
     sweep(other, READY, REPO, org="example", stale=StaleRules(), now=NOW)
     assert variables_sent(other)["app"] == 15368
+
+
+def test_a_newer_queued_run_with_no_times_beats_an_older_completed_one() -> None:
+    """Only the id says which is newer: a queued run has neither a start nor a completion time."""
+    old = {**run_node(at="2026-10-09T10:00:00Z"), "databaseId": 100}
+    queued = {"databaseId": 200, "status": "QUEUED", "conclusion": None, "startedAt": None, "completedAt": None}
+    for runs in ([old, queued], [queued, old]):  # the order the API lists them in must not matter
+        (s,) = fetch_standings(Listing([node(1, "2026-10-09T09:00:00Z", runs)]), REPO, "OSAC CI")
+        assert s.last is not None and s.last.status == "queued" and s.last.started_at is None
+
+
+def test_the_id_orders_runs_across_suites_even_when_the_times_say_otherwise() -> None:
+    newer_by_id = {**run_node(at="2026-10-09T08:00:00Z"), "databaseId": 300}
+    newer_by_time = {**run_node("COMPLETED", "FAILURE", "2026-10-09T11:00:00Z"), "databaseId": 200}
+    standing = Listing(
+        [
+            {
+                **node(1, "2026-10-09T09:00:00Z"),
+                "commits": {
+                    "nodes": [
+                        {
+                            "commit": {
+                                "checkSuites": {
+                                    "nodes": [
+                                        {"checkRuns": {"nodes": [newer_by_time]}},
+                                        {"checkRuns": {"nodes": [newer_by_id]}},
+                                    ]
+                                }
+                            }
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+    (s,) = fetch_standings(standing, REPO, "OSAC CI")
+    assert s.last is not None and s.last.conclusion == "success"  # the run with the higher id
+
+
+def test_the_query_asks_for_the_database_id_of_each_run() -> None:
+    from osac_ci.github.standing import _QUERY
+
+    assert "databaseId status conclusion startedAt completedAt" in _QUERY
+
+
+def test_runs_without_an_id_are_still_ordered_by_their_times() -> None:
+    older, newer = run_node(at="2026-10-09T09:00:00Z"), run_node("COMPLETED", "FAILURE", "2026-10-09T10:00:00Z")
+    (s,) = fetch_standings(Listing([node(1, "2026-10-09T08:00:00Z", [newer, older])]), REPO, "OSAC CI")
+    assert s.last is not None and s.last.conclusion == "failure"
