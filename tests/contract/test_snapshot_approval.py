@@ -262,3 +262,33 @@ def test_a_team_slug_that_is_a_path_segment_is_unreadable_not_looked_up() -> Non
     for slug in ("..", ".", "a/b", ""):
         assert fetch_team_members(fake, f"example/{slug}") is None
     assert fake.calls == []
+
+
+def test_a_renamed_file_lists_both_names_so_moving_a_file_out_of_a_folder_is_seen() -> None:
+    fake = standard_fake()
+    fake.add(
+        "GET",
+        f"{BASE}/pulls/7/files",
+        [
+            {"filename": "tools/ci.yml", "previous_filename": ".github/workflows/ci.yml", "status": "renamed"},
+            {"filename": "a.go"},
+            {"filename": ".github/workflows/ci.yml", "status": "removed"},  # listed twice: kept once
+        ],
+    )
+    s = fetch_snapshot(fake, REPO, 7, org="example")
+    assert s.changed_files == ("tools/ci.yml", ".github/workflows/ci.yml", "a.go")
+
+
+def test_a_queue_commit_lists_both_names_of_a_rename_too() -> None:
+    from osac_ci.github.snapshot import fetch_queue_snapshot
+
+    fake = FakeGitHub()
+    sha = "e" * 40
+    fake.add("GET", f"{BASE}/commits/{sha}/check-runs", {"check_runs": [], "total_count": 0})
+    fake.add(
+        "GET",
+        f"{BASE}/compare/main...{sha}",
+        {"files": [{"filename": "new/a.yml", "previous_filename": ".github/a.yml"}, {"filename": "b.go"}]},
+    )
+    s = fetch_queue_snapshot(fake, REPO, sha, "main")
+    assert s.changed_files == ("new/a.yml", ".github/a.yml", "b.go") and s.changed_files_known

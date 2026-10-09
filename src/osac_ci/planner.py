@@ -107,9 +107,12 @@ def _filter_note(job: Job, run: CheckRun | None, holds: bool | None) -> str:
 def _skipped_but_applicable(
     job: Job, run: CheckRun | None, holds: bool | None, snapshot: Snapshot, policy: Policy
 ) -> bool:
-    """Enforce mode with ``skipped_applicable: fail``: a job the path rules say applies, whose check was skipped,
-    did not do its work. GitHub counts a skip as a pass, so a workflow changed to skip itself would go unnoticed.
-    A readiness-gated job is skipped on purpose until it is unlocked, so it is exempt."""
+    """Enforce mode with ``skipped_applicable: fail``: a job that applies to this PR, whose check was skipped, did not
+    do its work. GitHub counts a skip as a pass, so a workflow changed to skip itself would go unnoticed.
+
+    A job applies when its named filters hold, when its globs matched, or when nothing narrows it (it runs on every
+    PR). With a filter or glob but no usable file list nothing can be said, so the skip stands. A readiness-gated job
+    is skipped on purpose until it is unlocked, so it is exempt."""
     settings = policy.path_filters
     if settings.mode != "enforce" or settings.skipped_applicable != "fail" or job.needs_readiness:
         return False
@@ -117,7 +120,11 @@ def _skipped_but_applicable(
         return False
     if holds is not None:
         return holds
-    return bool(job.paths) and snapshot.changed_files_known and bool(snapshot.changed_files)
+    if job.filters or job.filters_any:
+        return False
+    if job.paths:
+        return snapshot.changed_files_known
+    return True
 
 
 def _evaluate(

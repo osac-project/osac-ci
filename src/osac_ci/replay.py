@@ -26,6 +26,7 @@ from typing import Any
 
 import yaml
 
+from osac_ci import yamlio
 from osac_ci.github.api import GitHubClient, check_repo, paginate
 from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import Mode, State
@@ -98,7 +99,10 @@ def load_explained(path: Path | None) -> dict[int, str]:
     """`{pr_number: reason}`. Every entry is a signed-off decision; keep the file small and reviewed."""
     if path is None:
         return {}
-    raw: Any = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        raw: Any = yamlio.load(path.read_text(encoding="utf-8")) or {}
+    except yaml.YAMLError as exc:  # includes a repeated PR number: the later reason must not hide the first
+        raise ValueError(f"{path}: {exc}") from exc
     if not isinstance(raw, dict) or not all(isinstance(v, str) and v.strip() for v in raw.values()):
         raise ValueError(f"{path}: expected a mapping of PR number to a non-empty reason")
     return {int(k): v for k, v in raw.items()}

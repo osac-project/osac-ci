@@ -11,7 +11,7 @@ import base64
 import binascii
 import re
 import urllib.parse
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
@@ -175,6 +175,18 @@ def fetch_codeowners(client: GitHubClient, repo: str, base_ref: str) -> str | No
 _TEAM_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
+def _changed_names(raw_files: Iterable[dict[str, Any]]) -> tuple[str, ...]:
+    """The paths a change touches. A rename touches both names: moving a protected or owned file out of its folder
+    changes that folder too, and listing only the new name would hide it from every path rule."""
+    names: dict[str, None] = {}
+    for raw in raw_files:
+        names[raw["filename"]] = None
+        previous = raw.get("previous_filename")
+        if previous:
+            names[previous] = None
+    return tuple(names)
+
+
 def fetch_team_members(client: GitHubClient, team: str) -> frozenset[str] | None:
     """Logins in ``org/team``; ``None`` when the credential cannot read the team (never an empty guess)."""
     org, _, slug = team.partition("/")
@@ -305,7 +317,7 @@ def fetch_queue_snapshot(client: GitHubClient, repo: str, sha: str, base_ref: st
         number=0,
         head_sha=sha,
         check_runs=runs,
-        changed_files=tuple(f["filename"] for f in files) if known and files else (),
+        changed_files=_changed_names(files) if known and files else (),
         changed_files_known=known,
         base_ref=base_ref,
     )
@@ -372,7 +384,7 @@ def fetch_snapshot(
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
-    files = tuple(raw["filename"] for raw in paginate(client, f"{base}/pulls/{number}/files"))
+    files = _changed_names(paginate(client, f"{base}/pulls/{number}/files"))
 
     if lookup_membership:
         author_member = is_org_member(org_client, org, author)

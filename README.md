@@ -371,7 +371,8 @@ and it works with label approval as well as native approval. It is evaluated at 
 commit.
 
 `path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
-job whose filters say it applies counts as failed instead of passed. A readiness-gated E2E job is exempt, since it is
+job that applies to the PR (its filters or globs match, or nothing narrows it, as for `pre-commit`) counts as failed
+instead of passed. A readiness-gated E2E job is exempt, since it is
 skipped on purpose until it is unlocked.
 
 ### Who may use secrets and start expensive jobs (`trust:`)
