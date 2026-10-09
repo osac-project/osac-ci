@@ -445,6 +445,29 @@ never a pass.
 Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's; the next event or
 sweep corrects it.
 
+### Using it from another repository
+
+A repository posts the check by calling the composite action `.github/actions/publish`, pinned to a full commit SHA of
+osac-ci. The action installs the locked environment of osac-ci at that commit and runs `osac-ci publish` with a policy
+file from osac-ci, so the code, the policy and the pin only change through a reviewed change in both repositories. The
+calling workflow keeps the decisions that belong to it: which events trigger it, which token it holds, the concurrency
+group and the sweep budget.
+
+```yaml
+- uses: osac-project/osac-ci/.github/actions/publish@<full commit sha>
+  with:
+    github-token: ${{ github.token }}   # needs checks: write and pull-requests: read
+    repo: ${{ github.repository }}
+    policy: policy/osac.yml
+    number: ${{ github.event.pull_request.number }}   # or head-owner and head-branch from a workflow_run event
+```
+
+A `workflow_run` event does not name a pull request that comes from a fork, and the usual "which pull request contains
+this commit" lookup is empty for one. The action therefore finds it from the run's head owner and branch. Without a
+pull request, `sweep: "true"` evaluates open pull requests within the `recent`, `rotate`, `reserve` and `interval`
+budget described below. The action never checks out the calling repository, so it cannot run pull request code. It
+makes no organization lookups: membership is approximated from the author association GitHub reports.
+
 ### Merge-queue commits
 
 The queue runs the required checks on its own commit (`gh-readonly-queue/<base>/pr-<n>-<sha>`) and waits for all of
