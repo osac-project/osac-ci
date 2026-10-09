@@ -5,9 +5,14 @@ name: osac-ci-queue
 # Informational for now: the check is not required, so a bug here cannot block a merge.
 #
 # The queue runs the required checks on its own commit and waits for all of them, so the verdict has to be on that
-# commit too, and it has to change when the last required check finishes. A `check_run` event says exactly that, and it
-# always runs the workflow from the default branch. A `merge_group` workflow would run the file from the queue commit
-# itself, which contains the pull request's own changes, so it is not used.
+# commit too, and it has to change when the last required check finishes. Two events say that, and both always run the
+# workflow from the default branch (a `merge_group` workflow would run the file from the queue commit itself, which
+# contains the pull request's own changes, so it is not used):
+# * `workflow_run`: a GitHub Actions workflow finished. This is the one that matters, because GitHub does not trigger
+#   `check_run` workflows when the check suite was created by GitHub Actions or its head SHA is associated with it
+#   (to prevent recursive workflows). It takes exact workflow names, no wildcards: list every workflow that produces a
+#   required check, and keep the list in step with the policy.
+# * `check_run`: a check from another app finished (Actions-created ones never arrive this way).
 #
 # Safety rules for this file (it runs with write access to checks):
 # * it never checks out or runs pull request code: checkout is pinned to the default branch;
@@ -16,7 +21,10 @@ name: osac-ci-queue
 # * the commit and branch come from the event, but are validated by the program (40 hex digits, a queue branch name)
 #   and passed through environment variables, never the script text;
 # * the verdict is computed from live API state, so a stale event cannot post a stale result.
-on:
+on:  # zizmor: ignore[dangerous-triggers] -- no PR code is checked out or run; event values reach the shell as env data only
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
   check_run:
     types: [completed]
   workflow_dispatch:
@@ -33,16 +41,21 @@ permissions:
 
 # One group per commit. A newer run reads newer state, so an older one may be cancelled.
 concurrency:
-  group: osac-ci-queue-${{ github.event.check_run.head_sha || inputs.sha }}
+  group: osac-ci-queue-${{ github.event.workflow_run.head_sha || github.event.check_run.head_sha || inputs.sha }}
   cancel-in-progress: true
 
 jobs:
   publish:
     name: publish
-    # Only checks of a queue branch, and never our own checks (their completion would only trigger another run).
+    # Only runs and checks of a queue branch, and never our own checks (their completion would only trigger another run).
     if: >-
       ${{ github.event_name == 'workflow_dispatch' || (
-        startsWith(github.event.check_run.check_suite.head_branch, 'gh-readonly-queue/')
+        github.event_name == 'workflow_run'
+        && github.event.workflow_run.event == 'merge_group'
+        && startsWith(github.event.workflow_run.head_branch, 'gh-readonly-queue/')
+      ) || (
+        github.event_name == 'check_run'
+        && startsWith(github.event.check_run.check_suite.head_branch, 'gh-readonly-queue/')
         && github.event.check_run.name != 'OSAC CI'
         && github.event.check_run.name != 'OSAC CI authorization') }}
     runs-on: ubuntu-latest
@@ -63,8 +76,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.event.check_run.head_sha || inputs.sha }}
-          BRANCH: ${{ github.event.check_run.check_suite.head_branch || inputs.branch }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.event.check_run.head_sha || inputs.sha }}
+          BRANCH: ${{ github.event.workflow_run.head_branch || github.event.check_run.check_suite.head_branch || inputs.branch }}
         run: |
           uv run osac-ci publish-queue --policy policy/osac-ci.yml --repo "$REPO" --sha "$SHA" --branch "$BRANCH" \
             --note "Informational for now: this check is not required to merge."

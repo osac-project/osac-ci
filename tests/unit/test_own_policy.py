@@ -125,7 +125,9 @@ def test_the_queue_workflow_runs_from_check_run_events_with_the_built_in_token_o
     path = ROOT / ".github" / "workflows" / "osac-ci-queue.yml"
     workflow = _workflow("osac-ci-queue.yml")
     triggers = _triggers(workflow)
-    assert set(triggers) == {"check_run", "workflow_dispatch"} and triggers["check_run"] == {"types": ["completed"]}
+    assert set(triggers) == {"workflow_run", "check_run", "workflow_dispatch"}
+    assert triggers["check_run"] == {"types": ["completed"]}
+    assert triggers["workflow_run"] == {"workflows": ["ci"], "types": ["completed"]}
     # a merge_group workflow would run the file from the queue commit, which holds the PR's own changes
     assert "merge_group" not in triggers and "pull_request_target" not in triggers
     job = workflow["jobs"]["publish"]
@@ -139,6 +141,10 @@ def test_the_queue_workflow_runs_from_check_run_events_with_the_built_in_token_o
 def test_the_queue_workflow_only_reacts_to_queue_branches_and_never_to_its_own_checks() -> None:
     cond = _workflow("osac-ci-queue.yml")["jobs"]["publish"]["if"]
     assert "startsWith(github.event.check_run.check_suite.head_branch, 'gh-readonly-queue/')" in cond
+    assert (
+        "github.event.workflow_run.event == 'merge_group'" in cond
+    )  # a finished `ci` run of a pull request is not ours
+    assert "startsWith(github.event.workflow_run.head_branch, 'gh-readonly-queue/')" in cond
     assert "github.event.check_run.name != 'OSAC CI'" in cond  # else our own post would trigger another run
     assert "github.event.check_run.name != 'OSAC CI authorization'" in cond
 
@@ -147,6 +153,19 @@ def test_the_queue_workflow_passes_event_values_as_environment_and_groups_runs_b
     workflow = _workflow("osac-ci-queue.yml")
     step = next(s for s in workflow["jobs"]["publish"]["steps"] if s.get("name", "").startswith("Post the verdict"))
     assert "${{" not in step["run"] and "github.event" not in step["run"]
-    assert step["env"]["SHA"] == "${{ github.event.check_run.head_sha || inputs.sha }}"
-    assert step["env"]["BRANCH"] == "${{ github.event.check_run.check_suite.head_branch || inputs.branch }}"
-    assert workflow["concurrency"]["group"] == "osac-ci-queue-${{ github.event.check_run.head_sha || inputs.sha }}"
+    sha = "github.event.workflow_run.head_sha || github.event.check_run.head_sha || inputs.sha"
+    branch = "github.event.workflow_run.head_branch || github.event.check_run.check_suite.head_branch || inputs.branch"
+    assert step["env"]["SHA"] == "${{ " + sha + " }}"
+    assert step["env"]["BRANCH"] == "${{ " + branch + " }}"
+    assert workflow["concurrency"]["group"] == "osac-ci-queue-${{ " + sha + " }}"
+
+
+def test_every_workflow_that_produces_a_required_check_is_listed_for_workflow_run() -> None:
+    # `check_run` workflows are never triggered by checks that GitHub Actions created, so the queue workflow only
+    # hears about an Actions workflow through `workflow_run`, which takes exact names. Keep the list complete.
+    queue = _workflow("osac-ci-queue.yml")
+    listed = set(_triggers(queue)["workflow_run"]["workflows"])
+    producers = {
+        _workflow(p.name)["name"] for p in (ROOT / ".github" / "workflows").glob("ci.yml")
+    }  # runs on merge_group
+    assert producers <= listed
