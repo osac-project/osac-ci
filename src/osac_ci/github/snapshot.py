@@ -53,19 +53,30 @@ def authorization_external_id(login: str, head_sha: str) -> str:
     return f"osac-ci-auth:v1:{login}:{head_sha}"
 
 
-def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust) -> str:
-    """Login of an org member who authorized exactly ``head_sha``, or ``""``.
+def find_authorizers(
+    org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust
+) -> tuple[str, ...]:
+    """Logins of the org members who authorized exactly ``head_sha``, newest first, each once.
 
-    The authorization is a successful check run named ``trust.check_name`` posted by the workflow app, whose external id
-    names the authorizer and the commit. The runs were listed for the head commit, and the id must name it too. The
-    authorizer must still be an org member now: leaving the org withdraws the authorization."""
+    An authorization is a successful check run named ``trust.check_name`` posted by the workflow app, whose external
+    id names the authorizer and the commit. The runs were listed for the head commit, and the id must name it too. The
+    authorizer must still be an org member now: leaving the org withdraws the authorization. Every one is kept, not just
+    the newest, so a replay can tell who had authorized at an earlier moment."""
+    found: list[str] = []
     for run in sorted(runs, key=lambda r: r.started_at or "", reverse=True):
         if (run.name, run.status, run.conclusion, run.app) != (trust.check_name, "completed", "success", AUTH_APP):
             continue
-        found = AUTH_ID.match(run.external_id)
-        if found and found["sha"] == head_sha and is_org_member(org_client, org, found["login"]):
-            return found["login"]
-    return ""
+        match = AUTH_ID.match(run.external_id)
+        if not match or match["sha"] != head_sha or match["login"] in found:
+            continue
+        if is_org_member(org_client, org, match["login"]):
+            found.append(match["login"])
+    return tuple(found)
+
+
+def find_authorizer(org_client: GitHubClient, org: str, runs: Sequence[CheckRun], head_sha: str, trust: Trust) -> str:
+    """The newest org member who authorized exactly ``head_sha``, or ``""`` (see ``find_authorizers``)."""
+    return next(iter(find_authorizers(org_client, org, runs, head_sha, trust)), "")
 
 
 # A merge-queue entry lives on a branch GitHub creates: gh-readonly-queue/<base branch>/pr-<number>-<head sha>.
@@ -332,9 +343,9 @@ def fetch_snapshot(
         author_member = pr.get("author_association") in {"MEMBER", "OWNER"}
         owner_member = False
 
-    authorized_by = ""
+    authorizers: tuple[str, ...] = ()
     if trust and trust.authorization == "sha-bound" and is_fork and not (author_member or owner_member):
-        authorized_by = find_authorizer(org_client, org, runs, head_sha, trust)
+        authorizers = find_authorizers(org_client, org, runs, head_sha, trust)
 
     base_ref: str = (pr.get("base") or {}).get("ref", "")  # only the native-approval inputs need it
     owners_text, team_members, fingerprints = (
@@ -363,5 +374,6 @@ def fetch_snapshot(
         codeowners=owners_text,
         team_members=team_members,
         change_fingerprints=fingerprints,
-        authorized_by=authorized_by,
+        authorized_by=authorizers[0] if authorizers else "",
+        authorizers=authorizers,
     )

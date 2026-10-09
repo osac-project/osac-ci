@@ -109,6 +109,9 @@ class Snapshot:
     change_fingerprints: Mapping[str, str] = field(default_factory=dict)  # commit sha -> fingerprint of its changes
     # Login of an org member who authorized exactly this head commit for secrets and E2E (sha-bound trust mode only).
     authorized_by: str = ""
+    # Every verified authorizer of this head, newest first (``authorized_by`` is the first). Kept so that a replay can
+    # tell who had authorized at an earlier moment, when the newest one had not yet.
+    authorizers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

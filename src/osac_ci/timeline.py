@@ -42,16 +42,25 @@ def _review_known(review: Review, moment: str) -> bool:
     return not review.submitted_at or review.submitted_at <= moment
 
 
-def _authorized_at(snapshot: Snapshot, runs: tuple[CheckRun, ...]) -> str:
-    """An authorization is a check run, so it exists only from the moment that run completed. ``authorized_by`` was
-    derived from the final check runs: keep it only while the run it came from is still a completed success among
-    the ones that stood at the moment. (Whether the authorizer was an org member then is not rebuilt: it needs the
-    organization's history, which the API does not give.)"""
-    if not snapshot.authorized_by:
-        return ""
-    wanted = authorization_external_id(snapshot.authorized_by, snapshot.head_sha)
-    done = any(r.external_id == wanted and r.status == "completed" and r.conclusion == "success" for r in runs)
-    return snapshot.authorized_by if done else ""
+def _authorizers_at(snapshot: Snapshot, runs: tuple[CheckRun, ...]) -> tuple[str, ...]:
+    """An authorization is a check run, so it exists only from the moment that run completed. The authorizers were
+    derived from the final check runs: of those, the ones whose completed successful run stood at the moment, newest
+    first. When Alice had authorized and Bob did later, the moment between them is Alice's alone. (Whether an
+    authorizer was an org member then is not rebuilt: it needs the organization's history, which the API does not
+    give.) A snapshot that only knows ``authorized_by`` is treated as having that one authorizer."""
+    candidates = snapshot.authorizers or ((snapshot.authorized_by,) if snapshot.authorized_by else ())
+    standing = sorted(
+        (
+            ((r.completed_at or r.started_at or ""), login)
+            for login in candidates
+            for r in runs
+            if r.external_id == authorization_external_id(login, snapshot.head_sha)
+            and r.status == "completed"
+            and r.conclusion == "success"
+        ),
+        reverse=True,
+    )
+    return tuple(dict.fromkeys(login for _, login in standing))
 
 
 def state_at(snapshot: Snapshot, moment: str) -> Snapshot:
@@ -64,6 +73,7 @@ def state_at(snapshot: Snapshot, moment: str) -> Snapshot:
         label_events=events,
         reviews=tuple(r for r in snapshot.reviews if _review_known(r, moment)),
         check_runs=runs,
-        authorized_by=_authorized_at(snapshot, runs),
+        authorized_by=standing[0] if (standing := _authorizers_at(snapshot, runs)) else "",
+        authorizers=standing,
         in_merge_queue=False,  # the question is whether it could be let in, so it is not in yet
     )

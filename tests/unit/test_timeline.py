@@ -177,3 +177,56 @@ def test_a_fork_is_not_trusted_at_the_moment_before_its_authorization_completed(
     sha_bound = Trust(authorization="sha-bound")
     assert fork_secrets_authorized(final, sha_bound)  # on today's data it looks authorized
     assert not fork_secrets_authorized(state_at(final, T), sha_bound)  # but it was not, when it counted
+
+
+def two_authorizers(toy_policy):  # type: ignore[no-untyped-def]
+    """Alice authorized at 11:30; Bob authorized the same commit later, at 12:30. Newest first, like the adapter."""
+    sha = "a" * 40
+    runs = (
+        auth_run("alice", sha, "2026-10-05T11:30:00Z"),
+        auth_run("bob", sha, "2026-10-05T12:30:00Z", "2026-10-05T12:00:00Z"),
+    )
+    return snap(
+        toy_policy, head_sha=sha, authorized_by="bob", authorizers=("bob", "alice"), check_runs=runs, is_fork=True
+    )
+
+
+def test_between_two_authorizations_the_earlier_authorizer_still_stands(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    got = state_at(two_authorizers(toy_policy), T)  # T is 12:00: Alice had authorized, Bob had not yet
+    assert got.authorized_by == "alice" and got.authorizers == ("alice",)
+
+
+def test_before_either_authorization_nobody_had_authorized(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    got = state_at(two_authorizers(toy_policy), "2026-10-05T10:00:00Z")
+    assert got.authorized_by == "" and got.authorizers == ()
+
+
+def test_after_both_the_newest_authorizer_leads_and_the_earlier_one_is_kept(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    got = state_at(two_authorizers(toy_policy), "2026-10-05T13:00:00Z")
+    assert got.authorized_by == "bob" and got.authorizers == ("bob", "alice")
+
+
+def test_the_same_person_authorizing_twice_is_listed_once(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    sha = "a" * 40
+    runs = (
+        auth_run("alice", sha, "2026-10-05T10:30:00Z"),
+        auth_run("alice", sha, "2026-10-05T11:30:00Z", "2026-10-05T11:00:00Z"),
+    )
+    got = state_at(snap(toy_policy, head_sha=sha, authorized_by="alice", authorizers=("alice",), check_runs=runs), T)
+    assert got.authorizers == ("alice",)
+
+
+def test_a_snapshot_that_only_knows_authorized_by_still_works(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    got = state_at(authorized(toy_policy, completed="2026-10-05T11:30:00Z"), T)  # no `authorizers` set
+    assert got.authorized_by == "reviewer" and got.authorizers == ("reviewer",)
+
+
+def test_the_earlier_authorizer_makes_a_fork_trusted_at_the_moment_between(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    from osac_ci.policy import Trust
+    from osac_ci.rules.fork import fork_secrets_authorized
+
+    s = two_authorizers(toy_policy)
+    s = snap(toy_policy, head_sha=s.head_sha, author="outsider", fork_owner="outsider", authorized_by="bob",
+             authorizers=("bob", "alice"), check_runs=s.check_runs, is_fork=True)  # fmt: skip
+    assert fork_secrets_authorized(state_at(s, T), Trust(authorization="sha-bound"))  # Alice's run stood at 12:00
+    assert not fork_secrets_authorized(state_at(s, "2026-10-05T10:00:00Z"), Trust(authorization="sha-bound"))
