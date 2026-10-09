@@ -24,8 +24,9 @@ path_filters:
 
 # The files that define the checks every pull request is judged by. A PR can change them, and then a passing check
 # proves little (a job changed to end with `exit 0` still reports success), so a change needs an approval from the
-# infrastructure group. Documentation next to them (.github/*.md) is not covered. The rule is in this file, not in the
-# PR, so a PR cannot change who has to approve. Needs the organization token, to read the team.
+# infrastructure group. Markdown inside those folders (a README) cannot change a check and is not covered, and neither
+# is documentation next to them (.github/*.md). The rule is in this file, not in the PR, so a PR cannot change who has
+# to approve. Needs the organization token, to read the team.
 protected_paths:
   - paths:
       - ".github/workflows/**"
@@ -34,6 +35,7 @@ protected_paths:
       - ".github/filters/**"
       - "CODEOWNERS"
       - ".pre-commit-config.yaml"
+    exclude_paths: ["**/*.md"]
     approvers: ["@osac-project/wg-infra"]
 
 merge:

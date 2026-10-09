@@ -12,7 +12,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from osac_ci.model import Snapshot
-from osac_ci.paths import any_match
 from osac_ci.policy import Approval, ProtectedPaths
 from osac_ci.rules import approval
 
@@ -27,7 +26,7 @@ class ProtectedDecision:
 
 
 def matched_files(snapshot: Snapshot, rule: ProtectedPaths) -> list[str]:
-    return [path for path in snapshot.changed_files if any_match(rule.paths, path)]
+    return [path for path in snapshot.changed_files if rule.covers(path)]
 
 
 def evaluate(snapshot: Snapshot, rules: tuple[ProtectedPaths, ...]) -> ProtectedDecision:
