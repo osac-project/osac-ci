@@ -120,3 +120,8 @@ def test_explain_reports_the_osac_ui_checks_for_an_osac_ui_change(tmp_path, caps
     assert main(["explain", "--policy", str(ROOT / "policy" / "osac.yml"), "--snapshot", str(snapshot)]) == 0
     out = capsys.readouterr().out
     assert "| osac-ui-typecheck | Typecheck | waiting |" in out and "| osac-ui-lint | Lint | waiting |" in out
+
+
+def test_moving_a_file_out_of_osac_ui_still_makes_the_checks_mandatory(osac_policy: Policy) -> None:
+    """The adapter lists both names of a rename, so the folder that lost a file is a changed folder."""
+    assert set(ui_entries(osac_policy, "shared/App.tsx", UI_FILE).values()) == {JobStatus.WAITING}
