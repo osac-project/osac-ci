@@ -534,6 +534,27 @@ per interval, so a 30-minute schedule with the default 600 seconds would skip tw
 of the backlog. Event-driven runs (PR events, `ci` finished, reviews) still update a PR at once; the sweep only repairs
 what they missed. A token with a higher limit (an app installation token) is the alternative if that is not enough.
 
+### Stale-only sweep
+
+The events already say when a verdict changes (a push, a label, a finished workflow); a sweep only exists to repair the
+cases where an event was missed or its run failed. Those leave a trace that one listing shows without reading each PR.
+`osac-ci publish --all --stale-only` lists every open PR with its newest `OSAC CI` check run (one GraphQL query, about 7
+points per 100 PRs, from the GraphQL budget that the rest of a sweep does not use) and reads only the PRs where:
+
+- there is no verdict on the head commit yet (most recently active first);
+- the verdict is a failure, which for a pull request means a `planner-error` to retry;
+- the PR changed after the verdict was posted (a label, a review, a comment, a push);
+- the verdict still says "in progress" after `--stale-after` seconds (default 1,800), so the event that ends it may
+  have been missed;
+- the verdict is older than `--max-age` seconds (default 21,600, 0 for never): a safety net for what no event reports,
+  such as a team membership change or a CODEOWNERS change on the base branch.
+
+Everything else is skipped, so a quiet repository costs one or two requests a sweep instead of hundreds, and the sweep
+can run every few minutes. A re-checked verdict that turns out unchanged is posted again, because the time of the newest
+check run is what the next sweep compares with; otherwise a PR that only got a comment would be read by every sweep.
+`--limit` keeps the most urgent first, `--reserve` still protects the REST quota, and the option cannot be combined with
+`--recent` or `--rotate`.
+
 ### Open-PR report
 
 ```bash

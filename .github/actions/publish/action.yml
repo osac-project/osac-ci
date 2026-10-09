@@ -41,6 +41,18 @@ inputs:
   sweep:
     description: With no pull request given, evaluate open pull requests within the budget below ("true" or "false")
     default: "false"
+  stale-only:
+    description: >-
+      "true" to make a sweep read only the pull requests whose posted verdict is missing, a planner error, older than
+      the pull request's last change, stuck in progress or old, found from one listing. It replaces recent and rotate,
+      which are then ignored
+    default: "false"
+  stale-after:
+    description: Stale-only sweep, seconds an in-progress verdict may stand before it is looked at again
+    default: "1800"
+  max-age:
+    description: Stale-only sweep, refresh any verdict older than this many seconds (0 for never)
+    default: "21600"
   recent:
     description: Sweep, most recently updated pull requests to look at every time
     default: "15"
@@ -107,6 +119,9 @@ runs:
         ROTATE: ${{ inputs.rotate }}
         RESERVE: ${{ inputs.reserve }}
         INTERVAL: ${{ inputs.interval }}
+        STALE_ONLY: ${{ inputs.stale-only }}
+        STALE_AFTER: ${{ inputs.stale-after }}
+        MAX_AGE: ${{ inputs.max-age }}
         NOTE: ${{ inputs.note }}
         LOOKUP_MEMBERSHIP: ${{ inputs.lookup-membership }}
         OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
@@ -121,7 +136,12 @@ runs:
         if [ "$MODE" = "one" ]; then
           target=(--number "$NUMBER")
         else
-          target=(--all --recent "$RECENT" --rotate "$ROTATE" --reserve "$RESERVE" --interval "$INTERVAL")
+          target=(--all --reserve "$RESERVE")
+          if [ "$STALE_ONLY" = "true" ]; then
+            target+=(--stale-only --stale-after "$STALE_AFTER" --max-age "$MAX_AGE")
+          else
+            target+=(--recent "$RECENT" --rotate "$ROTATE" --interval "$INTERVAL")
+          fi
         fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci publish --policy "$root/$POLICY" --repo "$REPO" "${target[@]}" "${lookup[@]}" "${note[@]}"

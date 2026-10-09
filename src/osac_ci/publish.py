@@ -22,16 +22,19 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from itertools import zip_longest
 from typing import Any
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, rate_remaining
 from osac_ci.github.snapshot import COMMIT_SHA, fetch_queue_snapshot, fetch_snapshot
+from osac_ci.github.standing import fetch_standings
 from osac_ci.model import Mode, State, Verdict
 from osac_ci.planner import error_verdict, plan_or_error
 from osac_ci.policy import Policy
 from osac_ci.render import render_markdown
 from osac_ci.report import list_open_prs
+from osac_ci.stale import StaleRules, select_stale
 
 CHECK_NAME = "OSAC CI"
 _SUMMARY_LIMIT = 60_000  # the API accepts 65,535 characters
@@ -65,9 +68,10 @@ OUTCOME: dict[State, tuple[str, str | None]] = {
 class Sweep(list["Outcome"]):
     """The outcomes of one sweep, plus how many PRs were open (so a partial sweep can say it was partial)."""
 
-    def __init__(self, outcomes: Iterable[Outcome], open_prs: int) -> None:
+    def __init__(self, outcomes: Iterable[Outcome], open_prs: int, reasons: dict[int, str] | None = None) -> None:
         super().__init__(outcomes)
         self.open_prs = open_prs
+        self.reasons = reasons or {}  # stale-only sweep: why each PR was looked at
 
 
 @dataclass(frozen=True)
@@ -131,8 +135,13 @@ def publish_pr(
     note: str = "",
     dry_run: bool = False,
     org_client: GitHubClient | None = None,
+    refresh: bool = False,
 ) -> Outcome:
-    """Evaluate one PR from live state and post the verdict unless the newest check run already says the same."""
+    """Evaluate one PR from live state and post the verdict unless the newest check run already says the same.
+
+    ``refresh`` posts it even then. A stale-only sweep decides what to look at from the time of the newest check run, so
+    a verdict that was re-checked and found unchanged must still move that time, or the PR would be looked at again by
+    every sweep until it changed."""
     repo = check_repo(repo)
     org = org or repo.split("/", 1)[0]
     head_sha: str = get(client, f"/repos/{repo}/pulls/{number}")["head"]["sha"]
@@ -155,7 +164,7 @@ def publish_pr(
     status, conclusion = body["status"], body.get("conclusion")
     if dry_run:
         return Outcome(number, head_sha, verdict.state, status, conclusion, "dry-run", body["output"]["title"])
-    if _latest_external_id(client, repo, head_sha, check_name) == body["external_id"]:
+    if not refresh and _latest_external_id(client, repo, head_sha, check_name) == body["external_id"]:
         return Outcome(number, head_sha, verdict.state, status, conclusion, "unchanged")
     response = client.request("POST", f"/repos/{repo}/check-runs", body=body)
     if response.status != 201:
@@ -257,6 +266,8 @@ def sweep(
     rotate: int | None = None,
     tick: int = 0,
     reserve: int = 0,
+    stale: StaleRules | None = None,
+    now: datetime | None = None,
 ) -> Sweep:
     """Publish for the open PRs one sweep covers (all of them without a budget, see ``select_prs``).
 
@@ -266,9 +277,20 @@ def sweep(
 
     The reserve is approximate: with several workers, a few can read the same remaining count before any of them has
     spent requests, so a sweep can overshoot it by about ``workers`` times the cost of one PR (7 to 11 requests)."""
-    prs = list_open_prs(client, repo, include_drafts=True)
-    open_prs = len(prs)
-    prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick, limit=limit)
+    reasons: dict[int, str] = {}
+    if stale is not None:
+        # Decide from one listing of every open PR with its latest verdict, and read only the ones that need it.
+        if recent is not None or rotate is not None:
+            raise ValueError("a stale-only sweep chooses its PRs itself; do not combine it with recent or rotate")
+        standings = fetch_standings(client, repo, check_name)
+        open_prs = len(standings)
+        chosen = select_stale(standings, now or datetime.now(UTC), stale)[: None if limit is None else max(0, limit)]
+        reasons = {s.number: why for s, why in chosen}
+        prs = [{"number": s.number, "head": {"sha": s.head_sha}} for s, _ in chosen]
+    else:
+        prs = list_open_prs(client, repo, include_drafts=True)
+        open_prs = len(prs)
+        prs = select_prs(prs, recent=recent, rotate=rotate, tick=tick, limit=limit)
 
     def one(pr: dict[str, Any]) -> Outcome:
         number = pr["number"]
@@ -288,21 +310,24 @@ def sweep(
                 note=note,
                 dry_run=dry_run,
                 org_client=org_client,
+                refresh=stale is not None,
             )
         except (GitHubError, KeyError, ValueError) as exc:
             sha = str((pr.get("head") or {}).get("sha", ""))
             return Outcome(number, sha, State.PLANNER_ERROR, "", None, "failed", str(exc))
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        return Sweep(pool.map(one, prs), open_prs)
+        return Sweep(pool.map(one, prs), open_prs, reasons)
 
 
 def describe(outcomes: Sequence[Outcome]) -> str:
+    reasons = outcomes.reasons if isinstance(outcomes, Sweep) else {}
     lines = [
         f"PR #{o.pr}: skipped ({o.detail})"
         if o.action == "skipped"
         else f"PR #{o.pr}: {o.action} {o.conclusion or o.status} ({o.state.value})"
         + (f" {o.detail}" if o.action == "failed" else "")
+        + (f" [{reasons[o.pr]}]" if o.pr in reasons else "")
         for o in outcomes
     ]
     failed = sum(o.action == "failed" for o in outcomes)
@@ -310,7 +335,9 @@ def describe(outcomes: Sequence[Outcome]) -> str:
     summary = f"{len(outcomes)} PRs, {failed} failed"
     if skipped:
         summary += f", {skipped} skipped for the request reserve"
-    if isinstance(outcomes, Sweep) and outcomes.open_prs != len(outcomes):
+    if isinstance(outcomes, Sweep) and outcomes.reasons:
+        summary += f" (stale-only: {len(outcomes)} of {outcomes.open_prs} open PRs needed a new verdict)"
+    elif isinstance(outcomes, Sweep) and outcomes.open_prs != len(outcomes):
         summary += f" (this sweep covers {len(outcomes)} of {outcomes.open_prs} open PRs)"
     lines.append(summary)
     return "\n".join(lines) + "\n"
