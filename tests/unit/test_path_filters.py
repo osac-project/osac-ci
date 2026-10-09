@@ -171,6 +171,30 @@ def test_a_pr_with_no_changed_files_never_skips_anything() -> None:
     assert plan_for(p, ()).state is State.CHECKS_RUNNING  # the filters cannot decide, so the job still counts
 
 
+def test_a_file_list_that_could_not_be_read_completely_never_skips_a_job() -> None:
+    # A merge-queue commit over the compare cap has an unknown list. Even a partial list must not decide anything.
+    p = policy("enforce")
+    for files in ((), ("README.md",)):
+        v = plan(snap(p, labels=frozenset(), changed_files=files, changed_files_known=False, check_runs=()), p)
+        assert v.state is State.CHECKS_RUNNING  # the job still counts and has not reported
+        assert [e.status for e in v.jobs] == [JobStatus.WAITING]
+
+
+def test_shadow_adds_no_note_when_the_file_list_is_unknown() -> None:
+    p = policy("shadow")
+    v = plan(
+        snap(
+            p,
+            labels=frozenset(),
+            changed_files=("README.md",),
+            changed_files_known=False,
+            check_runs=(run("build", "failure"),),
+        ),
+        p,
+    )
+    assert v.notes == ()
+
+
 def test_enforce_adds_no_notes() -> None:
     assert plan_for(policy("enforce"), ("main.go",), run("build", "skipped")).notes == ()
 
