@@ -33,6 +33,7 @@ from osac_ci.publish import CHECK_NAME, describe, publish_pr, publish_queue, swe
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
+from osac_ci.stale import StaleRules
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
@@ -161,6 +162,24 @@ def _parser() -> argparse.ArgumentParser:
         default=0,
         help="with --all: skip the PRs not started once fewer requests are left (approximate with several workers)",
     )
+    pub.add_argument(
+        "--stale-only",
+        action="store_true",
+        help="with --all: read only the PRs whose posted verdict is missing, a planner error, older than the PR's last "
+        "change, stuck in progress or old (one listing instead of reading every PR); not with --recent or --rotate",
+    )
+    pub.add_argument(
+        "--stale-after",
+        type=_non_negative,
+        default=1800,
+        help="with --stale-only: seconds an in-progress verdict may stand before it is looked at again (default 1800)",
+    )
+    pub.add_argument(
+        "--max-age",
+        type=_non_negative,
+        default=21600,
+        help="with --stale-only: refresh any verdict older than this many seconds, 0 for never (default 21600)",
+    )
     pub.add_argument("--dry-run", action="store_true", help="print what would be posted, post nothing")
     pub.add_argument(
         "--require-org-token",
@@ -255,6 +274,15 @@ def main(argv: list[str] | None = None) -> int:
             "dry_run": args.dry_run,
             "org_client": build_org_client(required=args.require_org_token),
         }
+        if args.stale_only and not args.all:
+            print("error: --stale-only needs --all", file=sys.stderr)
+            return 2
+        if args.stale_only and (args.recent is not None or args.rotate is not None):
+            print(
+                "error: --stale-only chooses its PRs itself; do not combine it with --recent or --rotate",
+                file=sys.stderr,
+            )
+            return 2
         try:
             client = build_client()
             if args.all:
@@ -267,6 +295,7 @@ def main(argv: list[str] | None = None) -> int:
                     rotate=args.rotate,
                     tick=int(time.time() // max(1, args.interval)),
                     reserve=args.reserve,
+                    stale=StaleRules(args.stale_after, args.max_age) if args.stale_only else None,
                     **common,
                 )
             else:
