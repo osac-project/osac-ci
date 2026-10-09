@@ -17,7 +17,7 @@ There is no sticky signal: what unlocks E2E is about the commit that is going to
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 
 from osac_ci.model import Snapshot
 from osac_ci.policy import Approval, E2EUnlock
@@ -45,6 +45,16 @@ def _coderabbit_on_head(snapshot: Snapshot) -> bool:
 
 def describe(signals: Collection[str]) -> str:
     return " or ".join(_WORDS[s] for s in signals)
+
+
+def describe_requirements(groups: Sequence[Collection[str]]) -> str:
+    """What the locked suites need: alternatives within a suite are joined with "or", suites with "and".
+
+    A suite whose own list has several alternatives is parenthesized when it is not alone, so that "a or b and c"
+    cannot be misread."""
+    if len(groups) == 1:
+        return describe(groups[0])
+    return " and ".join(f"({describe(g)})" if len(g) > 1 else describe(g) for g in groups)
 
 
 def decide(
@@ -78,8 +88,13 @@ def decide(
             denied = "e2e-ready label present but applied by untrusted actor"
 
     why = [f"needs {describe(signals)}"]
-    if found and approved and not approved.approved and (found.valid or found.stale):
-        why.append(approved.problems[0])  # someone approved, but not enough or not the current changes
+    if found and approved and not approved.approved:
+        if found.valid:
+            # Someone approved the current changes, so say what is still missing. The decision lists the out-of-date
+            # approvals first, then the unmet requirements.
+            why.append(approved.problems[len(found.stale) :][0])
+        elif found.stale:
+            why.append(found.stale[0])  # only out-of-date approvals: say that, not the generic count
     if "coderabbit-approval" in signals:
         latest = readiness.coderabbit_latest(snapshot.reviews)
         if latest and latest.state == "APPROVED" and latest.commit_id and latest.commit_id != snapshot.head_sha:

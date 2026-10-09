@@ -72,7 +72,11 @@ e2e:
 | `e2e-ready-label` | the `e2e-ready` label, applied by `github-actions[bot]` |
 
 There is no sticky signal: the legacy ladder keeps E2E unlocked once `lgtm` was ever applied, even after the code
-changed, for as long as no human "changes requested" review is open. In `policy` mode a signal must hold for the commit about to be tested. The verdict names what would unlock it.
+changed, for as long as no human "changes requested" review is open. In `policy` mode each signal is judged against the
+PR's state now, by its own rule: CodeRabbit must have approved the exact head, a human approval counts when it covers the
+current changes (this commit or carried over a rebase), and the two label signals are whatever labels the PR carries
+at that moment (a label is not tied to a commit). The verdict names what would unlock it; when suites need different
+signals it joins their requirements with "and".
 
 ## Native approval (instead of `lgtm` / `approved` labels)
 
