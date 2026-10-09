@@ -227,3 +227,120 @@ def test_a_failing_check_listing_does_not_hide_the_fail_closed_verdict() -> None
     out = publish(fake)
     (body,) = posted(fake)
     assert out.action == "created" and out.state.value == "planner-error" and body["conclusion"] == "failure"
+
+
+# ---- the sweep budget ----------------------------------------------------------------------------------------------
+
+
+def open_prs(fake: FakeGitHub, numbers: list[int]) -> None:
+    """Open PRs 1..n listed newest-updated first, each readable like PR 7 with its own number."""
+    fake.add("GET", f"{BASE}/pulls", [{"number": n, "head": {"sha": SHA}} for n in numbers])
+    for n in numbers:
+        pr = standard_fake().routes[("GET", f"{BASE}/pulls/7")][1]
+        fake.add("GET", f"{BASE}/pulls/{n}", pr)
+        for suffix in ("reviews", "files"):
+            fake.add(
+                "GET", f"{BASE}/pulls/{n}/{suffix}", standard_fake().routes[("GET", f"{BASE}/pulls/7/{suffix}")][1]
+            )
+        fake.add("GET", f"{BASE}/issues/{n}/events", [])
+        fake.add("POST", "/graphql", {"data": {"node": {"mergeQueueEntry": None}}})
+
+
+def test_select_prs_without_a_budget_takes_everything() -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in (9, 3, 7)]
+    assert select_prs(prs, recent=None, rotate=None, tick=5) == prs
+
+
+def test_select_prs_takes_the_most_recent_and_a_rotating_slice_of_the_rest() -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in (50, 40, 30, 20, 10, 5, 4, 3, 2, 1)]  # newest updated first
+    picks = [[p["number"] for p in select_prs(prs, recent=2, rotate=3, tick=t)] for t in range(3)]
+    assert picks[0] == [50, 40, 1, 2, 3]  # the two newest, then the others by number
+    assert picks[1] == [50, 40, 4, 5, 10]
+    assert picks[2] == [50, 40, 20, 30]  # the last slice is shorter
+    assert [p["number"] for p in select_prs(prs, recent=2, rotate=3, tick=3)] == picks[0]  # and it wraps
+
+
+def test_every_pr_is_covered_within_a_bounded_number_of_sweeps() -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in range(100, 0, -1)]
+    seen: set[int] = set()
+    sweeps = -(-(len(prs) - 10) // 15)  # ceil(others / rotate)
+    for tick in range(sweeps):
+        seen |= {p["number"] for p in select_prs(prs, recent=10, rotate=15, tick=tick)}
+    assert seen == {p["number"] for p in prs}
+    assert all(len(select_prs(prs, recent=10, rotate=15, tick=t)) <= 25 for t in range(20))  # never over the budget
+
+
+@pytest.mark.parametrize(("recent", "rotate"), [(0, 0), (None, 0), (0, None), (5, 0)])
+def test_select_prs_edge_budgets_never_crash_or_duplicate(recent: int | None, rotate: int | None) -> None:
+    from osac_ci.publish import select_prs
+
+    prs = [{"number": n} for n in (3, 2, 1)]
+    got = [p["number"] for p in select_prs(prs, recent=recent, rotate=rotate, tick=7)]
+    assert len(got) == len(set(got)) and set(got) <= {1, 2, 3}
+
+
+def test_a_budgeted_sweep_publishes_only_the_selected_prs_and_says_it_is_partial() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6, 5, 4, 3, 2, 1])
+    result = sweep(fake, READY, REPO, org="example", dry_run=True, recent=2, rotate=2, tick=0)
+    assert [o.pr for o in result] == [7, 6, 1, 2] and result.open_prs == 7
+    assert "(this sweep covers 4 of 7 open PRs)" in describe(result)
+
+
+def test_a_sweep_without_a_budget_says_nothing_about_being_partial() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6])
+    assert "this sweep covers" not in describe(sweep(fake, READY, REPO, org="example", dry_run=True))
+
+
+def test_the_reserve_skips_the_prs_not_started_instead_of_failing_them() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6, 5, 4, 3])
+    fake.remaining, fake.remaining_drop_per_call = 150, 30  # a request costs 30: it runs below the reserve of 100
+    result = sweep(fake, READY, REPO, org="example", dry_run=True, reserve=100, workers=1)
+    actions = [o.action for o in result]
+    assert actions[0] == "dry-run" and "skipped" in actions and "failed" not in actions
+    assert actions == sorted(actions, key=lambda a: a == "skipped")  # once the reserve is hit, the rest are skipped
+    text = describe(result)
+    assert "skipped for the request reserve" in text and "requests left" in text
+
+
+def test_without_a_reserve_the_quota_is_not_consulted() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6])
+    fake.remaining, fake.remaining_drop_per_call = 1, 1
+    assert {o.action for o in sweep(fake, READY, REPO, org="example", dry_run=True, workers=1)} == {"dry-run"}
+
+
+def test_an_unknown_quota_never_skips() -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6])
+    assert fake.remaining is None
+    assert {o.action for o in sweep(fake, READY, REPO, org="example", dry_run=True, reserve=10_000)} == {"dry-run"}
+
+
+def test_cli_passes_the_budget_and_reports_the_requests_left(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = fake_with_publish_routes()
+    open_prs(fake, [7, 6, 5, 4])
+    fake.remaining = 4000
+    monkeypatch.setattr(cli, "build_client", lambda: fake)
+    monkeypatch.setattr(cli.time, "time", lambda: 1200.0)  # tick 2 with the default 600 s interval
+    code = cli.main(
+        ["publish", *POLICY_ARGS, "--all", "--dry-run", "--recent", "1", "--rotate", "1", "--reserve", "50"]
+    )
+    out = capsys.readouterr().out
+    assert (
+        code == 0 and "this sweep covers 2 of 4 open PRs" in out and "requests left in this token's window: 4000" in out
+    )
+    assert [line.split(":")[0] for line in out.splitlines() if line.startswith("PR #")] == [
+        "PR #7",
+        "PR #6",
+    ]  # tick 2 of 3 slices of [4, 5, 6]

@@ -17,13 +17,14 @@ import argparse
 import json
 import os
 import sys
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from osac_ci.authorize import authorize, reply
-from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response
+from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
@@ -138,6 +139,14 @@ def _parser() -> argparse.ArgumentParser:
     pub.add_argument("--note", default="", help="text placed above the verdict in the check summary")
     pub.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
     pub.add_argument("--limit", type=int, help="with --all: stop after this many PRs")
+    pub.add_argument("--recent", type=int, help="with --all: look at this many most recently updated PRs per sweep")
+    pub.add_argument(
+        "--rotate", type=int, help="with --all: plus this many of the others, a different slice each sweep"
+    )
+    pub.add_argument("--interval", type=int, default=600, help="seconds between sweeps, for the rotation (default 600)")
+    pub.add_argument(
+        "--reserve", type=int, default=0, help="with --all: skip the PRs not started once fewer requests are left"
+    )
     pub.add_argument("--dry-run", action="store_true", help="print what would be posted, post nothing")
     pub.add_argument(
         "--require-org-token",
@@ -229,13 +238,26 @@ def main(argv: list[str] | None = None) -> int:
         try:
             client = build_client()
             if args.all:
-                outcomes = sweep(client, policy, args.repo, limit=args.limit, **common)
+                outcomes = sweep(
+                    client,
+                    policy,
+                    args.repo,
+                    limit=args.limit,
+                    recent=args.recent,
+                    rotate=args.rotate,
+                    tick=int(time.time() // max(1, args.interval)),
+                    reserve=args.reserve,
+                    **common,
+                )
             else:
                 outcomes = [publish_pr(client, policy, args.repo, args.number, **common)]
         except (GitHubError, ValueError) as exc:
             print(f"error: publish failed: {exc}", file=sys.stderr)
             return 3
         print(describe(outcomes), end="")
+        left = rate_remaining(client)
+        if left is not None:
+            print(f"requests left in this token's window: {left}")
         return 1 if any(o.action == "failed" for o in outcomes) else 0
 
     if args.command == "publish-queue":

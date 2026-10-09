@@ -19,12 +19,19 @@ class FakeGitHub:
         self.routes: dict[tuple[str, str], Any] = {}
         self.calls: list[tuple[str, str]] = []
         self.bodies: list[tuple[str, str, Any]] = []  # every request that carried a body
+        self.remaining: int | None = None  # what the fake says is left of the rate limit
+        self.remaining_drop_per_call = 0  # how much every request uses up, to simulate running out
 
     def add(self, method: str, path: str, data: Any, status: int = 200) -> None:
         self.routes[(method, path)] = (status, data)
 
+    def rate_limit_remaining(self) -> int | None:
+        return self.remaining
+
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
         self.calls.append((method, path))
+        if self.remaining is not None:
+            self.remaining -= self.remaining_drop_per_call
         if body is not None:
             self.bodies.append((method, path, body))
         if (method, path) not in self.routes:
