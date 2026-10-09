@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from osac_ci.github.snapshot import authorization_external_id
 from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
 
 
@@ -41,6 +42,18 @@ def _review_known(review: Review, moment: str) -> bool:
     return not review.submitted_at or review.submitted_at <= moment
 
 
+def _authorized_at(snapshot: Snapshot, runs: tuple[CheckRun, ...]) -> str:
+    """An authorization is a check run, so it exists only from the moment that run completed. ``authorized_by`` was
+    derived from the final check runs: keep it only while the run it came from is still a completed success among
+    the ones that stood at the moment. (Whether the authorizer was an org member then is not rebuilt: it needs the
+    organization's history, which the API does not give.)"""
+    if not snapshot.authorized_by:
+        return ""
+    wanted = authorization_external_id(snapshot.authorized_by, snapshot.head_sha)
+    done = any(r.external_id == wanted and r.status == "completed" and r.conclusion == "success" for r in runs)
+    return snapshot.authorized_by if done else ""
+
+
 def state_at(snapshot: Snapshot, moment: str) -> Snapshot:
     """The snapshot as it stood at ``moment``. Items without a timestamp are kept: they cannot be placed in time."""
     events = tuple(sorted((e for e in snapshot.label_events if not e.at or e.at <= moment), key=lambda e: e.at))
@@ -51,5 +64,6 @@ def state_at(snapshot: Snapshot, moment: str) -> Snapshot:
         label_events=events,
         reviews=tuple(r for r in snapshot.reviews if _review_known(r, moment)),
         check_runs=runs,
+        authorized_by=_authorized_at(snapshot, runs),
         in_merge_queue=False,  # the question is whether it could be let in, so it is not in yet
     )

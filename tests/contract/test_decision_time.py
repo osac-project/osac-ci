@@ -268,3 +268,27 @@ def test_cli_replay_exits_1_when_the_planner_errors_on_a_queue_merged_pr(
     monkeypatch.setattr(cli, "datetime", type("D", (), {"now": staticmethod(lambda tz=None: NOW)}))
     code = cli.main(["replay", "--policy", "policy/toy.yml", "--repo", REPO, "--org", "example", "--at", "enqueue"])
     assert code == 1 and "UNEXPLAINED: 1" in capsys.readouterr().out
+
+
+def test_the_enqueue_report_does_not_call_the_gate_the_planner_agreeing_it_was_ready() -> None:
+    events = [ev("labeled", "2026-10-06T09:30:00Z", "approved"), *QUEUED]
+    slow = [
+        run("lint", "2026-10-06T09:00:00Z", "2026-10-06T09:10:00Z"),
+        run("test", "2026-10-06T09:00:00Z", "2026-10-06T10:20:00Z"),
+    ]
+    text = render(replay(world(events, slow), TOY, REPO, now=NOW, org="example", at="enqueue"))
+    assert "today's enqueue rule held at the enqueue: 1 (100.0%)" in text
+    assert "planner agrees (ready)" not in text  # that PR was not ready: its checks were still running
+
+
+def test_the_enqueue_report_names_what_a_disagreement_means() -> None:
+    events = [ev("added_to_merge_queue", ENQUEUED), ev("merged", MERGED)]  # no label at all
+    text = render(replay(world(events, GREEN), TOY, REPO, now=NOW, org="example", at="enqueue"))
+    assert "## Queue-merged PRs whose enqueue rule did not hold then" in text
+    assert "## Queue-merged PRs the planner disagrees with" not in text
+
+
+def test_the_final_report_keeps_its_wording() -> None:
+    events = [ev("labeled", "2026-10-06T09:30:00Z", "approved"), *QUEUED]
+    text = render(replay(world(events, GREEN), TOY, REPO, now=NOW, org="example"))
+    assert "planner agrees (ready): 1" in text and "enqueue rule held" not in text

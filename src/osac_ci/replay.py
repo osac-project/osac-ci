@@ -201,11 +201,12 @@ def render(report: Report) -> str:
     queue, bypass = report.queue_rows, report.bypass_rows
     queue_ok = sum(r.agrees for r in queue)
     blocked_bypass = [r for r in bypass if not r.agrees]
+    held = "today's enqueue rule held at the enqueue" if report.at == "enqueue" else "planner agrees (ready)"
     lines = [
         f"# Replay: {report.repo}, merged in the last {report.days} days",
         "",
         f"- merged PRs replayed: {len(report.rows)}",
-        f"- merged by the queue: {len(queue)}; planner agrees (ready): {queue_ok} ({report.queue_agreement:.1%})",
+        f"- merged by the queue: {len(queue)}; {held}: {queue_ok} ({report.queue_agreement:.1%})",
         f"- queue-merged disagreements: {len(queue) - queue_ok} "
         f"(explained: {len(queue) - queue_ok - len(report.unexplained)}, UNEXPLAINED: {len(report.unexplained)})",
         f"- merged directly, outside the queue (bypass): {len(bypass)} "
@@ -222,7 +223,9 @@ def render(report: Report) -> str:
     if queue_bad:
         lines += [
             "",
-            "## Queue-merged PRs the planner disagrees with",
+            "## Queue-merged PRs whose enqueue rule did not hold then"
+            if report.at == "enqueue"
+            else "## Queue-merged PRs the planner disagrees with",
             "",
             "| PR | Verdict | Why | Explained |",
             "|---|---|---|---|",

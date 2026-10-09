@@ -104,3 +104,76 @@ def test_everything_else_is_left_alone(toy_policy) -> None:  # type: ignore[no-u
     s = snap(toy_policy, changed_files=("a.go", "b.go"), author="alice", is_fork=True)
     got = state_at(s, T)
     assert (got.changed_files, got.author, got.is_fork, got.head_sha) == (s.changed_files, "alice", True, s.head_sha)
+
+
+# ---- sha-bound authorization is a check run: it exists only from when that run completed -------------------------------
+
+
+def auth_run(login: str, sha: str, completed: str | None, started: str = "2026-10-05T11:00:00Z") -> CheckRun:
+    from osac_ci.github.snapshot import authorization_external_id
+
+    return CheckRun(
+        "OSAC CI authorization",
+        "completed" if completed else "in_progress",
+        "success" if completed else None,
+        started,
+        authorization_external_id(login, sha),
+        "github-actions",
+        completed,
+    )
+
+
+def authorized(toy_policy, completed: str | None, started: str = "2026-10-05T11:00:00Z", **kw):  # type: ignore[no-untyped-def]
+    sha = "a" * 40
+    run = auth_run("reviewer", sha, completed, started)
+    return snap(toy_policy, head_sha=sha, authorized_by="reviewer", check_runs=(run,), is_fork=True, **kw)
+
+
+def test_an_authorization_that_completed_after_the_moment_does_not_exist_yet(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    got = state_at(authorized(toy_policy, completed="2026-10-05T12:30:00Z"), T)
+    assert got.authorized_by == "" and got.check_runs[0].status == "in_progress"
+
+
+def test_an_authorization_that_had_not_even_started_is_gone(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    assert (
+        state_at(
+            authorized(toy_policy, completed="2026-10-05T12:40:00Z", started="2026-10-05T12:30:00Z"), T
+        ).authorized_by
+        == ""
+    )
+
+
+def test_an_authorization_completed_before_the_moment_stands(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    assert state_at(authorized(toy_policy, completed="2026-10-05T11:30:00Z"), T).authorized_by == "reviewer"
+
+
+def test_an_authorization_without_a_timestamp_cannot_be_placed_so_it_stands(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    sha = "a" * 40
+    bare = CheckRun(
+        "OSAC CI authorization", "completed", "success", None, f"osac-ci-auth:v1:reviewer:{sha}", "github-actions"
+    )
+    assert (
+        state_at(snap(toy_policy, head_sha=sha, authorized_by="reviewer", check_runs=(bare,)), T).authorized_by
+        == "reviewer"
+    )
+
+
+def test_no_authorizer_stays_no_authorizer(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    assert state_at(snap(toy_policy, authorized_by="", check_runs=()), T).authorized_by == ""
+
+
+def test_another_persons_authorization_run_does_not_keep_this_one(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    sha = "a" * 40
+    other = auth_run("someone-else", sha, "2026-10-05T11:30:00Z")
+    got = state_at(snap(toy_policy, head_sha=sha, authorized_by="reviewer", check_runs=(other,)), T)
+    assert got.authorized_by == ""
+
+
+def test_a_fork_is_not_trusted_at_the_moment_before_its_authorization_completed(toy_policy) -> None:  # type: ignore[no-untyped-def]
+    from osac_ci.policy import Trust
+    from osac_ci.rules.fork import fork_secrets_authorized
+
+    final = authorized(toy_policy, completed="2026-10-05T12:30:00Z", author="outsider", fork_owner="outsider")
+    sha_bound = Trust(authorization="sha-bound")
+    assert fork_secrets_authorized(final, sha_bound)  # on today's data it looks authorized
+    assert not fork_secrets_authorized(state_at(final, T), sha_bound)  # but it was not, when it counted
