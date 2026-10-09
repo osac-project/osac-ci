@@ -220,3 +220,39 @@ def test_cli_json_and_github_failure(monkeypatch: pytest.MonkeyPatch, capsys: py
     fake.add("GET", f"{BASE}/pulls/5", {"message": "Bad Gateway"}, status=502)
     assert run_cli(monkeypatch, fake) == 3
     assert "replay failed" in capsys.readouterr().err
+
+
+def test_replay_counts_where_the_path_filters_and_a_check_disagree_without_touching_the_verdict() -> None:
+    import yaml
+
+    from osac_ci.policy import parse_policy
+
+    shadow = parse_policy(
+        yaml.safe_dump(
+            {
+                "version": 1,
+                "repo": REPO,
+                "merge": {"required_labels": ["approved"]},
+                "path_filters": {"mode": "shadow", "filters": {"go": ["**/*.go"]}},
+                "jobs": {"lint": {"check": "lint", "filters": ["go"]}, "test": {"check": "test"}},
+            }
+        )
+    )
+    fake, listing = world()
+    add_pr(fake, listing, 30, merged="2026-10-06T10:00:00Z", updated="2026-10-06T10:00:00Z", lint="skipped")
+    add_pr(fake, listing, 29, merged="2026-10-05T10:00:00Z", updated="2026-10-05T10:00:00Z")
+    report = replay(fake, shadow, REPO, now=NOW, org="example")
+    assert [r.number for r in report.filter_rows] == [30]  # a.go matches the filter, but lint was skipped
+    assert all(r.agrees for r in report.rows)  # a skipped check still counts as passing: the verdict is unchanged
+    text = render(report)
+    assert "Path filters vs what the checks did" in text and "#30" in text and "lint applies to these files" in text
+    assert json.loads(to_json(report))["filter_disagreements"] == {
+        "30": ["path filter: go say lint applies to these files, but it was skipped"]
+    }
+
+
+def test_replay_without_filter_disagreements_has_no_such_section() -> None:
+    fake, listing = world()
+    add_pr(fake, listing, 30, merged="2026-10-06T10:00:00Z", updated="2026-10-06T10:00:00Z")
+    report = replay(fake, TOY, REPO, now=NOW, org="example")
+    assert report.filter_rows == () and "Path filters vs" not in render(report)

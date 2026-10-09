@@ -29,6 +29,7 @@ from osac_ci.planner import plan_or_error
 from osac_ci.policy import Policy
 
 EXPECTED = State.READY_TO_ENQUEUE
+FILTER_NOTE = "path filter:"  # prefix of the shadow-mode notes the planner adds (planner._filter_note)
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class Row:
     agrees: bool
     via_queue: bool
     explanation: str | None = None
+    filter_notes: tuple[str, ...] = ()  # shadow mode: where the path filters and what the checks did disagree
 
     @property
     def unexplained(self) -> bool:
@@ -69,6 +71,11 @@ class Report:
     def bypass_rows(self) -> tuple[Row, ...]:
         """Merged outside the queue. The planner's verdict says which requirement was bypassed."""
         return tuple(r for r in self.rows if not r.via_queue)
+
+    @property
+    def filter_rows(self) -> tuple[Row, ...]:
+        """PRs where a job's path filters and its check disagreed (shadow mode); they are not planner disagreements."""
+        return tuple(r for r in self.rows if r.filter_notes)
 
     @property
     def queue_agreement(self) -> float:
@@ -149,6 +156,7 @@ def replay(
                 agrees=agrees,
                 via_queue=snapshot.queued_per_events,
                 explanation=None if agrees else explained.get(pr["number"]),
+                filter_notes=tuple(n for n in verdict.notes if n.startswith(FILTER_NOTE)),
             )
         )
     return Report(repo=repo, days=days, rows=tuple(rows))
@@ -189,6 +197,22 @@ def render(report: Report) -> str:
             f"| #{r.number} | {r.state.value} | {r.headline} | {r.explanation or '**no**'} |"
             for r in sorted(queue_bad, key=lambda r: r.number)
         ]
+    if report.filter_rows:
+        lines += [
+            "",
+            "## Path filters vs what the checks did (shadow mode)",
+            "",
+            f"{len(report.filter_rows)} of {len(report.rows)} PRs have a job whose path filters and check disagree. "
+            "Not a planner disagreement: it shows where the policy's filter mapping or the workflow's own filtering "
+            "is wrong, so fix the mapping (or the workflow) before switching to `enforce`.",
+            "",
+            "| PR | Disagreement |",
+            "|---|---|",
+        ]
+        lines += [
+            f"| #{r.number} | {'; '.join(n.removeprefix(FILTER_NOTE).strip() for n in r.filter_notes)[:300]} |"
+            for r in sorted(report.filter_rows, key=lambda r: r.number)
+        ]
     if blocked_bypass:
         lines += [
             "",
@@ -214,6 +238,7 @@ def to_json(report: Report) -> str:
             "bypass_merged": len(report.bypass_rows),
             "queue_agreement": report.queue_agreement,
             "unexplained": [r.number for r in report.unexplained],
+            "filter_disagreements": {str(r.number): list(r.filter_notes) for r in report.filter_rows},
             "rows": [
                 {
                     "number": r.number,

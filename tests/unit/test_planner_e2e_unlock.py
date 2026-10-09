@@ -17,7 +17,7 @@ JIRA = frozenset({"jira/valid-reference"})  # the only label these policies need
 def with_sections(**sections: object) -> Policy:
     raw = yaml.safe_load((ROOT / "policy" / "osac.yml").read_text(encoding="utf-8"))
     raw.update(sections)
-    return parse_policy(yaml.safe_dump(raw))
+    return parse_policy(yaml.safe_dump(raw), base=ROOT / "policy")  # path_filters.file is relative to the policy
 
 
 def e2e(**unlock: object) -> Policy:

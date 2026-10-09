@@ -27,6 +27,39 @@ uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json
 ```
 
+## Path filters (`path_filters:`)
+
+Each OSAC workflow decides today whether it applies with `dorny/paths-filter` on the shared `ci-filters.yml`, and
+reports a skipped or green check. The policy can name those same filters per job, so the planner knows what *should*
+apply without reading each workflow:
+
+```yaml
+path_filters:
+  mode: shadow                  # or enforce
+  file: osac-filters.yml        # a ci-filters.yml-style file next to the policy (inline `filters:` also works)
+jobs:
+  unit-tests: {check: "Run unit tests", filters: [code, unit-tests-fulfillment-service]}   # ALL must hold
+  e2e-vmaas:
+    check: e2e-vmaas-gate
+    filters: [vmaas-outside-known-safe]
+    filters_any: [e2e-code, e2e-suite]                                                       # AT LEAST ONE must hold
+```
+
+A filter holds when some changed file matches it (the rules in `osac_ci/paths.py`, held to the real action by an
+oracle test). `filters` and `filters_any` combine like the workflows' `if:` expressions: every name in `filters` and at
+least one in `filters_any`. A job uses either globs (`paths`) or named filters, not both.
+
+- `shadow` (default, and what `policy/osac.yml` uses): the filters decide nothing. The planner trusts each check as
+  before and adds a verdict note where a filter and the check disagree, in the two unambiguous cases only: a failure on
+  files the filters call irrelevant, or a skip on files they call relevant (a readiness-gated E2E job is skipped on
+  purpose, so it is exempt). A green check proves nothing either way, since a workflow that finds nothing to do still
+  reports success. `osac-ci replay` counts these and lists them.
+- `enforce`: the filters decide. A job whose filters do not hold is not applicable, so nothing waits for it, and even a
+  failure of its check is ignored. A PR that lists no changed files never skips anything.
+
+`policy/osac-filters.yml` is a copy of osac's `.github/filters/ci-filters.yml` (its header records the osac commit).
+Refresh it when that file changes. Move to `enforce` only when the replay shows the mapping agrees.
+
 ## Who may use secrets and start expensive jobs (`trust:`)
 
 A PR from a fork may use secrets, and start E2E, when its author is an org member, the fork is owned by an org member,

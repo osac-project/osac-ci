@@ -110,6 +110,7 @@ class JobEntry:
     status: JobStatus
     detail: str
     code: str = ""  # machine-readable reason for a waiting E2E job (see rules/readiness.py), "" otherwise
+    note: str = ""  # where the path filters and what this check actually did disagree (shadow mode), "" otherwise
 
 
 @dataclass(frozen=True)
