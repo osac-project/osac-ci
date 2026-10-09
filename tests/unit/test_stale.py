@@ -94,3 +94,87 @@ def test_timestamps_with_an_offset_compare_correctly() -> None:
 def test_among_stale_verdicts_the_longest_waiting_goes_first() -> None:
     rows = [pr(1, updated=5, last=done(10)), pr(2, updated=8, last=done(10))]
     assert [s.number for s, _ in select_stale(rows, NOW)] == [2, 1]
+
+
+# ---- verdicts with missing times ---------------------------------------------------------------------------------
+
+
+def test_a_queued_verdict_that_never_started_is_looked_at_not_parsed() -> None:
+    queued = LastVerdict("queued", None, None, None)
+    assert reason(pr(updated=600, last=queued), NOW) == "verdict without a time"
+
+
+def test_a_completed_verdict_with_no_time_at_all_cannot_be_trusted() -> None:
+    assert (
+        reason(pr(updated=600, last=LastVerdict("completed", "success", None, None)), NOW) == "verdict without a time"
+    )
+
+
+def test_a_completed_verdict_without_a_completion_time_uses_its_start() -> None:
+    last = LastVerdict("completed", "success", at(10), None)
+    assert reason(pr(updated=15, last=last), NOW) is None
+    assert reason(pr(updated=5, last=last), NOW) == "changed since the verdict"
+
+
+# ---- an unfinished verdict of a PR that has changed ----------------------------------------------------------------
+
+
+def test_a_change_after_an_unfinished_verdict_comes_before_waiting_for_it() -> None:
+    waiting = LastVerdict("in_progress", None, at(10), None)
+    assert reason(pr(updated=5, last=waiting), NOW) == "changed since the verdict"  # young, but already out of date
+    assert reason(pr(updated=15, last=waiting), NOW) is None  # young and current: left alone
+    stuck = LastVerdict("in_progress", None, at(90), None)
+    assert reason(pr(updated=60, last=stuck), NOW) == "changed since the verdict"
+    assert reason(pr(updated=120, last=stuck), NOW) == "verdict stuck in progress"
+
+
+# ---- the order among stale PRs: since when has the verdict been out of date -------------------------------------
+
+
+def order(rows: list[Standing], rules: StaleRules | None = None) -> list[int]:
+    rules = rules or StaleRules()
+    return [s.number for s, _ in select_stale(rows, NOW, rules)]
+
+
+def test_changed_verdicts_go_by_when_the_pr_changed_not_when_it_was_last_active_in_general() -> None:
+    rows = [pr(1, updated=5, last=done(60)), pr(2, updated=20, last=done(60))]  # both changed after their verdict
+    assert order(rows) == [2, 1]  # #2 changed longer ago
+
+
+def test_old_verdicts_go_by_when_they_were_posted() -> None:
+    rows = [pr(1, updated=60 * 20, last=done(60 * 8)), pr(2, updated=60 * 20, last=done(60 * 12))]
+    assert order(rows) == [2, 1]
+
+
+def test_planner_errors_go_by_when_they_were_posted() -> None:
+    rows = [pr(1, updated=600, last=done(10, "failure")), pr(2, updated=600, last=done(40, "failure"))]
+    assert order(rows) == [2, 1]
+
+
+def test_stuck_verdicts_go_by_when_they_became_stuck() -> None:
+    stuck_a = LastVerdict("in_progress", None, at(50), None)
+    stuck_b = LastVerdict("in_progress", None, at(120), None)
+    assert order([pr(1, updated=600, last=stuck_a), pr(2, updated=600, last=stuck_b)]) == [2, 1]
+
+
+def test_equal_times_fall_back_to_the_pr_number() -> None:
+    rows = [pr(7, updated=600, last=done(10, "failure")), pr(3, updated=600, last=done(10, "failure"))]
+    assert order(rows) == [3, 7]
+
+
+def test_stale_since_names_the_moment_for_each_reason() -> None:
+    from osac_ci.stale import stale_since
+
+    rules = StaleRules(stale_after=1800, max_age=3600)
+    assert stale_since(pr(updated=5, last=done(60)), "changed since the verdict", rules) == NOW - timedelta(minutes=5)
+    assert stale_since(pr(updated=900, last=done(60)), "old", rules) == NOW - timedelta(minutes=60) + timedelta(hours=1)
+    stuck = LastVerdict("in_progress", None, at(50), None)
+    assert stale_since(pr(updated=900, last=stuck), "verdict stuck in progress", rules) == NOW - timedelta(minutes=20)
+    assert stale_since(pr(updated=900, last=done(30, "failure")), "planner error", rules) == NOW - timedelta(minutes=30)
+    assert stale_since(pr(updated=3, last=None), "no verdict", rules) == NOW - timedelta(minutes=3)
+
+
+def test_a_completed_verdict_counts_from_when_it_finished_not_when_it_started() -> None:
+    long_run = LastVerdict("completed", "success", at(30), at(5))
+    assert reason(pr(updated=10, last=long_run), NOW) is None  # the PR changed while the verdict was being computed
+    assert reason(pr(updated=2, last=long_run), NOW) == "changed since the verdict"

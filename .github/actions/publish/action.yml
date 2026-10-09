@@ -47,6 +47,11 @@ inputs:
       the pull request's last change, stuck in progress or old, found from one listing. It replaces recent and rotate,
       which are then ignored
     default: "false"
+  verdict-app-id:
+    description: >-
+      Stale-only sweep, id of the GitHub App that posts the verdicts. The default is the built-in token of Actions;
+      use 0 when the check is posted with another app's token
+    default: "15368"
   stale-after:
     description: Stale-only sweep, seconds an in-progress verdict may stand before it is looked at again
     default: "1800"
@@ -120,6 +125,7 @@ runs:
         RESERVE: ${{ inputs.reserve }}
         INTERVAL: ${{ inputs.interval }}
         STALE_ONLY: ${{ inputs.stale-only }}
+        VERDICT_APP_ID: ${{ inputs.verdict-app-id }}
         STALE_AFTER: ${{ inputs.stale-after }}
         MAX_AGE: ${{ inputs.max-age }}
         NOTE: ${{ inputs.note }}
@@ -138,7 +144,7 @@ runs:
         else
           target=(--all --reserve "$RESERVE")
           if [ "$STALE_ONLY" = "true" ]; then
-            target+=(--stale-only --stale-after "$STALE_AFTER" --max-age "$MAX_AGE")
+            target+=(--stale-only --stale-after "$STALE_AFTER" --max-age "$MAX_AGE" --verdict-app-id "$VERDICT_APP_ID")
           else
             target+=(--recent "$RECENT" --rotate "$ROTATE" --interval "$INTERVAL")
           fi

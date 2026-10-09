@@ -175,6 +175,13 @@ def _parser() -> argparse.ArgumentParser:
         help="with --stale-only: seconds an in-progress verdict may stand before it is looked at again (default 1800)",
     )
     pub.add_argument(
+        "--verdict-app-id",
+        type=_non_negative,
+        default=15368,
+        help="with --stale-only: id of the GitHub App that posts the verdicts (default 15368, the Actions built-in "
+        "token); 0 accepts a verdict posted by any app, for a check posted with another app's token",
+    )
+    pub.add_argument(
         "--max-age",
         type=_non_negative,
         default=21600,
@@ -296,6 +303,7 @@ def main(argv: list[str] | None = None) -> int:
                     tick=int(time.time() // max(1, args.interval)),
                     reserve=args.reserve,
                     stale=StaleRules(args.stale_after, args.max_age) if args.stale_only else None,
+                    verdict_app_id=args.verdict_app_id or None,
                     **common,
                 )
             else:

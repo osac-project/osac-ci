@@ -49,6 +49,7 @@ class Listing(FakeGitHub):
         if path == "/graphql" and body and "pullRequests" in body["query"]:
             self.queries += 1
             self.calls.append((method, path))
+            self.bodies.append((method, path, body))
             start = int(body["variables"]["after"] or "0")
             chunk = self.nodes[start : start + self.page_size]
             more = start + self.page_size < len(self.nodes)
@@ -174,3 +175,84 @@ def test_cli_runs_a_stale_only_sweep(monkeypatch: pytest.MonkeyPatch, capsys: py
     fake = listing_with_pr_routes([node(3, "2026-10-09T09:00:00Z")])
     assert run_cli(monkeypatch, fake, "--all", "--stale-only", "--dry-run") == 0
     assert "[no verdict]" in capsys.readouterr().out
+
+
+# ---- which app's verdicts count, and what the query asks for -----------------------------------------------------
+
+
+def variables_sent(fake: Listing) -> dict[str, Any]:
+    (body,) = [b for m, p, b in fake.bodies if p == "/graphql"][:1]
+    return body["variables"]
+
+
+def test_the_default_trusts_verdicts_posted_with_the_actions_token() -> None:
+    fake = Listing([node(1, "2026-10-09T09:00:00Z")])
+    fetch_standings(fake, REPO, "OSAC CI")
+    assert variables_sent(fake)["app"] == 15368 and variables_sent(fake)["check"] == "OSAC CI"
+
+
+def test_any_app_can_be_accepted_for_a_check_posted_with_another_apps_token() -> None:
+    fake = Listing([node(1, "2026-10-09T09:00:00Z")])
+    fetch_standings(fake, REPO, "OSAC CI", app_id=None)
+    assert variables_sent(fake)["app"] is None
+
+
+def test_the_query_asks_for_the_newest_runs_not_the_first_ones() -> None:
+    from osac_ci.github.standing import _QUERY
+
+    assert "checkSuites(last:" in _QUERY and "checkRuns(last:" in _QUERY
+    assert "$app: Int)" in _QUERY and "$app: Int!" not in _QUERY  # the filter is optional
+
+
+def test_a_run_that_has_not_started_does_not_break_the_listing() -> None:
+    queued = {"status": "QUEUED", "conclusion": None, "startedAt": None, "completedAt": None}
+    (s,) = fetch_standings(Listing([node(1, "2026-10-09T09:00:00Z", [queued])]), REPO, "OSAC CI")
+    assert s.last is not None and s.last.started_at is None and s.last.status == "queued"
+
+
+def test_a_sweep_survives_a_queued_verdict_and_reads_that_pr() -> None:
+    queued = {"status": "QUEUED", "conclusion": None, "startedAt": None, "completedAt": None}
+    fake = listing_with_pr_routes([node(2, "2026-10-09T09:00:00Z", [queued])])
+    result = sweep(fake, READY, REPO, org="example", stale=StaleRules(), now=NOW)
+    assert [o.pr for o in result] == [2] and result.reasons == {2: "verdict without a time"}
+
+
+def test_the_newest_of_several_runs_wins_even_when_it_has_not_started() -> None:
+    old = run_node(at="2026-10-09T09:00:00Z")
+    pending = {"status": "IN_PROGRESS", "conclusion": None, "startedAt": "2026-10-09T10:00:00Z", "completedAt": None}
+    (s,) = fetch_standings(Listing([node(1, "2026-10-09T08:00:00Z", [old, pending])]), REPO, "OSAC CI")
+    assert s.last is not None and s.last.status == "in_progress"
+
+
+def test_cli_passes_the_app_and_the_ages_to_the_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_sweep(*args: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        from osac_ci.publish import Sweep
+
+        return Sweep([], 0)
+
+    monkeypatch.setattr(cli, "sweep", fake_sweep)
+    monkeypatch.setattr(cli, "build_client", lambda: FakeGitHub())
+    argv = ["publish", "--policy", "policy/toy.yml", "--repo", REPO, "--all", "--stale-only"]
+    assert cli.main([*argv, "--stale-after", "60", "--max-age", "0", "--verdict-app-id", "0"]) == 0
+    assert seen["stale"] == StaleRules(60, 0) and seen["verdict_app_id"] is None
+    assert cli.main(argv) == 0
+    assert seen["stale"] == StaleRules(1800, 21600) and seen["verdict_app_id"] == 15368
+
+
+@pytest.mark.parametrize("flag", ["--stale-after", "--max-age", "--verdict-app-id"])
+def test_cli_rejects_negative_ages_and_ids(flag: str, capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["publish", "--policy", "policy/toy.yml", "--repo", REPO, "--all", "--stale-only", flag, "-1"])
+    assert "must not be negative" in capsys.readouterr().err
+
+
+def test_the_sweep_hands_the_app_to_the_listing() -> None:
+    fake = listing_with_pr_routes([node(1, "2026-10-09T09:00:00Z", [run_node(at="2026-10-09T10:00:00Z")])])
+    sweep(fake, READY, REPO, org="example", stale=StaleRules(), now=NOW, verdict_app_id=None)
+    assert variables_sent(fake)["app"] is None
+    other = listing_with_pr_routes([node(1, "2026-10-09T09:00:00Z", [run_node(at="2026-10-09T10:00:00Z")])])
+    sweep(other, READY, REPO, org="example", stale=StaleRules(), now=NOW)
+    assert variables_sent(other)["app"] == 15368

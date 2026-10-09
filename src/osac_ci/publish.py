@@ -28,7 +28,7 @@ from typing import Any
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, rate_remaining
 from osac_ci.github.snapshot import COMMIT_SHA, fetch_queue_snapshot, fetch_snapshot
-from osac_ci.github.standing import fetch_standings
+from osac_ci.github.standing import ACTIONS_APP_ID, fetch_standings
 from osac_ci.model import Mode, State, Verdict
 from osac_ci.planner import error_verdict, plan_or_error
 from osac_ci.policy import Policy
@@ -269,6 +269,7 @@ def sweep(
     reserve: int = 0,
     stale: StaleRules | None = None,
     now: datetime | None = None,
+    verdict_app_id: int | None = ACTIONS_APP_ID,
 ) -> Sweep:
     """Publish for the open PRs one sweep covers (all of them without a budget, see ``select_prs``).
 
@@ -283,7 +284,7 @@ def sweep(
         # Decide from one listing of every open PR with its latest verdict, and read only the ones that need it.
         if recent is not None or rotate is not None:
             raise ValueError("a stale-only sweep chooses its PRs itself; do not combine it with recent or rotate")
-        standings = fetch_standings(client, repo, check_name)
+        standings = fetch_standings(client, repo, check_name, verdict_app_id)
         open_prs = len(standings)
         chosen = select_stale(standings, now or datetime.now(UTC), stale)[: None if limit is None else max(0, limit)]
         reasons = {s.number: why for s, why in chosen}
