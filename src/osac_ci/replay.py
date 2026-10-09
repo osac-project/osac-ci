@@ -158,6 +158,7 @@ def replay(
             lookup_membership=lookup_membership,
             approval=policy.approval,
             protected=policy.protected_paths,
+            override=policy.override,
             trust=policy.trust,
         )
         moment = ""

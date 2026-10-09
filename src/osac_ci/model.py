@@ -75,6 +75,15 @@ class CheckRun:
     external_id: str = ""  # set by whoever posted the check run; used to read back an authorization
     app: str = ""  # slug of the app that posted it, for example github-actions
     completed_at: str | None = None  # lets a replay tell that a check had not finished yet at a given moment
+    title: str = ""  # the check run's output title; an override keeps its reason there
+
+
+@dataclass(frozen=True)
+class OverrideGrant:
+    """A person with the authority to waive the protected-path approval, who did so for exactly the head commit."""
+
+    login: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -112,6 +121,11 @@ class Snapshot:
         default_factory=dict
     )  # "org/team" -> logins; None = unreadable
     change_fingerprints: Mapping[str, str] = field(default_factory=dict)  # commit sha -> fingerprint of its changes
+    # Approvers named by a protected-path rule's ``approvers_from`` files, read from the base branch: file -> logins.
+    # ``None`` means the file could not be read, which is an error and never an empty list.
+    owner_approvers: Mapping[str, frozenset[str] | None] = field(default_factory=dict)
+    # Valid overrides of the protected-path approval for exactly this head commit (see rules/protected.py).
+    overrides: tuple[OverrideGrant, ...] = ()
     # Login of an org member who authorized exactly this head commit for secrets and E2E (sha-bound trust mode only).
     authorized_by: str = ""
     # Every verified authorizer of this head, newest first (``authorized_by`` is the first). Kept so that a replay can

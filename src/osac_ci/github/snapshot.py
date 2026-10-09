@@ -18,9 +18,9 @@ from typing import Any
 
 from osac_ci.fingerprint import fingerprint
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
-from osac_ci.model import CheckRun, LabelEvent, Review, Snapshot
-from osac_ci.policy import Approval, ProtectedPaths, Trust
-from osac_ci.rules import codeowners
+from osac_ci.model import CheckRun, LabelEvent, OverrideGrant, Review, Snapshot
+from osac_ci.policy import Approval, Override, ProtectedPaths, Trust
+from osac_ci.rules import codeowners, owners
 
 _QUEUE_QUERY = """
 query($id: ID!) { node(id: $id) { ... on PullRequest { mergeQueueEntry { id } } } }
@@ -172,6 +172,77 @@ def fetch_codeowners(client: GitHubClient, repo: str, base_ref: str) -> str | No
 
 
 _TEAM_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def fetch_owner_approvers(client: GitHubClient, repo: str, base_ref: str, path: str) -> frozenset[str] | None:
+    """Approvers named in an OWNERS file on the base branch (never the PR head). A file that does not exist names
+    nobody. ``None`` when it cannot be read or understood: that is an error for the caller, never an empty guess."""
+    response = client.request("GET", f"/repos/{repo}/contents/{_quote(path)}", params={"ref": base_ref})
+    if response.status == 404:
+        return frozenset()
+    if response.status != 200 or not isinstance(response.data, dict):
+        return None
+    try:
+        return owners.approvers(base64.b64decode(response.data.get("content", "")).decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+
+
+OVERRIDE_ID = re.compile(r"^osac-ci-override:v1:(?P<login>[A-Za-z0-9][A-Za-z0-9-]{0,38}):(?P<sha>[0-9a-f]{40})$")
+OVERRIDE_TITLE_PREFIX = "Protected-path approval overridden by "
+
+
+def override_external_id(login: str, head_sha: str) -> str:
+    return f"osac-ci-override:v1:{login}:{head_sha}"
+
+
+def clean_reason(text: str) -> str:
+    """A reason as shown to people: one line, no control characters, at most 140 characters (it is kept in a title)."""
+    return " ".join("".join(ch for ch in text if ch.isprintable() or ch.isspace()).split())[:140]
+
+
+def override_approver_logins(
+    org_client: GitHubClient, override: Override, team_members: dict[str, frozenset[str] | None]
+) -> set[str]:
+    """Logins who may override: the handles, with teams expanded. A team that cannot be read is an error."""
+    logins: set[str] = set()
+    for handle in override.approvers:
+        if "/" in handle:
+            team = handle[1:]
+            if team not in team_members:
+                team_members[team] = fetch_team_members(org_client, team)
+            members = team_members[team]
+            if members is None:
+                raise ValueError(f"cannot read the members of override team {handle}; check the credential's org scope")
+            logins |= {m.lower() for m in members}
+        else:
+            logins.add(handle[1:].lower())
+    return logins
+
+
+def find_overrides(
+    runs: Sequence[CheckRun], head_sha: str, override: Override, allowed: set[str], author: str
+) -> tuple[OverrideGrant, ...]:
+    """Valid overrides of exactly ``head_sha``, newest first: a successful run of the override check posted by the
+    workflow app whose external id names an approver and the commit. The approver must still be one now, and the PR's
+    author never counts."""
+    found: list[OverrideGrant] = []
+    for run in sorted(runs, key=lambda r: r.started_at or "", reverse=True):
+        if (run.name, run.status, run.conclusion, run.app) != (override.check_name, "completed", "success", AUTH_APP):
+            continue
+        match = OVERRIDE_ID.match(run.external_id)
+        if not match or match["sha"] != head_sha:
+            continue
+        login = match["login"]
+        if login.lower() not in allowed or login.lower() == author.lower() or any(g.login == login for g in found):
+            continue
+        reason = (
+            run.title[len(OVERRIDE_TITLE_PREFIX) + len(login) + 2 :]
+            if run.title.startswith(f"{OVERRIDE_TITLE_PREFIX}{login}: ")
+            else ""
+        )
+        found.append(OverrideGrant(login, clean_reason(reason) or "no reason recorded"))
+    return tuple(found)
 
 
 def _changed_names(raw_files: Iterable[dict[str, Any]]) -> tuple[str, ...]:
@@ -333,6 +404,7 @@ def fetch_snapshot(
     org_client: GitHubClient | None = None,
     trust: Trust | None = None,
     protected: Sequence[ProtectedPaths] = (),
+    override: Override | None = None,
 ) -> Snapshot:
     """Read everything the planner needs.
 
@@ -344,6 +416,9 @@ def fetch_snapshot(
 
     ``protected`` are the policy's protected-path rules; for each rule whose files changed, the members of its approver
     teams are read (and the change fingerprints, when the rule carries approvals over a rebase).
+
+    ``override`` is the policy's override section: when a protected rule applies, the valid overrides of this head
+    commit are read from its check runs.
 
     ``org_client`` is used only for the organization lookups (membership and team members). It lets a token that can
     read the organization, and nothing else, be kept apart from the one that reads and posts on the pull request.
@@ -380,6 +455,7 @@ def fetch_snapshot(
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
             raw.get("completed_at"),
+            (raw.get("output") or {}).get("title") or "",
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
@@ -411,6 +487,16 @@ def fetch_snapshot(
                     team_members[owner[1:]] = fetch_team_members(org_client, owner[1:])
         if not fingerprints and any(rule.carry_over == "trivial-rebase" for rule in matched):
             fingerprints = _fingerprints(client, repo, base_ref, head_sha, reviews)
+    owner_files: dict[str, frozenset[str] | None] = {}
+    for rule in matched:
+        for path in rule.approvers_from:
+            if path not in owner_files:
+                owner_files[path] = fetch_owner_approvers(client, repo, base_ref, path)
+    grants: tuple[OverrideGrant, ...] = ()
+    if matched and override is not None:
+        team_members = dict(team_members)
+        allowed = override_approver_logins(org_client, override, team_members)
+        grants = find_overrides(runs, head_sha, override, allowed, author)
 
     return Snapshot(
         repo=repo,
@@ -434,6 +520,8 @@ def fetch_snapshot(
         codeowners=owners_text,
         team_members=team_members,
         change_fingerprints=fingerprints,
+        owner_approvers=owner_files,
+        overrides=grants,
         authorized_by=authorizers[0] if authorizers else "",
         authorizers=authorizers,
     )

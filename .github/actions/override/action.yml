@@ -1,0 +1,63 @@
+---
+name: Override the protected-path approval
+description: >-
+  Handle an "/override <full commit sha> <reason>" comment: if the commenter may override and the commit is the pull
+  request's current head, record the waiver as a check run on that commit and refresh the OSAC CI verdict. A repository
+  calls this from a workflow triggered by issue_comment, pinned to a commit of osac-ci.
+
+# The calling workflow decides the trigger, the token and the concurrency. This action never checks out the calling
+# repository, and the comment (user input) reaches the program only through an environment variable, never the script.
+inputs:
+  github-token:
+    description: Token that can write checks and comment on pull requests (normally the job's built-in token)
+    required: true
+  org-token:
+    description: Short-lived token that can read organization membership and teams (needed to know who may override)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number
+    required: true
+  commenter:
+    description: Login of whoever wrote the comment
+    required: true
+  comment:
+    description: The comment text
+    required: true
+  policy:
+    description: Policy file, relative to the root of osac-ci at the pinned commit
+    default: policy/osac.yml
+  note:
+    description: Text placed above the verdict in the check summary
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Record the override and refresh the verdict
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
+        OSAC_CI_COMMENT: ${{ inputs.comment }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        COMMENTER: ${{ inputs.commenter }}
+        POLICY: ${{ inputs.policy }}
+        NOTE: ${{ inputs.note }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        case "$NUMBER" in ""|*[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;; esac
+        root="$ACTION_PATH/../../.."
+        note=()
+        if [ -n "$NOTE" ]; then note=(--note "$NOTE"); fi
+        uv run --locked --project "$root" osac-ci override --policy "$root/$POLICY" --repo "$REPO" \
+          --number "$NUMBER" --commenter "$COMMENTER"
+        uv run --locked --project "$root" osac-ci publish --policy "$root/$POLICY" --repo "$REPO" \
+          --number "$NUMBER" --lookup-membership --require-org-token "${note[@]}"

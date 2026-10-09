@@ -76,6 +76,15 @@ class Approval(_Strict):
     )
 
 
+_HANDLE = re.compile(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?")
+
+
+def _handles(value: tuple[str, ...]) -> tuple[str, ...]:
+    if any(not _HANDLE.fullmatch(a) for a in value):
+        raise ValueError("approvers must look like @login or @org/team")
+    return value
+
+
 class ProtectedPaths(_Strict):
     """Files whose change needs approval from named people, whatever the rest of the approval rules say.
 
@@ -89,6 +98,13 @@ class ProtectedPaths(_Strict):
         default=(), description="Globs of files inside the protected ones that need no approval, for example docs"
     )
     approvers: tuple[str, ...] = Field(min_length=1, description="'@login' or '@org/team'; one of them must approve")
+    approvers_from: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "OWNERS files (Prow format) in the repository whose approvers may also approve, read from the base branch, "
+            "for example a component's own maintainers"
+        ),
+    )
     carry_over: Literal["never", "trivial-rebase"] = Field(
         default="never", description="Keep an approval after a rebase that leaves the PR's own changes unchanged"
     )
@@ -106,10 +122,32 @@ class ProtectedPaths(_Strict):
 
     @field_validator("approvers")
     @classmethod
-    def _handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if any(not re.fullmatch(r"@[A-Za-z0-9][A-Za-z0-9-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?", a) for a in value):
-            raise ValueError("approvers must look like @login or @org/team")
+    def _approver_handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _handles(value)
+
+    @field_validator("approvers_from")
+    @classmethod
+    def _owner_files(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        for path in value:
+            parts = path.split("/")
+            if not path or path.startswith("/") or "\\" in path or "\0" in path or ".." in parts or "" in parts:
+                raise ValueError(f"approvers_from must be repository-relative file paths, got {path!r}")
         return value
+
+
+class Override(_Strict):
+    """Who may waive the protected-path approval for one commit, with a written reason (see authorize.py).
+
+    The waiver is a check run bound to the exact head commit, so a new push needs a new one; it names the person and
+    the reason on the commit, which is the audit trail. The PR's author cannot waive their own PR."""
+
+    approvers: tuple[str, ...] = Field(min_length=1, description="'@login' or '@org/team' who may override")
+    check_name: str = Field(default="OSAC CI override", min_length=1)
+
+    @field_validator("approvers")
+    @classmethod
+    def _approver_handles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _handles(value)
 
 
 Signal = Literal["human-approval", "coderabbit-approval", "lgtm-label", "e2e-ready-label"]
@@ -196,6 +234,7 @@ class Policy(_Strict):
     e2e: E2E = E2E()
     path_filters: PathFilters = PathFilters()
     protected_paths: tuple[ProtectedPaths, ...] = ()
+    override: Override | None = None
     jobs: dict[str, Job]
 
     @model_validator(mode="after")

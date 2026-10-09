@@ -253,13 +253,13 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | Domain model | `src/osac_ci/model.py` | Plain data types: `Snapshot` (input), `Verdict` (output), `State`, `JobStatus`, `Review`, `CheckRun`, `LabelEvent`. |
 | Planner | `src/osac_ci/planner.py` | The pure decision function `plan(snapshot, policy, mode)`. `plan_or_error` wraps it so any exception becomes the `planner-error` state. Holds the state ordering and the "who acts next" texts. |
 | Policy loader | `src/osac_ci/policy.py` | Parses and validates a policy file. Unknown keys are errors, so a typo cannot silently disable a rule. |
-| Rules | `src/osac_ci/rules/` | One module per rule, each pure: `labels.py` (required and blocking labels), `readiness.py` (the legacy E2E unlock ladder), `e2e_unlock.py` (the explicit unlock policy), `fork.py` (who may use secrets), `approval.py` (native approval), `codeowners.py` (CODEOWNERS matching). |
+| Rules | `src/osac_ci/rules/` | One module per rule, each pure: `labels.py` (required and blocking labels), `readiness.py` (the legacy E2E unlock ladder), `e2e_unlock.py` (the explicit unlock policy), `fork.py` (who may use secrets), `approval.py` (native approval), `codeowners.py` (CODEOWNERS matching), `protected.py` (files that need named approvers), `owners.py` (approvers from an OWNERS file). |
 | Path matching | `src/osac_ci/paths.py` | Evaluates glob patterns and the named filters of `ci-filters.yml`, the same way the workflows' path-filter action does. |
 | Change fingerprint | `src/osac_ci/fingerprint.py` | A digest of what a commit adds and removes, ignoring surrounding context, so an approval can survive an unchanged rebase. |
 | Timeline | `src/osac_ci/timeline.py` | Rebuilds the labels, reviews and checks of a PR as they stood at a past moment (used by replay). |
 | GitHub adapter | `src/osac_ci/github/` | The only code that does network I/O (standard library only). `api.py` is the HTTP client, `snapshot.py` turns about 7 to 11 API calls into a `Snapshot`. Deliberately avoids the bulk `statusCheckRollup` query, which times out on PRs with 100 checks. |
 | Publisher | `src/osac_ci/publish.py` | Posts the verdict as the *OSAC CI* check run, for a PR or for a merge-queue commit; the sweep budget lives here. |
-| Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` comments. |
+| Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` and `/override <sha> <reason>` comments. |
 | Report | `src/osac_ci/report.py`, `render.py` | A table of every open PR (markdown, HTML, JSON). |
 | Replay | `src/osac_ci/replay.py` | Compares the planner's answers with merged PRs. `parity/explained.yaml` lists signed-off disagreements. |
 | CLI | `src/osac_ci/cli.py` | The `osac-ci` command. |
@@ -371,10 +371,48 @@ review that requests changes is not an approval, and a team that cannot be read 
 and it works with label approval as well as native approval. It is evaluated at pull request time, not on a merge-queue
 commit.
 
-`policy/osac.yml` uses it for the files that define osac's checks (`.github/workflows`, `actions`, `scripts` and
+A rule can also take approvers from a component's own OWNERS file, so the people who maintain a component can approve
+changes to its own workflow without the infrastructure group:
+
+```yaml
+protected_paths:
+  - paths: [".github/workflows/**"]
+    exclude_paths: ["**/*.md", ".github/workflows/osac-ui-lint.yaml"]   # judged by the rule below instead
+    approvers: ["@osac-project/wg-infra"]
+  - paths: [".github/workflows/osac-ui-lint.yaml"]
+    approvers: ["@osac-project/wg-infra"]
+    approvers_from: ["osac-ui/OWNERS"]     # every approver listed in that Prow-style file, read from the base branch
+```
+
+Any one person from `approvers` or the OWNERS files is enough, but a change that matches several rules needs each rule
+satisfied, so keep the paths of different rules apart with `exclude_paths`. An OWNERS file that does not exist names
+nobody; one that cannot be read or understood is a `planner-error`, never an empty list. `policy/osac.yml` delegates only
+the osac-ui lint and typecheck workflows: they run on `pull_request`, use no secret and report no required check. Every
+other workflow either reports a required check, runs with secrets or publishes an image, so it stays with the
+infrastructure group.
+
+`policy/osac.yml` protects the files that define osac's checks (`.github/workflows`, `actions`, `scripts` and
 `filters`, `CODEOWNERS`, `.pre-commit-config.yaml`), with `@osac-project/wg-infra` as the approvers. The team is read
 with the organization token. Markdown files are excluded (a README inside those folders cannot change a check), and
 documentation directly in `.github/` is not under any of the globs.
+
+#### Overriding it (`override:`)
+
+An urgent change that cannot wait for an approval (for example when its author is the only infrastructure person
+available) can be waived for one exact commit:
+
+```yaml
+override:
+  approvers: ["@osac-project/wg-infra"]
+```
+
+An approver comments `/override <full 40-character commit sha> <reason>`, with a reason of 10 to 140 characters on one
+line. A workflow checks that the commenter is an approver now, that the commenter did not open the pull request, and
+that the commit is the pull request's current head; then it records the waiver as a check run named
+`OSAC CI override` on that commit and refreshes the verdict. The check run names the person and the reason, which is the
+audit trail, and the verdict notes it ("protected-path approval waived by ..."). A new push has a new commit and needs a
+new override. The full SHA is required for the same reason as for `/ok-to-test`: a short prefix can be forged. The
+override lifts only the protected-path approval. A failed check, a missing label or a draft stay what they are.
 
 `path_filters.skipped_applicable: fail` (with `mode: enforce`) closes the other half: a check that was skipped for a
 job that applies to the PR (its filters or globs match, or nothing narrows it, as for `pre-commit`) counts as failed
