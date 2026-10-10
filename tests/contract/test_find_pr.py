@@ -43,30 +43,27 @@ def pr(number: int, sha: str = OTHER, owner: str = "someone", branch: str = "fea
 
 
 def test_the_head_commit_finds_the_pull_request_whatever_the_run_says_about_its_repository() -> None:
-    """A run started by a review reports the base repository as head repository and the fork's branch name."""
     fake = Pulls([pr(1), pr(2, SHA, owner="eliorerz", branch="osac-ci-override")])
-    assert find_open_prs(fake, REPO, sha=SHA, owner="osac-project", branch="osac-ci-override") == [2]
-
-
-def test_a_same_named_branch_in_the_base_repository_does_not_win_over_the_exact_commit() -> None:
-    fake = Pulls(
-        [
-            pr(1, OTHER, owner="osac-project", branch="osac-ci-override"),
-            pr(2, SHA, owner="eliorerz", branch="osac-ci-override"),
-        ]
-    )
-    assert find_open_prs(fake, REPO, sha=SHA, owner="osac-project", branch="osac-ci-override") == [2]
+    assert find_open_prs(fake, REPO, sha=SHA) == [2]
 
 
 def test_every_open_pull_request_with_that_head_is_returned() -> None:
     assert find_open_prs(Pulls([pr(3, SHA), pr(4), pr(5, SHA)]), REPO, sha=SHA) == [3, 5]
 
 
-def test_the_listing_is_newest_first_and_stops_at_the_first_page_with_a_match() -> None:
-    fake = Pulls([pr(n) for n in range(1, 250)] + [pr(900, SHA)])
+def test_matches_on_later_pages_are_returned_too() -> None:
+    """Two open pull requests can share a head commit, and they need not be on the same page of the listing."""
+    fake = Pulls([pr(n) for n in range(1, 300)])
     fake.prs.insert(3, pr(777, SHA))
-    assert find_open_prs(fake, REPO, sha=SHA) == [777]
-    assert len(fake.queries) == 1 and fake.queries[0]["sort"] == "updated" and fake.queries[0]["direction"] == "desc"
+    fake.prs.insert(250, pr(888, SHA))
+    assert find_open_prs(fake, REPO, sha=SHA) == [777, 888]
+    assert [q["page"] for q in fake.queries] == ["1", "2", "3"]
+    assert fake.queries[0]["sort"] == "updated" and fake.queries[0]["direction"] == "desc"
+
+
+def test_a_short_listing_ends_the_search() -> None:
+    fake = Pulls([pr(1, SHA), pr(2)])
+    assert find_open_prs(fake, REPO, sha=SHA) == [1] and len(fake.queries) == 1
 
 
 def test_the_search_is_bounded_to_three_pages() -> None:
@@ -75,23 +72,20 @@ def test_the_search_is_bounded_to_three_pages() -> None:
     assert len(fake.queries) == 3
 
 
-def test_owner_and_branch_are_used_only_when_no_open_pull_request_has_the_head_commit() -> None:
-    fake = Pulls([pr(8, OTHER, owner="alice", branch="topic")])
-    assert find_open_prs(fake, REPO, sha=SHA, owner="alice", branch="topic") == [8]
-    assert find_open_prs(Pulls([pr(8, OTHER, owner="alice", branch="topic")]), REPO, owner="alice", branch="topic") == [
-        8
-    ]
+def test_a_same_named_branch_in_the_base_repository_is_never_taken_for_the_run() -> None:
+    """The case from review: a review-started run names the base repository and the fork's branch name. A pull request
+    that merely has that branch in the base repository is not the run's pull request."""
+    fake = Pulls([pr(1, OTHER, owner="osac-project", branch="osac-ci-override")])
+    assert find_open_prs(fake, REPO, sha=SHA) == []
+    assert not [q for q in fake.queries if "head" in q]  # the head owner:branch filter is never asked
 
 
 def test_nothing_is_guessed() -> None:
     assert find_open_prs(Pulls([pr(1)]), REPO, sha=SHA) == []
-    assert find_open_prs(Pulls([pr(1)]), REPO, owner="nobody", branch="x") == []
-    assert find_open_prs(Pulls([pr(1)]), REPO) == []
-    fake = Pulls([pr(1)])
-    assert find_open_prs(fake, REPO, owner="alice") == [] and fake.calls == []  # an owner alone names nothing
+    assert find_open_prs(Pulls([]), REPO, sha=SHA) == []
 
 
-@pytest.mark.parametrize("sha", ["abc", "g" * 40, SHA + "0", "../x"])
+@pytest.mark.parametrize("sha", ["", "abc", "g" * 40, SHA + "0", "../x"])
 def test_an_invalid_sha_is_an_error_not_a_query(sha: str) -> None:
     fake = Pulls([])
     with pytest.raises(ValueError):
@@ -106,12 +100,6 @@ def test_an_api_error_is_an_error_not_an_empty_answer() -> None:
 
     with pytest.raises(GitHubError):
         find_open_prs(Broken([]), REPO, sha=SHA)
-
-
-def test_the_branch_is_passed_as_data_never_built_into_a_path() -> None:
-    fake = Pulls([])
-    find_open_prs(fake, REPO, owner="o", branch="a b/c;$(x)")
-    assert fake.queries[-1]["head"] == "o:a b/c;$(x)" and fake.calls == [("GET", PULLS)]
 
 
 def run_cli(monkeypatch: pytest.MonkeyPatch, fake: FakeGitHub, *args: str) -> int:
@@ -131,6 +119,11 @@ def test_the_command_prints_nothing_when_nothing_matches(
 ) -> None:
     assert run_cli(monkeypatch, Pulls([pr(1)]), "--sha", SHA) == 0
     assert capsys.readouterr().out.strip() == ""
+
+
+def test_the_command_needs_a_sha(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(SystemExit):
+        run_cli(monkeypatch, Pulls([]))
 
 
 def test_the_command_reports_errors_with_exit_3(

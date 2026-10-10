@@ -30,18 +30,13 @@ inputs:
     description: Policy file, relative to the root of osac-ci at the pinned commit
     default: policy/osac.yml
   number:
-    description: Pull request number. Empty means the pull request is found from head-owner and head-branch
+    description: Pull request number (exactly one). Empty means the pull request is found from head-sha
     default: ""
   head-sha:
     description: >-
-      Head commit of the workflow run that finished (from a workflow_run event). Tried first: it is exact, and it is the
-      only reliable lookup for a run started by a review, which reports the base repository as its head repository
-    default: ""
-  head-owner:
-    description: Owner of the repository the pull request branch lives in (from a workflow_run event), used if no head-sha matches
-    default: ""
-  head-branch:
-    description: Branch of the pull request (from a workflow_run event), used if no head-sha matches. Treated as data
+      Head commit of the workflow run that finished (from a workflow_run event). The open pull request(s) with exactly
+      this head are evaluated. The run's head owner and branch are not used: for a run started by a review they name the
+      base repository, so they cannot identify the pull request
     default: ""
   sweep:
     description: With no pull request given, evaluate open pull requests within the budget below ("true" or "false")
@@ -93,27 +88,30 @@ runs:
         REPO: ${{ inputs.repo }}
         NUMBER: ${{ inputs.number }}
         HEAD_SHA: ${{ inputs.head-sha }}
-        HEAD_OWNER: ${{ inputs.head-owner }}
-        HEAD_BRANCH: ${{ inputs.head-branch }}
         SWEEP: ${{ inputs.sweep }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
-        numbers="$NUMBER"
-        if [ -z "$numbers" ] && { [ -n "$HEAD_SHA" ] || [ -n "$HEAD_BRANCH" ]; }; then
+        numbers=""
+        if [ -n "$NUMBER" ]; then
+          # An explicit number is exactly one pull request.
+          case "$NUMBER" in
+            *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+          esac
+          numbers="$NUMBER"
+        elif [ -n "$HEAD_SHA" ]; then
           # A pull request from a fork is not listed on the run, and the commit lookup is empty for one, so ask for the
-          # open pull request(s) with this head (see osac-ci find-pr). No match is not an error.
-          numbers=$(uv run --locked --project "$ACTION_PATH/../../.." osac-ci find-pr --repo "$REPO" \
-            --sha "$HEAD_SHA" --owner "$HEAD_OWNER" --branch "$HEAD_BRANCH" | tr '\n' ' ')
-          if [ -z "${numbers// /}" ]; then
+          # open pull request(s) with this exact head (see osac-ci find-pr). No match is not an error.
+          found=$(uv run --locked --project "$ACTION_PATH/../../.." osac-ci find-pr --repo "$REPO" --sha "$HEAD_SHA")
+          case "$found" in
+            *[!0-9[:space:]]*) echo "::error::The pull request lookup must print digits only."; exit 1 ;;
+          esac
+          numbers=$(printf '%s' "$found" | tr '\n' ' ' | sed 's/ *$//')
+          if [ -z "$numbers" ]; then
             echo "::notice::No open pull request has this head."
           fi
         fi
-        case "$numbers" in
-          *[!0-9\ ]*) echo "::error::Pull request numbers must be digits only."; exit 1 ;;
-        esac
-        numbers="${numbers% }"
-        if [ -n "${numbers// /}" ]; then
+        if [ -n "$numbers" ]; then
           echo "mode=one" >> "$GITHUB_OUTPUT"
           echo "numbers=$numbers" >> "$GITHUB_OUTPUT"
         elif [ "$SWEEP" = "true" ]; then
@@ -155,9 +153,12 @@ runs:
         }
         if [ "$MODE" = "one" ]; then
           # Usually one pull request; more only if several open ones have the same head commit.
+          # Try every one even if an earlier one fails, then fail the step if any did.
+          failed=0
           for number in $NUMBERS; do
-            publish --number "$number"
+            publish --number "$number" || failed=1
           done
+          exit "$failed"
         else
           target=(--all --reserve "$RESERVE")
           if [ "$STALE_ONLY" = "true" ]; then
