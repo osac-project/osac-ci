@@ -406,7 +406,7 @@ override:
   approvers: ["@osac-project/wg-infra"]
 ```
 
-An approver comments `/override <full 40-character commit sha> <reason>`, with a reason of 10 to 140 characters on one
+An approver comments `/override <full 40-character commit sha> <reason>`, with a reason of 10 to 140 characters (after Unicode normalization and collapsing whitespace) on one
 line. The comment itself is what authorizes: whenever a verdict is computed, the pull request's comments are read and a
 comment counts only if GitHub says an approver wrote it (the policy's team, as it is now), the pull request's author is
 not that person, the comment names the current head commit in full, and it has never been edited. A workflow cannot
