@@ -244,3 +244,14 @@ def test_cli_reports_a_rejected_post_with_exit_3(
     fake.add("POST", f"{BASE}/check-runs", {"message": "nope"}, status=403)
     assert cli_run(monkeypatch, fake, "--sha", QSHA, "--branch", BRANCH) == 3
     assert "publish-queue failed" in capsys.readouterr().err
+
+
+def test_the_id_of_the_app_that_posted_a_check_is_kept_and_odd_values_become_zero() -> None:
+    runs = [
+        {**check("lint"), "app": {"id": 15368, "slug": "github-actions"}},
+        {**check("test"), "app": {"id": "15368"}},
+        {**check("odd"), "app": {"id": True}},
+        check("bare"),
+    ]
+    s = fetch_queue_snapshot(queue_fake(runs), REPO, QSHA, "main")
+    assert [c.app_id for c in s.check_runs] == [15368, 0, 0, 0]

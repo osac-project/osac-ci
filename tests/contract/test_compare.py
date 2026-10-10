@@ -11,7 +11,7 @@ from fakes import REPO, FakeGitHub
 from helpers import ROOT
 
 from osac_ci import cli
-from osac_ci.compare import Outcome, classify, compare, render, required_contexts, to_json
+from osac_ci.compare import Outcome, Requirement, classify, compare, render, required_contexts, to_json
 from osac_ci.github.api import GitHubError
 from osac_ci.model import State
 from osac_ci.policy import load_policy
@@ -20,10 +20,11 @@ pytestmark = pytest.mark.contract
 TOY = load_policy(ROOT / "policy" / "toy.yml")  # required label: approved; checks: lint, test, site (docs only)
 BASE = f"/repos/{REPO}"
 NOW = "2026-10-10 06:00 UTC"
+APP = 15368  # the app id the real ruleset requires its checks from (GitHub Actions)
 
 
 def ruleset(*contexts: str, extra_rules: tuple[dict[str, Any], ...] = ()) -> list[dict[str, Any]]:
-    checks = [{"context": name, "integration_id": 15368} for name in contexts]
+    checks = [{"context": name, "integration_id": APP} for name in contexts]
     return [
         {"type": "pull_request", "parameters": {}},
         {"type": "required_status_checks", "parameters": {"required_status_checks": checks}},
@@ -34,6 +35,7 @@ def ruleset(*contexts: str, extra_rules: tuple[dict[str, Any], ...] = ()) -> lis
 def world(*contexts: str) -> tuple[FakeGitHub, list[dict[str, Any]]]:
     fake, listing = FakeGitHub(), []
     fake.add("POST", "/graphql", {"data": {"node": {"mergeQueueEntry": None}}})
+    fake.add("GET", f"{BASE}/branches/main", {"name": "main"})
     fake.add("GET", f"{BASE}/rules/branches/main", ruleset(*(contexts or ("lint", "test"))))
     fake.routes[("GET", f"{BASE}/pulls")] = (200, listing)
     return fake, listing
@@ -78,10 +80,23 @@ def add_pr(
     fake.add("GET", f"{BASE}/pulls/{number}/files", [{"filename": "a.go"}])
     wanted = checks if checks is not None else {"lint": ("completed", "success"), "test": ("completed", "success")}
     runs = [
-        {"name": n, "status": s, "conclusion": c, "started_at": f"2026-01-01T00:00:{i:02d}Z"}
+        {
+            "name": n,
+            "status": s,
+            "conclusion": c,
+            "started_at": f"2026-01-01T00:00:{i:02d}Z",
+            "app": {"id": APP, "slug": "github-actions"},
+        }
         for i, (n, (s, c)) in enumerate(wanted.items())
     ]
     fake.add("GET", f"{BASE}/commits/{sha}/check-runs", {"total_count": len(runs), "check_runs": runs})
+
+
+def bare(branch: str = "main") -> FakeGitHub:
+    """A fake that knows the branch exists and nothing else."""
+    fake = FakeGitHub()
+    fake.add("GET", f"{BASE}/branches/{branch}", {"name": branch})
+    return fake
 
 
 def run(fake: FakeGitHub, **kwargs: Any):  # type: ignore[no-untyped-def]
@@ -185,9 +200,27 @@ def test_the_latest_run_of_a_check_is_the_one_that_counts() -> None:
         {
             "total_count": 3,
             "check_runs": [
-                {"name": "lint", "status": "completed", "conclusion": "failure", "started_at": "2026-01-01T00:00:01Z"},
-                {"name": "lint", "status": "completed", "conclusion": "success", "started_at": "2026-01-01T00:05:00Z"},
-                {"name": "test", "status": "completed", "conclusion": "success", "started_at": "2026-01-01T00:00:02Z"},
+                {
+                    "name": "lint",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "started_at": "2026-01-01T00:00:01Z",
+                    "app": {"id": APP},
+                },
+                {
+                    "name": "lint",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": "2026-01-01T00:05:00Z",
+                    "app": {"id": APP},
+                },
+                {
+                    "name": "test",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": "2026-01-01T00:00:02Z",
+                    "app": {"id": APP},
+                },
             ],
         },
     )
@@ -236,7 +269,7 @@ def test_both_lists_agreeing_is_said_so() -> None:
 
 
 def test_the_required_checks_come_from_the_status_check_rules_only() -> None:
-    fake = FakeGitHub()
+    fake = bare()
     fake.add(
         "GET",
         f"{BASE}/rules/branches/main",
@@ -255,26 +288,27 @@ def test_the_required_checks_come_from_the_status_check_rules_only() -> None:
             {"type": "merge_queue", "parameters": {"required_status_checks": [{"context": "not-me"}]}},
         ],
     )
-    assert required_contexts(fake, REPO, "main") == ("a", "b")
+    assert required_contexts(fake, REPO, "main") == (Requirement("a"), Requirement("b"))
 
 
 def test_osac_ci_is_left_out_of_the_required_checks_once_it_is_required_itself() -> None:
-    fake = FakeGitHub()
+    fake = bare()
     fake.add("GET", f"{BASE}/rules/branches/main", ruleset("lint", "OSAC CI", "test"))
-    assert required_contexts(fake, REPO, "main") == ("lint", "test")
+    assert required_contexts(fake, REPO, "main") == (Requirement("lint", APP), Requirement("test", APP))
 
 
 def test_an_unexpected_answer_for_the_rules_means_no_required_checks_not_a_crash() -> None:
-    fake = FakeGitHub()
+    fake = bare()
     fake.add("GET", f"{BASE}/rules/branches/main", {"message": "odd"})
     assert required_contexts(fake, REPO, "main") == ()
 
 
 def test_the_rules_of_the_chosen_branch_are_read() -> None:
     fake, listing = world()
+    fake.add("GET", f"{BASE}/branches/release-1", {"name": "release-1"})
     fake.add("GET", f"{BASE}/rules/branches/release-1", ruleset("only-release"))
     add_pr(fake, listing, 1)
-    assert run(fake, branch="release-1").required == ("only-release",)
+    assert run(fake, branch="release-1").required == (Requirement("only-release", APP),)
 
 
 def test_a_failure_to_read_the_rules_stops_the_comparison() -> None:
@@ -397,3 +431,102 @@ def test_an_unwritable_json_file_exits_three(
     add_pr(fake, listing, 1)
     assert cli_run(monkeypatch, fake, "--json-file", str(tmp_path / "missing" / "c.json")) == 3
     assert "cannot write" in capsys.readouterr().err
+
+
+def test_a_branch_that_does_not_exist_stops_the_comparison_instead_of_meaning_no_required_checks() -> None:
+    fake = FakeGitHub()
+    fake.add("GET", f"{BASE}/branches/mian", {"message": "Branch not found"}, status=404)
+    fake.add("GET", f"{BASE}/rules/branches/mian", [])  # GitHub answers 200 with nothing for any name
+    with pytest.raises(GitHubError, match="branches/mian"):
+        required_contexts(fake, REPO, "mian")
+    assert ("GET", f"{BASE}/rules/branches/mian") not in fake.calls
+
+
+def test_an_existing_branch_with_no_required_checks_is_valid() -> None:
+    fake = bare()
+    fake.add("GET", f"{BASE}/rules/branches/main", [])
+    assert required_contexts(fake, REPO, "main") == ()
+
+
+def test_a_branch_name_is_quoted_in_the_request_path() -> None:
+    fake = FakeGitHub()
+    fake.add("GET", f"{BASE}/branches/release%2Fone", {"name": "release/one"})
+    fake.add("GET", f"{BASE}/rules/branches/release%2Fone", ruleset("lint"))
+    assert required_contexts(fake, REPO, "release/one") == (Requirement("lint", APP),)
+
+
+def test_the_required_app_is_kept_and_a_flag_or_odd_value_means_any_app() -> None:
+    fake = bare()
+    entries = [
+        {"context": "a", "integration_id": 7},
+        {"context": "b"},
+        {"context": "c", "integration_id": True},
+        {"context": "d", "integration_id": "7"},
+        {"context": "a", "integration_id": 8},
+    ]
+    fake.add(
+        "GET",
+        f"{BASE}/rules/branches/main",
+        [{"type": "required_status_checks", "parameters": {"required_status_checks": entries}}],
+    )
+    assert required_contexts(fake, REPO, "main") == (
+        Requirement("a", 7),
+        Requirement("b"),
+        Requirement("c"),
+        Requirement("d"),
+        Requirement("a", 8),
+    )
+
+
+def lint_from(app_id: int | None, conclusion: str = "success") -> dict[str, Any]:
+    run_: dict[str, Any] = {
+        "name": "lint",
+        "status": "completed",
+        "conclusion": conclusion,
+        "started_at": "2026-01-01T00:00:01Z",
+    }
+    if app_id is not None:
+        run_["app"] = {"id": app_id, "slug": "x"}
+    return run_
+
+
+def one_pr_with(runs: list[dict[str, Any]], *contexts: str) -> Any:
+    fake, listing = world(*contexts)
+    add_pr(fake, listing, 1, checks={"test": ("completed", "success")})
+    fake.add("GET", f"{BASE}/commits/{1:040x}/check-runs", {"total_count": len(runs), "check_runs": runs})
+    return run(fake).rows[0]
+
+
+def test_a_check_with_the_right_name_from_the_wrong_app_does_not_satisfy_the_ruleset() -> None:
+    test_run = {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": APP}}
+    row = one_pr_with([lint_from(99999), test_run], "lint", "test")
+    assert row.outcome is Outcome.LOOSER
+    assert row.gaps == (f"lint: only reported by another app (the ruleset requires app {APP})",)
+
+
+def test_a_run_from_the_wrong_app_is_ignored_even_when_it_is_the_newest() -> None:
+    newer_wrong = {**lint_from(99999, "failure"), "started_at": "2026-01-02T00:00:00Z"}
+    test_run = {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": APP}}
+    row = one_pr_with([lint_from(APP), newer_wrong, test_run], "lint", "test")
+    # the ruleset is satisfied by the right app's run; OSAC CI, which reads by name, sees the newer failure
+    assert (row.outcome, row.gaps) == (Outcome.STRICTER, ())
+
+
+def test_a_run_without_a_known_app_does_not_satisfy_a_requirement_that_names_one() -> None:
+    test_run = {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": APP}}
+    assert one_pr_with([lint_from(None), test_run], "lint", "test").outcome is Outcome.LOOSER
+
+
+def test_a_requirement_without_an_app_accepts_any_app() -> None:
+    fake, listing = world()
+    fake.add(
+        "GET",
+        f"{BASE}/rules/branches/main",
+        [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "lint"}]}}],
+    )
+    add_pr(fake, listing, 1)
+    test_run = {"name": "test", "status": "completed", "conclusion": "success"}
+    fake.add(
+        "GET", f"{BASE}/commits/{1:040x}/check-runs", {"total_count": 2, "check_runs": [lint_from(None), test_run]}
+    )
+    assert run(fake).rows[0].outcome is Outcome.AGREE_READY

@@ -248,3 +248,20 @@ def test_snapshot_marks_a_pr_whose_last_queue_event_is_an_add() -> None:
     fake.add("GET", f"{BASE}/issues/7/events", [ev("added_to_merge_queue"), ev("merged")])
     assert snapshot(fake).queued_per_events is True
     assert snapshot(standard_fake()).queued_per_events is False
+
+
+def test_the_id_of_the_app_that_posted_a_check_is_kept_and_odd_values_become_zero() -> None:
+    fake = standard_fake()
+    runs = [
+        {
+            "name": "lint",
+            "status": "completed",
+            "conclusion": "success",
+            "app": {"id": 15368, "slug": "github-actions"},
+        },
+        {"name": "test", "status": "completed", "conclusion": "success", "app": {"id": "15368"}},
+        {"name": "odd", "status": "completed", "conclusion": "success", "app": {"id": False}},
+        {"name": "bare", "status": "completed", "conclusion": "success"},
+    ]
+    fake.add("GET", f"{BASE}/commits/{SHA}/check-runs", {"total_count": 4, "check_runs": runs})
+    assert [c.app_id for c in snapshot(fake).check_runs] == [15368, 0, 0, 0]

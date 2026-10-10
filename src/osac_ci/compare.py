@@ -22,6 +22,7 @@ Read-only. A PR that cannot be read becomes its own row; it never aborts the run
 from __future__ import annotations
 
 import json
+import urllib.parse
 from collections import Counter
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +51,14 @@ class Outcome(StrEnum):
 
 
 @dataclass(frozen=True)
+class Requirement:
+    """One required status check. With an ``integration_id`` only a run posted by that app satisfies it."""
+
+    context: str
+    integration_id: int | None = None
+
+
+@dataclass(frozen=True)
 class Row:
     number: int
     title: str
@@ -74,7 +83,7 @@ class Report:
     repo: str
     branch: str
     generated_at: str
-    required: tuple[str, ...]
+    required: tuple[Requirement, ...]
     coverage: Coverage
     rows: tuple[Row, ...]
 
@@ -90,18 +99,27 @@ class Report:
         return tuple(r for r in self.rows if r.outcome is Outcome.STRICTER)
 
 
-def required_contexts(client: GitHubClient, repo: str, branch: str) -> tuple[str, ...]:
+def required_contexts(client: GitHubClient, repo: str, branch: str) -> tuple[Requirement, ...]:
     """The status checks the branch rules require, in order, without repeats. Public information: it needs no
-    administrative permission. OSAC CI's own check is left out so the comparison stays the same once it is required."""
-    rules = get(client, f"/repos/{check_repo(repo)}/rules/branches/{branch}")
-    found: list[str] = []
+    administrative permission. OSAC CI's own check is left out so the comparison stays the same once it is required.
+
+    The branch must exist: the rules endpoint answers 200 with an empty list for any name, and an empty list would make
+    every PR look as if no check stood in its way."""
+    name = urllib.parse.quote(branch, safe="")
+    get(client, f"/repos/{check_repo(repo)}/branches/{name}")
+    rules = get(client, f"/repos/{check_repo(repo)}/rules/branches/{name}")
+    found: list[Requirement] = []
     for rule in rules if isinstance(rules, list) else []:
         if rule.get("type") != "required_status_checks":
             continue
         for entry in (rule.get("parameters") or {}).get("required_status_checks") or []:
-            name = entry.get("context")
-            if isinstance(name, str) and name and name != CHECK_NAME and name not in found:
-                found.append(name)
+            context = entry.get("context")
+            if not isinstance(context, str) or not context or context == CHECK_NAME:
+                continue
+            app = entry.get("integration_id")
+            requirement = Requirement(context, app if isinstance(app, int) and not isinstance(app, bool) else None)
+            if requirement not in found:
+                found.append(requirement)
     return tuple(found)
 
 
@@ -112,14 +130,18 @@ _GAP_CAUSE = {
 }
 
 
-def unmet(snapshot: Snapshot, required: Iterable[str]) -> tuple[tuple[str, JobStatus], ...]:
-    """Required checks that have not passed on this head commit, with GitHub's meaning of passing."""
-    latest = latest_checks(snapshot.check_runs)
+def unmet(snapshot: Snapshot, required: Iterable[Requirement]) -> tuple[tuple[str, JobStatus], ...]:
+    """Required checks that have not passed on this head commit, with GitHub's meaning of passing: the latest run of
+    that name, from the required app when the ruleset names one (a same-named check from another app does not count)."""
     gaps = []
-    for name in required:
-        status, detail = check_outcome(latest.get(name))
+    for need in required:
+        named = [r for r in snapshot.check_runs if r.name == need.context]
+        runs = [r for r in named if need.integration_id is None or r.app_id == need.integration_id]
+        status, detail = check_outcome(latest_checks(runs).get(need.context))
+        if named and not runs:
+            detail = f"only reported by another app (the ruleset requires app {need.integration_id})"
         if status is not JobStatus.PASSED:
-            gaps.append((f"{name}: {detail}", status))
+            gaps.append((f"{need.context}: {detail}", status))
     return tuple(gaps)
 
 
@@ -137,9 +159,9 @@ def classify(ready: bool, legacy_ready: bool) -> Outcome:
     return Outcome.LOOSER if ready else Outcome.STRICTER
 
 
-def coverage(policy: Policy, required: Iterable[str]) -> Coverage:
+def coverage(policy: Policy, required: Iterable[Requirement]) -> Coverage:
     wanted = {job.check for job in policy.jobs.values() if "pr" in job.required_at} - {CHECK_NAME}
-    listed = set(required)
+    listed = {need.context for need in required}
     return Coverage(ruleset_only=tuple(sorted(listed - wanted)), policy_only=tuple(sorted(wanted - listed)))
 
 
@@ -271,7 +293,7 @@ def to_json(report: Report) -> str:
             "repo": report.repo,
             "branch": report.branch,
             "generated_at": report.generated_at,
-            "required": list(report.required),
+            "required": list(dict.fromkeys(need.context for need in report.required)),
             "counts": {o.value: report.count(o) for o in Outcome},
             "ruleset_only": list(report.coverage.ruleset_only),
             "policy_only": list(report.coverage.policy_only),
