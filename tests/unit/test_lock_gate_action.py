@@ -56,7 +56,7 @@ def test_the_documented_pattern_skips_the_job_not_its_steps() -> None:
 def run(tmp_path: Path, answers: list[str], *, wait: str = "0", sha: str = SHA, uv_exit: int = 0):  # type: ignore[no-untyped-def]
     """Run the step with `uv` answering from ``answers`` in turn (the last one repeats) and `sleep` doing nothing."""
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(parents=True)
     counter = tmp_path / "calls"
     counter.write_text("0")
     uv = bin_dir / "uv"
@@ -114,7 +114,22 @@ def test_it_gives_up_waiting_at_the_deadline_and_goes_on(tmp_path: Path) -> None
     assert code == 0 and out == {"state": "unknown", "locked": "false"} and calls > 1
 
 
-@pytest.mark.parametrize("wait", ["", "-1", "1.5", "5;id", "301", "abc"])
+@pytest.mark.parametrize(
+    "wait",
+    [
+        "",
+        "-1",
+        "1.5",
+        "5;id",
+        "301",
+        "abc",
+        "0000301",
+        "1234567",
+        "99999999999999999999",
+        "18446744073709551616",
+        "18446744073709551621",
+    ],
+)
 def test_a_bad_wait_is_refused_before_anything_is_asked(tmp_path: Path, wait: str) -> None:
     code, out, calls, log = run(tmp_path, ["open"], wait=wait)
     assert code == 1 and out == {} and calls == 0 and "wait-seconds" in log
@@ -128,3 +143,21 @@ def test_an_unexpected_answer_stops_the_step_rather_than_guessing(tmp_path: Path
 def test_a_failing_lookup_stops_the_step(tmp_path: Path) -> None:
     code, out, _, _ = run(tmp_path, ["open"], uv_exit=3)
     assert code != 0 and out == {}
+
+
+@pytest.mark.parametrize(
+    ("wait", "seconds"),
+    [("08", 8), ("09", 9), ("010", 10), ("0010", 10), ("007", 7), ("300", 300), ("0300", 300), ("000300", 300)],
+)
+def test_a_wait_with_leading_zeros_is_read_as_decimal(tmp_path: Path, wait: str, seconds: int) -> None:
+    """Bash arithmetic would call 08 an error and 010 eight; the number must mean what it says."""
+    # The state is known at once, so the wait is only announced: the number in the log is the one used.
+    code, out, _, log = run(tmp_path, ["open"], wait=wait)
+    assert code == 0 and out == {"state": "open", "locked": "false"}
+    assert f"Waiting up to {seconds} seconds" in log
+
+
+def test_a_wait_of_zero_says_nothing_about_waiting(tmp_path: Path) -> None:
+    for wait in ("0", "00", "000"):
+        code, _, _, log = run(tmp_path / wait, ["open"], wait=wait)
+        assert code == 0 and "Waiting" not in log

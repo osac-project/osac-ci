@@ -74,7 +74,12 @@ runs:
       run: |
         set -euo pipefail
         case "$WAIT" in ""|*[!0-9]*) echo "::error::wait-seconds must be digits only."; exit 1 ;; esac
+        # Bash arithmetic reads a leading zero as octal ("08" is an error, "010" is 8). Bound the length so that it cannot
+        # overflow, then read the number as decimal.
+        if [ "${#WAIT}" -gt 6 ]; then echo "::error::wait-seconds must be 300 or less."; exit 1; fi
+        WAIT=$((10#$WAIT))
         if [ "$WAIT" -gt 300 ]; then echo "::error::wait-seconds must be 300 or less."; exit 1; fi
+        if [ "$WAIT" -gt 0 ]; then echo "Waiting up to $WAIT seconds for the OSAC CI check."; fi
         deadline=$((SECONDS + WAIT))
         while true; do
           state=$(uv run --locked --project "$ACTION_PATH/../../.." osac-ci lock-status \
