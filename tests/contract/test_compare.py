@@ -526,7 +526,88 @@ def test_a_requirement_without_an_app_accepts_any_app() -> None:
     )
     add_pr(fake, listing, 1)
     test_run = {"name": "test", "status": "completed", "conclusion": "success"}
+    fake.add("GET", f"{BASE}/commits/{1:040x}/status", {"statuses": []})
     fake.add(
         "GET", f"{BASE}/commits/{1:040x}/check-runs", {"total_count": 2, "check_runs": [lint_from(None), test_run]}
     )
     assert run(fake).rows[0].outcome is Outcome.AGREE_READY
+
+
+def status_world(*, status_state: str | None, app_check: bool = False, integration: int | None = None):  # type: ignore[no-untyped-def]
+    """A PR whose `lint` requirement may be met by a commit status; `test` is an ordinary passing check run."""
+    fake, listing = world()
+    entry: dict[str, Any] = (
+        {"context": "lint"} if integration is None else {"context": "lint", "integration_id": integration}
+    )
+    rules = [{"type": "required_status_checks", "parameters": {"required_status_checks": [entry, {"context": "test"}]}}]
+    fake.add("GET", f"{BASE}/rules/branches/main", rules)
+    add_pr(fake, listing, 1, checks={"test": ("completed", "success")})
+    runs = [{"name": "test", "status": "completed", "conclusion": "success", "app": {"id": APP}}]
+    if app_check:
+        runs.append({**lint_from(APP, "failure")})
+    fake.add("GET", f"{BASE}/commits/{1:040x}/check-runs", {"total_count": len(runs), "check_runs": runs})
+    statuses = [] if status_state is None else [{"context": "lint", "state": status_state}]
+    fake.add("GET", f"{BASE}/commits/{1:040x}/status", {"state": "x", "statuses": statuses})
+    return fake
+
+
+def test_a_commit_status_satisfies_a_requirement_that_names_no_app() -> None:
+    row = run(status_world(status_state="success")).rows[0]
+    assert row.gaps == ()
+
+
+@pytest.mark.parametrize(
+    ("state", "detail"), [("pending", "pending"), ("failure", "state: failure"), ("error", "state: error")]
+)
+def test_a_commit_status_that_is_not_success_leaves_the_requirement_open(state: str, detail: str) -> None:
+    assert run(status_world(status_state=state)).rows[0].gaps == (f"lint: {detail}",)
+
+
+def test_an_unknown_commit_status_state_leaves_the_requirement_open() -> None:
+    row = run(status_world(status_state="mystery")).rows[0]
+    assert row.gaps == ("lint: state: mystery",)
+
+
+def test_a_commit_status_does_not_satisfy_a_requirement_that_names_an_app() -> None:
+    fake = status_world(status_state="success", integration=APP)
+    assert run(fake).rows[0].gaps == ("lint: not reported yet",)
+
+
+def test_a_passing_status_beats_a_failed_check_run_but_a_failed_status_does_not_hide_one() -> None:
+    assert run(status_world(status_state="success", app_check=True)).rows[0].gaps == ()
+    row = run(status_world(status_state="failure", app_check=True)).rows[0]
+    assert row.gaps == ("lint: conclusion: failure",)
+
+
+def test_statuses_are_only_fetched_when_a_requirement_names_no_app() -> None:
+    every_app = world()[0]
+    listing: list[dict[str, Any]] = every_app.routes[("GET", f"{BASE}/pulls")][1]
+    add_pr(every_app, listing, 1)
+    run(every_app)
+    assert not [c for c in every_app.calls if c[1].endswith("/status")]
+    some_open = status_world(status_state=None)
+    run(some_open)
+    assert [c for c in some_open.calls if c[1].endswith("/status")]
+
+
+def test_a_failure_to_read_the_statuses_makes_the_pr_unreadable_not_ready() -> None:
+    fake = status_world(status_state="success")
+    fake.add("GET", f"{BASE}/commits/{1:040x}/status", {"message": "boom"}, status=500)
+    assert run(fake).rows[0].outcome is Outcome.UNREADABLE
+
+
+def test_a_malformed_status_entry_is_ignored() -> None:
+    fake = status_world(status_state=None)
+    fake.add(
+        "GET",
+        f"{BASE}/commits/{1:040x}/status",
+        {
+            "statuses": [
+                {"context": 1, "state": "success"},
+                {"context": "lint"},
+                {"context": "lint", "state": 5},
+                {"state": "success"},
+            ]
+        },
+    )
+    assert run(fake).rows[0].gaps == ("lint: not reported yet",)

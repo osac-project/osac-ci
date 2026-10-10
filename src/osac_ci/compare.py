@@ -24,13 +24,13 @@ from __future__ import annotations
 import json
 import urllib.parse
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.github.snapshot import fetch_snapshot
 from osac_ci.model import JobStatus, Mode, Snapshot, State
 from osac_ci.planner import check_outcome, error_verdict, latest_checks, plan_or_error
@@ -130,9 +130,31 @@ _GAP_CAUSE = {
 }
 
 
-def unmet(snapshot: Snapshot, required: Iterable[Requirement]) -> tuple[tuple[str, JobStatus], ...]:
+_STATUS_OUTCOME = {
+    "success": (JobStatus.PASSED, "passed"),
+    "pending": (JobStatus.RUNNING, "pending"),
+    "failure": (JobStatus.FAILED, "state: failure"),
+    "error": (JobStatus.FAILED, "state: error"),
+}
+
+
+def fetch_statuses(client: GitHubClient, repo: str, sha: str) -> dict[str, str]:
+    """Legacy commit statuses on a commit: context -> state, the latest per context. A requirement that names no app
+    can be met by one of these as well as by a check run."""
+    found: dict[str, str] = {}
+    for raw in paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/status", key="statuses"):
+        context, state = raw.get("context"), raw.get("state")
+        if isinstance(context, str) and isinstance(state, str):
+            found[context] = state
+    return found
+
+
+def unmet(
+    snapshot: Snapshot, required: Iterable[Requirement], statuses: Mapping[str, str] | None = None
+) -> tuple[tuple[str, JobStatus], ...]:
     """Required checks that have not passed on this head commit, with GitHub's meaning of passing: the latest run of
-    that name, from the required app when the ruleset names one (a same-named check from another app does not count)."""
+    that name, from the required app when the ruleset names one (a same-named check from another app does not count).
+    A requirement that names no app is also met by a commit status of that name in the state success."""
     gaps = []
     for need in required:
         named = [r for r in snapshot.check_runs if r.name == need.context]
@@ -140,6 +162,11 @@ def unmet(snapshot: Snapshot, required: Iterable[Requirement]) -> tuple[tuple[st
         status, detail = check_outcome(latest_checks(runs).get(need.context))
         if named and not runs:
             detail = f"only reported by another app (the ruleset requires app {need.integration_id})"
+        state = (statuses or {}).get(need.context)
+        if status is not JobStatus.PASSED and need.integration_id is None and state is not None:
+            from_status = _STATUS_OUTCOME.get(state, (JobStatus.WAITING, f"state: {state}"))
+            if from_status[0] is JobStatus.PASSED or not named:
+                status, detail = from_status
         if status is not JobStatus.PASSED:
             gaps.append((f"{need.context}: {detail}", status))
     return tuple(gaps)
@@ -184,6 +211,7 @@ def compare(
     if limit is not None:
         prs = prs[:limit]
     org = org or repo.split("/", 1)[0]
+    wants_statuses = any(need.integration_id is None for need in required)
 
     def one(pr: dict[str, Any]) -> Row:
         number = pr["number"]
@@ -201,11 +229,13 @@ def compare(
                 org_client=org_client,
                 trust=policy.trust,
             )
+            # One more request, and only when a requirement exists that a commit status could also satisfy.
+            statuses = fetch_statuses(client, repo, snapshot.head_sha) if wants_statuses else {}
         except (GitHubError, KeyError, ValueError) as exc:
             verdict = error_verdict(f"could not read PR #{number}: {exc}", Mode.PR)
             return Row(number, title, url, Outcome.UNREADABLE, verdict.state, verdict.headline, (), "unreadable")
         verdict = plan_or_error(snapshot, policy, Mode.PR)
-        gaps = unmet(snapshot, required)
+        gaps = unmet(snapshot, required, statuses)
         outcome = classify(verdict.state in READY, not gaps)
         cause = {Outcome.LOOSER: gap_cause(gaps), Outcome.STRICTER: verdict.state.value}.get(outcome, "")
         return Row(number, title, url, outcome, verdict.state, verdict.headline, tuple(g for g, _ in gaps), cause)
