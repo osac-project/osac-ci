@@ -24,13 +24,13 @@ from osac_ci.model import (
 )
 from osac_ci.paths import applicable, filters_hold
 from osac_ci.policy import Job, Policy
-from osac_ci.rules import approval, e2e_unlock, protected, readiness
+from osac_ci.rules import approval, e2e_unlock, locks, protected, readiness
 from osac_ci.rules.fork import authorization_command, fork_secrets_authorized
 from osac_ci.rules.labels import missing_required, present_blocking
 
 # A completed check with one of these conclusions counts as passing for a required context (GitHub semantics).
 _PASSING = frozenset({"success", "neutral", "skipped"})
-_AUTH_DETAIL = "fork PR is not authorized to use secrets"
+_AUTH_DETAIL = locks.AUTH_DETAIL
 
 _CHANGES_REQUESTED_NEXT = "address the requested changes; the reviewer approves again or dismisses their review"
 _NATIVE_APPROVAL_NEXT = ("get a code owner to approve the current changes and clear any blocking label", "code owner")
@@ -42,6 +42,7 @@ _NEXT: dict[State, tuple[str, str]] = {
     State.CHECKS_FAILED: ("fix the failing checks and push, or comment /retest for a flaky one", "author"),
     State.AWAITING_APPROVAL: ("get /lgtm and /approve and clear any blocking label", "reviewer or approver"),
     State.AWAITING_E2E_SIGNAL: ("get /lgtm, /e2e-ready, or a CodeRabbit approval on the current head", "reviewer"),
+    State.AWAITING_UNLOCK: ("open the lock named in the blockers", "reviewer"),
     State.E2E_RUNNING: ("wait for the full-install run to finish (about 100 minutes)", "nobody"),
     State.E2E_FAILED: ("fix the failure and push, or comment /retest if it looks like an infra flake", "author"),
     State.READY_TO_ENQUEUE: ("the merge queue picks it up", "nobody"),
@@ -127,6 +128,18 @@ def _skipped_but_applicable(
     return True
 
 
+def _has_result(run: CheckRun | None, holds: bool | None) -> bool:
+    """Did the job report something that stands without asking the locks?
+
+    A check that completed with a conclusion other than ``skipped`` ran, so its result stands. A skipped check is a
+    result only when the path filters say the job does not apply to these files: the workflows report that case as
+    skipped too (real pull requests show it), and it means "nothing to do", not "held back". Otherwise a skip is not
+    evidence of anything and a closed lock still holds the job."""
+    if run is None or run.status != "completed":
+        return False
+    return run.conclusion != "skipped" or holds is False
+
+
 def _evaluate(
     job_id: str,
     job: Job,
@@ -146,6 +159,12 @@ def _evaluate(
         return JobEntry(job_id, job.check, JobStatus.NOT_APPLICABLE, f"path filters do not hold ({names})")
     run = checks.get(job.check)
     finished = run is not None and run.status == "completed"
+    if mode is Mode.PR and policy.effective_locks(job) and not _has_result(run, holds):
+        # Without a real result of its own, a closed lock holds the job back and its own check is ignored: a skipped
+        # required check would otherwise count as a pass.
+        held = locks.evaluate(snapshot, policy, job, labels)
+        if held is not None:
+            return JobEntry(job_id, job.check, JobStatus.LOCKED, held.reason, held.code, lock=held.lock)
     if _skipped_but_applicable(job, run, holds, snapshot, policy):
         names = ", ".join((*job.filters, *job.filters_any)) or ", ".join(job.paths)
         return JobEntry(
@@ -207,6 +226,17 @@ def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     return replace(verdict, label_gate_ok=True if mode is Mode.QUEUE else _enqueue_gate_ok(snapshot, policy))
 
 
+def _unlock_next(held: Sequence[JobEntry], policy: Policy) -> tuple[str, str]:
+    """What to do next for jobs held back by a lock about reviews and labels, and who does it."""
+    if held[0].code == readiness.CODE_CHANGES_REQUESTED:
+        # An approval or a CodeRabbit review cannot open anything until the change request is resolved.
+        return _CHANGES_REQUESTED_NEXT, "author and the reviewer who requested changes"
+    by_check = {j.check: j for j in policy.jobs.values()}
+    groups = list(dict.fromkeys(locks.signals_of(policy, by_check[e.check], e.lock) for e in held))
+    parts = [f"({locks.describe(g)})" if len(g) > 1 and len(groups) > 1 else locks.describe(g) for g in groups]
+    return "get " + " and ".join(parts), "reviewer"
+
+
 def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
     checks = latest_checks(snapshot.check_runs)
     # With native approval an approved PR unlocks E2E the way the `lgtm` label does today.
@@ -226,7 +256,10 @@ def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
 
     failed = where(JobStatus.FAILED)
     pending = where(JobStatus.RUNNING) + where(JobStatus.WAITING)
-    blockers: list[str] = [f"{e.check}: {e.detail}" for e in failed + pending]
+    held = where(JobStatus.LOCKED)  # only in pr mode: a lock is about starting a job, and the queue starts none
+    # Failed first, then running, then the ones that wait or are locked in policy order (a locked job is a waiting one).
+    waiting_or_locked = [e for e in entries if e.status in (JobStatus.WAITING, JobStatus.LOCKED)]
+    blockers: list[str] = [f"{e.check}: {e.detail}" for e in failed + where(JobStatus.RUNNING) + waiting_or_locked]
 
     if mode is Mode.QUEUE:
         if failed:
@@ -277,7 +310,7 @@ def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
         )
 
     waiting_e2e = [e for e in where(JobStatus.WAITING, "e2e")]
-    if any(e.detail == _AUTH_DETAIL for e in waiting_e2e):
+    if any(e.detail == _AUTH_DETAIL for e in waiting_e2e) or any(e.code == locks.CODE_MEMBERSHIP for e in held):
         command = authorization_command(snapshot.head_sha)
         override = (
             (f"an org member comments `{command}`, which authorizes exactly this commit", "org member")
@@ -323,6 +356,18 @@ def _plan(snapshot: Snapshot, policy: Policy, mode: Mode) -> Verdict:
             override = (f"get {e2e_unlock.describe_requirements(groups)}", "reviewer")
         return _verdict(
             State.AWAITING_E2E_SIGNAL, locked[0].detail, mode, tuple(blockers), entries, notes, native, override
+        )
+    unlock_held = [e for e in held if e.code != locks.CODE_MEMBERSHIP]
+    if unlock_held:
+        return _verdict(
+            State.AWAITING_UNLOCK,
+            unlock_held[0].detail,
+            mode,
+            tuple(blockers),
+            entries,
+            notes,
+            native,
+            _unlock_next(unlock_held, policy),
         )
     if pending:
         return _verdict(

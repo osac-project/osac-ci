@@ -28,6 +28,42 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+LockSignal = Literal[
+    "org-member",
+    "trusted-bot",
+    "authorized-commit",
+    "legacy-readiness",
+    "human-approval",
+    "coderabbit-approval",
+    "lgtm-label",
+    "e2e-ready-label",
+]
+# Signals about who the author is and whether a member vouched for the commit (see rules/fork.py). Every other signal
+# is about reviews and labels (see rules/e2e_unlock.py and rules/readiness.py).
+MEMBERSHIP_SIGNALS: frozenset[str] = frozenset({"org-member", "trusted-bot", "authorized-commit"})
+
+
+class Lock(_Strict):
+    """A condition that must hold before a job may start (see rules/locks.py).
+
+    The lock is open when any one of ``open_when`` holds. ``legacy-readiness`` is today's osac-test-infra ladder as it
+    is (including a sticky ``lgtm``), so a lock can describe the current behavior exactly before it is tightened."""
+
+    open_when: tuple[LockSignal, ...] = Field(min_length=1)
+    block_on_changes_requested: bool = Field(
+        default=True, description="An outstanding human 'changes requested' closes the review and label signals"
+    )
+
+    @field_validator("open_when")
+    @classmethod
+    def _no_repeats(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("signals must not repeat")
+        if "legacy-readiness" in value and len(value) > 1:
+            raise ValueError("legacy-readiness is a whole ladder of its own; list it alone, or list the signals")
+        return value
+
+
 class Job(_Strict):
     kind: Literal["cheap", "e2e"] = "cheap"
     check: str = Field(min_length=1, description="Name of the required context this job reports")
@@ -41,6 +77,16 @@ class Job(_Strict):
         default=(), description="Named path filters of which at least ONE must match some changed file"
     )
     needs_readiness: bool = Field(default=False, description="Expensive job gated by the E2E unlock signals")
+    locks: tuple[str, ...] | None = Field(
+        default=None,
+        description=(
+            "Names of the locks that must be open before this job may start. Absent: the policy's default_locks. "
+            "An empty list: no lock, whatever the default"
+        ),
+    )
+    lock_overrides: dict[str, tuple[LockSignal, ...]] = Field(
+        default_factory=dict, description="Signals that open one of this job's locks instead of the lock's own"
+    )
     suite: str | None = None
     markers: str | None = None
 
@@ -235,6 +281,8 @@ class Policy(_Strict):
     path_filters: PathFilters = PathFilters()
     protected_paths: tuple[ProtectedPaths, ...] = ()
     override: Override | None = None
+    locks: dict[str, Lock] = Field(default_factory=dict)
+    default_locks: tuple[str, ...] = ()
     jobs: dict[str, Job]
 
     @model_validator(mode="after")
@@ -256,6 +304,45 @@ class Policy(_Strict):
         if self.path_filters.skipped_applicable == "fail" and self.path_filters.mode != "enforce":
             raise ValueError("path_filters.skipped_applicable: fail needs path_filters.mode: enforce")
         return self
+
+    @model_validator(mode="after")
+    def _locks_are_consistent(self) -> Policy:
+        for name in self.locks:
+            if not _JOB_ID.match(name):
+                raise ValueError(f"lock name {name!r} must match {_JOB_ID.pattern}")
+        if len(set(self.default_locks)) != len(self.default_locks):
+            raise ValueError("default_locks must not repeat a lock")
+        unknown = sorted(set(self.default_locks) - set(self.locks))
+        if unknown:
+            raise ValueError(f"default_locks names locks that are not defined: {unknown}")
+        for job_id, job in self.jobs.items():
+            named = tuple(job.locks or ())
+            if len(set(named)) != len(named):
+                raise ValueError(f"job {job_id!r} repeats a lock")
+            missing = sorted(set(named) - set(self.locks))
+            if missing:
+                raise ValueError(f"job {job_id!r} names locks that are not defined: {missing}")
+            if job.needs_readiness and job.locks is not None:
+                raise ValueError(f"job {job_id!r} uses both needs_readiness and locks; use locks")
+            stray = sorted(set(job.lock_overrides) - set(self.effective_locks(job)))
+            if stray:
+                raise ValueError(f"job {job_id!r} overrides locks it does not have: {stray}")
+        for job_id, job in self.jobs.items():
+            for name, sigs in job.lock_overrides.items():
+                if not sigs or len(set(sigs)) != len(sigs) or ("legacy-readiness" in sigs and len(sigs) > 1):
+                    raise ValueError(f"job {job_id!r}: bad signals for lock {name!r}")
+        used = {s for lock in self.locks.values() for s in lock.open_when}
+        used |= {s for job in self.jobs.values() for sigs in job.lock_overrides.values() for s in sigs}
+        if "human-approval" in used and self.approval is None:
+            raise ValueError("a lock uses human-approval, which needs an approval: section")
+        return self
+
+    def effective_locks(self, job: Job) -> tuple[str, ...]:
+        """The locks a job has: its own list, else the defaults. A job still on needs_readiness has the legacy gate and
+        takes no default, so turning default_locks on cannot change a job nobody has migrated."""
+        if job.locks is not None:
+            return job.locks
+        return () if job.needs_readiness else self.default_locks
 
     @model_validator(mode="after")
     def _jobs_use_known_filters(self) -> Policy:

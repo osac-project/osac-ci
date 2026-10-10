@@ -19,5 +19,8 @@ def render_markdown(verdict: Verdict) -> str:
         lines += ["", "**Notes:**", *[f"- {n}" for n in verdict.notes]]
     if verdict.jobs:
         lines += ["", "| Job | Check | Status | Detail |", "|---|---|---|---|"]
-        lines += [f"| {j.job_id} | {j.check} | {j.status.value} | {j.detail} |" for j in verdict.jobs]
+        lines += [
+            f"| {j.job_id} | {j.check} | {j.status.value} | {j.detail}{f' (lock: {j.lock})' if j.lock else ''} |"
+            for j in verdict.jobs
+        ]
     return "\n".join(lines) + "\n"

@@ -34,6 +34,7 @@ STATE_ORDER: tuple[State, ...] = (
     State.NEEDS_AUTHORIZATION,
     State.AWAITING_APPROVAL,
     State.AWAITING_E2E_SIGNAL,
+    State.AWAITING_UNLOCK,
     State.DRAFT,
     State.CHECKS_RUNNING,
     State.E2E_RUNNING,
@@ -45,7 +46,7 @@ STATE_ORDER: tuple[State, ...] = (
 _TONE = {
     State.READY_TO_ENQUEUE: "ok", State.IN_QUEUE: "ok", State.QUEUE_PASSED: "ok",
     State.AWAITING_APPROVAL: "warn", State.AWAITING_E2E_SIGNAL: "warn", State.NEEDS_AUTHORIZATION: "warn",
-    State.DRAFT: "warn",
+    State.AWAITING_UNLOCK: "warn", State.DRAFT: "warn",
     State.CHECKS_RUNNING: "info", State.E2E_RUNNING: "info", State.QUEUE_CHECKS_RUNNING: "info",
     State.CHECKS_FAILED: "bad", State.E2E_FAILED: "bad", State.QUEUE_FAILED: "bad", State.PLANNER_ERROR: "bad",
 }  # fmt: skip

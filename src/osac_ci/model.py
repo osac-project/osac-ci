@@ -23,6 +23,7 @@ class State(StrEnum):
     CHECKS_FAILED = "checks-failed"
     AWAITING_APPROVAL = "awaiting-approval"
     AWAITING_E2E_SIGNAL = "awaiting-e2e-signal"
+    AWAITING_UNLOCK = "awaiting-unlock"
     E2E_RUNNING = "e2e-running"
     E2E_FAILED = "e2e-failed"
     READY_TO_ENQUEUE = "ready-to-enqueue"
@@ -35,6 +36,7 @@ class State(StrEnum):
 
 class JobStatus(StrEnum):
     NOT_APPLICABLE = "not-applicable"
+    LOCKED = "locked"
     WAITING = "waiting"
     RUNNING = "running"
     PASSED = "passed"
@@ -140,6 +142,7 @@ class JobEntry:
     detail: str
     code: str = ""  # machine-readable reason for a waiting E2E job (see rules/readiness.py), "" otherwise
     note: str = ""  # where the path filters and what this check actually did disagree (shadow mode), "" otherwise
+    lock: str = ""  # the lock that holds this job back (status locked), "" otherwise
 
 
 @dataclass(frozen=True)
