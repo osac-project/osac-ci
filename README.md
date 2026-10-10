@@ -274,6 +274,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 |---|---|---|
 | `ci.yml` | pull request, merge queue, push to `main` | lint, type check, workflow security lint, unit and contract tests, the legacy differential tests. |
 | `osac-ci-check.yml` | PR events, `ci` finished, every 10 minutes, manual | Posts the *OSAC CI* check for this repository's pull requests. |
+| `osac-ci-refresh.yml` | a PR comment starting with `/osac-ci refresh` | Posts a fresh *OSAC CI* verdict for that PR right away. |
 | `osac-ci-review.yml` | PR review submitted, dismissed or edited | Holds no secret and checks out nothing; it only asks the `main` workflow to re-evaluate the PR. |
 | `osac-ci-authorize.yml` | a PR comment starting with `/ok-to-test` | Verifies the commenter is an org member and records the authorization on that exact commit. |
 | `osac-ci-queue.yml` | a required check finished on a merge-queue branch, manual | Posts the *OSAC CI* check on the merge-queue commit. |
@@ -635,6 +636,29 @@ never a pass.
 
 Known limit: a slow sweep can post a verdict computed a few seconds earlier than a per-PR run's; the next event or
 sweep corrects it.
+
+### Refreshing a verdict (runbook)
+
+The verdict is recomputed on every event that changes it (a push, a label, a review, a finished workflow) and by a sweep
+every 10 minutes. Events can be missed and GitHub drops many scheduled runs, so a verdict can be out of date. How to tell
+and what to do:
+
+| Symptom | What to do |
+|---|---|
+| The check shows a state that no longer matches the PR (an approval or a label is not reflected, a finished check still shows as running) | Comment `/osac-ci refresh` on the PR. The `osac-ci-refresh` workflow recomputes the verdict from live state and posts it. |
+| There is no *OSAC CI* check on the head commit | Same comment. If it still does not appear, look at the runs of `osac-ci-check` for an error. |
+| The check says `planner-error` | Read the message first: a missing organization token, an unreadable file or a GitHub error. Fix the cause (for example the `org-read` environment secrets), then comment `/osac-ci refresh`. |
+| A refresh did not change a verdict that looks wrong | The verdict is computed from live GitHub state, so the state is what to inspect: `osac-ci explain-pr --policy P --repo R --number N` prints the same verdict and every blocker locally. |
+| Many PRs look stale at once | Run the sweep by hand: `gh workflow run <osac-ci-check workflow> -f number=` (an empty number sweeps every open PR) or locally `osac-ci publish --all --stale-only`. |
+
+Who may ask: the author of the pull request, or anyone GitHub reports as an owner, member or collaborator of the
+repository, so an outsider cannot spend the API quota by commenting in a loop. Anything after `/osac-ci refresh` on the
+line is ignored, and the comment never reaches a command line. The command is idempotent: refreshing an up-to-date
+verdict posts nothing new.
+
+How stale verdicts are: every sweep prints how many open PRs it had to look at (`stale-only: 3 of 172 open PRs needed a
+new verdict`) and why (no verdict, planner error, changed since the verdict, stuck in progress, old). To see it at any
+moment: `GH_TOKEN=... osac-ci publish --policy P --repo R --all --stale-only --dry-run`.
 
 ### Using it from another repository
 

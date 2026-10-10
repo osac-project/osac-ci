@@ -203,3 +203,39 @@ def test_the_daily_comparison_reads_the_organization_only_with_the_members_permi
     run = next(s for s in job["steps"] if s.get("name") == "Compare")
     assert run["env"]["OSAC_CI_ORG_TOKEN"] == "${{ steps.org-token.outputs.token }}"
     assert "--lookup-membership" in run["run"]
+
+
+def test_the_refresh_workflow_only_reacts_to_its_command_from_people_who_may_use_it() -> None:
+    workflow = _workflow("osac-ci-refresh.yml")
+    job = workflow["jobs"]["refresh"]
+    assert _triggers(workflow) == {"issue_comment": {"types": ["created"]}}
+    cond = job["if"]
+    assert "github.event.issue.pull_request" in cond
+    assert "startsWith(github.event.comment.body, '/osac-ci refresh')" in cond
+    assert '["OWNER","MEMBER","COLLABORATOR"]' in cond and "github.event.comment.author_association" in cond
+    assert "github.event.comment.user.login == github.event.issue.user.login" in cond  # the PR author may ask too
+
+
+def test_the_refresh_workflow_runs_default_branch_code_only_and_keeps_the_comment_out_of_the_shell() -> None:
+    path = ROOT / ".github" / "workflows" / "osac-ci-refresh.yml"
+    workflow = _workflow("osac-ci-refresh.yml")
+    job = workflow["jobs"]["refresh"]
+    assert job["environment"] == "org-read"
+    assert job["permissions"] == {"contents": "read", "checks": "write", "pull-requests": "read"}
+    checkouts = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkouts and all(s["with"]["ref"] == "${{ github.event.repository.default_branch }}" for s in checkouts)
+    assert all(s["with"]["persist-credentials"] is False for s in checkouts)
+    text = path.read_text(encoding="utf-8")
+    assert "comment.body" not in "\n".join(s.get("run", "") for s in job["steps"])
+    assert "pull_request_target" not in text.replace("# ", "")
+    (mint,) = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+    assert {k for k in mint["with"] if k.startswith("permission-")} == {"permission-members"}
+    assert mint["with"]["permission-members"] == "read" and mint["continue-on-error"] is True
+
+
+def test_a_refresh_can_never_be_cancelled_by_or_cancel_another_run() -> None:
+    workflow = _workflow("osac-ci-refresh.yml")
+    assert workflow["concurrency"] == {
+        "group": "osac-ci-refresh-${{ github.event.comment.id }}",
+        "cancel-in-progress": False,
+    }

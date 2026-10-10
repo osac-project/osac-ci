@@ -1,0 +1,73 @@
+---
+name: osac-ci-refresh
+
+# `/osac-ci refresh` on a pull request posts a fresh OSAC CI verdict for it, without waiting for the next event or the
+# periodic sweep. It only recomputes the verdict from live state; it changes nothing else and decides nothing.
+#
+# Safety rules for this file (it runs with write access to checks):
+# * issue_comment always runs from the default branch, and checkout is pinned to it: no pull request code runs here;
+# * the comment text only decides whether the job runs; it never reaches a command line;
+# * only the author of the pull request or someone GitHub reports as an owner, member or collaborator may ask, so an
+#   outsider cannot spend the API quota of the repository by commenting in a loop.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+# One group per comment, never per PR (see osac-ci-authorize.yml): another comment on the PR must not cancel a pending
+# refresh, and the refresh must not cancel a pending run of the check workflow.
+concurrency:
+  group: osac-ci-refresh-${{ github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: refresh
+    if: >-
+      ${{ github.event.issue.pull_request
+      && startsWith(github.event.comment.body, '/osac-ci refresh')
+      && (contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
+      || github.event.comment.user.login == github.event.issue.user.login) }}
+    environment: org-read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read  # check out the default branch
+      checks: write  # post the OSAC CI check run
+      pull-requests: read  # read the PR, its reviews and files
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      # As in the check workflow: if the token cannot be created the job still posts, so the PR shows a visible
+      # planner-error instead of keeping a verdict that is out of date.
+      - name: Create a token that can read organization membership
+        id: org-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.OSAC_CI_READER_APP_ID }}
+          private-key: ${{ secrets.OSAC_CI_READER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-members: read
+      - name: Post the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OSAC_CI_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
+          TOKEN_OUTCOME: ${{ steps.org-token.outcome }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          if [ "$TOKEN_OUTCOME" != "success" ]; then
+            echo "::warning::The organization token could not be created; the PR will show a planner-error until it can."
+          fi
+          uv run osac-ci publish --policy policy/osac-ci.yml --repo "$REPO" --number "$PR_NUMBER" \
+            --lookup-membership --require-org-token \
+            --note "Informational for now: this check is not required to merge."
