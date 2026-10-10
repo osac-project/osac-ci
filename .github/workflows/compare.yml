@@ -1,0 +1,62 @@
+---
+name: compare-required-checks
+
+# Every day: on each open osac PR, does "OSAC CI says ready" match "every required check passed"? Each difference
+# comes with its reason. Read-only: it reads public GitHub data and uploads files. It changes nothing anywhere.
+
+on:
+  schedule:
+    - cron: "45 5 * * *"
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: Repository to compare (owner/name)
+        default: osac-project/osac
+      limit:
+        description: Maximum number of PRs to read (empty means all)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compare-required-checks
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: compare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      # Inputs go through the environment, never into the command line (they are user-controlled text).
+      # About 7 API requests per PR: the built-in token's rate limit may cut a very large run short. PRs that could
+      # not be read then appear as "unreadable" rows instead of disappearing.
+      - name: Compare
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ inputs.repo || 'osac-project/osac' }}
+          LIMIT: ${{ inputs.limit }}
+        run: |
+          mkdir compare
+          args=(--policy policy/osac.yml --repo "$REPO" --json-file compare/compare.json)
+          if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi
+          uv run osac-ci compare "${args[@]}" > compare/compare.md
+      - name: Show it in the job summary
+        run: cat compare/compare.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the files
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: compare-required-checks
+          path: compare/
+          retention-days: 30
+          if-no-files-found: error

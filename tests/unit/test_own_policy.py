@@ -176,3 +176,16 @@ def test_every_workflow_that_produces_a_required_check_is_listed_for_workflow_ru
         _workflow(p.name)["name"] for p in (ROOT / ".github" / "workflows").glob("ci.yml")
     }  # runs on merge_group
     assert producers <= listed
+
+
+def test_the_daily_comparison_only_reads_and_takes_its_inputs_through_the_environment() -> None:
+    text = (ROOT / ".github" / "workflows" / "compare.yml").read_text(encoding="utf-8")
+    workflow = yaml.safe_load(text)
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["jobs"]["compare"]["permissions"] == {"contents": "read"}
+    # the `on:` key loads as the boolean True in YAML 1.1
+    assert set(workflow[True]) == {"schedule", "workflow_dispatch"}
+    assert "${{ inputs." not in "\n".join(s.get("run", "") for s in workflow["jobs"]["compare"]["steps"])
+    assert "secrets." not in text
+    steps = workflow["jobs"]["compare"]["steps"]
+    assert all(s["with"]["persist-credentials"] is False for s in steps if "checkout@" in str(s.get("uses")))
