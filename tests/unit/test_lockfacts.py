@@ -125,6 +125,13 @@ def test_a_block_for_another_commit_is_no_fact() -> None:
         '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":"maybe"}}} -->',
         '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":"open","lock":3}}} -->',
         '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":"open"}} -->',
+        '<!-- osac-ci-locks:v1 {"head":"'
+        + HEAD
+        + '","jobs":{"a":{"state":["open"]}}} -->',  # unhashable: must not raise
+        '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":{"x":1}}}} -->',
+        '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":null}}} -->',
+        '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":1}}} -->',
+        '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":true}}} -->',
         '<!-- osac-ci-locks:v1 {"head":"' + HEAD + '","jobs":{"a":{"state":"open"}} -->',
     ],
 )
@@ -149,12 +156,33 @@ def test_the_check_run_carries_the_block_only_when_there_are_facts() -> None:
 
 
 def test_a_changed_fact_changes_what_is_posted() -> None:
-    """The facts come from the same job entries the summary lists, so the digest that decides whether to post again
-    moves with them."""
     open_ = plan(snap(POLICY, labels=frozenset({"lgtm"}), changed_files=("go/a.go",), check_runs=()), POLICY)
     locked = plan(snap(POLICY, labels=frozenset(), changed_files=("go/a.go",), check_runs=()), POLICY)
     assert payload(open_, HEAD)["external_id"] != payload(locked, HEAD)["external_id"]
     assert payload(open_, HEAD)["output"]["text"] != payload(locked, HEAD)["output"]["text"]
+
+
+def test_the_block_appearing_on_a_commit_posts_the_check_again_even_if_the_verdict_is_the_same() -> None:
+    """The case from review: a policy gains locks, or the format changes, and nothing else about the verdict does."""
+    from dataclasses import replace
+
+    verdict = plan(snap(POLICY, labels=frozenset({"lgtm"}), changed_files=("go/a.go",), check_runs=()), POLICY)
+    without = replace(verdict, lock_facts=())
+    assert payload(without, HEAD)["output"]["summary"] == payload(verdict, HEAD)["output"]["summary"]
+    assert "text" not in payload(without, HEAD)["output"]
+    assert payload(without, HEAD)["external_id"] != payload(verdict, HEAD)["external_id"]
+
+
+def test_without_facts_the_digest_is_what_it_was_before_locks_existed() -> None:
+    """A policy without locks must keep its external id, or every open pull request would be posted again on upgrade."""
+    import hashlib
+
+    plain = parse_policy(BASE + "jobs: {a: {check: a}}\n")
+    body = payload(plan(snap(plain), plain), HEAD)
+    expected = hashlib.sha256(
+        f"{body['status']}|{body.get('conclusion')}|{body['output']['summary']}".encode()
+    ).hexdigest()
+    assert body["external_id"] == f"osac-ci:{expected[:16]}"
 
 
 def test_the_same_facts_post_the_same_thing() -> None:

@@ -78,7 +78,7 @@ def test_a_bad_sha_is_an_error_not_a_query(sha: str) -> None:
 
 
 def command(monkeypatch: pytest.MonkeyPatch, fake: FakeGitHub, *args: str) -> int:
-    monkeypatch.setattr(cli, "build_client", lambda: fake)
+    monkeypatch.setattr(cli, "build_client", lambda **_: fake)
     return cli.main(["lock-status", "--repo", REPO, *args])
 
 
@@ -101,3 +101,42 @@ def test_the_command_refuses_a_bad_sha(monkeypatch: pytest.MonkeyPatch, capsys: 
 
 def test_the_command_needs_no_policy_file(monkeypatch: pytest.MonkeyPatch) -> None:
     assert command(monkeypatch, fake_with(), "--sha", SHA, "--job", "x") == 0
+
+
+def test_the_command_goes_on_without_any_token_for_a_public_repository(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in cli.TOKEN_ENV:
+        monkeypatch.delenv(name, raising=False)
+    seen: dict[str, Any] = {}
+
+    class Anonymous(FakeGitHub):
+        pass
+
+    def fake_http_client(token: str, *, anonymous: bool = False) -> FakeGitHub:
+        seen.update(token=token, anonymous=anonymous)
+        return fake_with(run(encode(FACTS, SHA)))
+
+    monkeypatch.setattr(cli, "HttpClient", fake_http_client)
+    assert cli.main(["lock-status", "--repo", REPO, "--sha", SHA, "--job", "unit"]) == 0
+    assert capsys.readouterr().out == "open\n" and seen == {"token": "", "anonymous": True}
+
+
+def test_with_a_token_the_command_uses_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GH_TOKEN", "tok")
+    seen: dict[str, Any] = {}
+
+    def fake_http_client(token: str, *, anonymous: bool = False) -> FakeGitHub:
+        seen.update(token=token, anonymous=anonymous)
+        return fake_with()
+
+    monkeypatch.setattr(cli, "HttpClient", fake_http_client)
+    assert cli.main(["lock-status", "--repo", REPO, "--sha", SHA, "--job", "unit"]) == 0
+    assert seen == {"token": "tok", "anonymous": False}
+
+
+def test_the_other_commands_still_need_a_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in cli.TOKEN_ENV:
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(SystemExit, match="set one of"):
+        cli.build_client()

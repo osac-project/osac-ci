@@ -543,7 +543,7 @@ same facts for people:
 `locked` means a lock holds the job, `open` that every lock is open, `not-applicable` that the job has nothing to do for
 these files. A job without locks is not listed, and a policy without locks adds nothing to the check run. A job that
 wants to know whether it may start asks `osac-ci lock-status --repo R --sha SHA --job ID`, which prints `locked`, `open`,
-`not-applicable` or `unknown`, and needs no policy and no secret. `unknown` covers every case with no usable fact (no
+`not-applicable` or `unknown`, and needs no policy. It uses `GH_TOKEN` or `GITHUB_TOKEN` when one is set, and goes on without any for a public repository (GitHub's low unauthenticated rate limit applies, and a private repository answers as if the check did not exist, which is `unknown`). `unknown` covers every case with no usable fact (no
 OSAC CI check on the commit, no block, a block for another commit, a job without locks, an API error); a caller decides
 what it means, and for advisory use it means go on.
 

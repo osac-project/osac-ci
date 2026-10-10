@@ -98,9 +98,10 @@ def payload(verdict: Verdict, head_sha: str, *, check_name: str = CHECK_NAME, no
     if note:
         summary = f"{note}\n\n{summary}"
     text = lockfacts.encode(verdict.lock_facts, head_sha)
-    # The facts come from the same job entries the summary lists (status and lock name), so a changed fact is a changed
-    # summary and the digest needs nothing more.
-    digest = hashlib.sha256(f"{status}|{conclusion}|{summary}".encode()).hexdigest()[:16]
+    # The text is part of what the check says: when the block first appears on a commit (a policy gains locks, or the
+    # format changes) the verdict can be the same and the check still has to be posted again. Without facts nothing is
+    # added, so the digest of a policy without locks is what it always was.
+    digest = hashlib.sha256(f"{status}|{conclusion}|{summary}{'|' + text if text else ''}".encode()).hexdigest()[:16]
     output: dict[str, Any] = {
         "title": _short(f"{verdict.state.value}: {verdict.headline}", _TITLE_LIMIT),
         "summary": summary,

@@ -57,12 +57,13 @@ def parse(text: str, head_sha: str) -> dict[str, dict[str, str]] | None:
         return None
     jobs: dict[str, dict[str, str]] = {}
     for job_id, fact in data["jobs"].items():
-        if not isinstance(job_id, str) or not isinstance(fact, dict) or fact.get("state") not in _STATES:
+        if not isinstance(job_id, str) or not isinstance(fact, dict):
             return None
-        lock = fact.get("lock", "")
-        if not isinstance(lock, str):
+        state, lock = fact.get("state"), fact.get("lock", "")
+        # Check the type before the membership: a list or an object is not hashable and would raise, not be refused.
+        if not isinstance(state, str) or state not in _STATES or not isinstance(lock, str):
             return None
-        jobs[job_id] = {"state": fact["state"], "lock": lock}
+        jobs[job_id] = {"state": state, "lock": lock}
     return jobs
 
 

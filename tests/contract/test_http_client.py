@@ -158,3 +158,32 @@ def test_a_response_without_a_resource_header_counts_as_rest() -> None:
     client = make(lambda request, timeout: _WithHeaders(b"{}", {"X-RateLimit-Remaining": "77"}))
     client.request("GET", "/x")
     assert client.rate_limit_remaining() == 77 and client.rate_limit_remaining("graphql") is None
+
+
+def test_an_anonymous_client_sends_no_credential_at_all() -> None:
+    seen: list[urllib.request.Request] = []
+
+    def opener(request: urllib.request.Request, timeout: float) -> _Raw:
+        seen.append(request)
+        return _Raw(b"{}")
+
+    HttpClient("", anonymous=True, opener=opener).request("GET", "/repos/o/r")
+    assert "Authorization" not in {k.title() for k in seen[0].headers}
+    assert seen[0].get_header("Accept") == "application/vnd.github+json"
+
+
+def test_without_a_token_a_client_is_still_refused_unless_it_says_it_is_anonymous() -> None:
+    with pytest.raises(ValueError, match="token is required"):
+        HttpClient("")
+    HttpClient("", anonymous=True)
+
+
+def test_a_client_with_a_token_still_sends_it() -> None:
+    seen: list[urllib.request.Request] = []
+
+    def opener(request: urllib.request.Request, timeout: float) -> _Raw:
+        seen.append(request)
+        return _Raw(b"{}")
+
+    make(opener).request("GET", "/repos/o/r")
+    assert seen[0].get_header("Authorization") == "Bearer tok-123"
