@@ -153,6 +153,12 @@ _COMPARE_FILE_CAP = 300  # the compare API lists at most this many files; beyond
 _MAX_FINGERPRINTED_COMMITS = 10
 
 
+def _app_id(raw: dict[str, Any]) -> int:
+    """The id of the app that posted a check run, 0 when the answer does not carry a usable one."""
+    value = (raw.get("app") or {}).get("id")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _quote(path: str) -> str:
     return urllib.parse.quote(path, safe="/")
 
@@ -376,6 +382,7 @@ def fetch_queue_snapshot(client: GitHubClient, repo: str, sha: str, base_ref: st
             raw.get("started_at"),
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
+            app_id=_app_id(raw),
         )
         for raw in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
     )
@@ -455,6 +462,7 @@ def fetch_snapshot(
             raw.get("external_id") or "",
             (raw.get("app") or {}).get("slug", ""),
             raw.get("completed_at"),
+            app_id=_app_id(raw),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )

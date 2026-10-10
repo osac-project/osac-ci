@@ -77,6 +77,7 @@ class CheckRun:
     external_id: str = ""  # set by whoever posted the check run; used to read back an authorization
     app: str = ""  # slug of the app that posted it, for example github-actions
     completed_at: str | None = None  # lets a replay tell that a check had not finished yet at a given moment
+    app_id: int = 0  # id of the app that posted it (0 when unknown); a ruleset may require a check from one app only
 
 
 @dataclass(frozen=True)

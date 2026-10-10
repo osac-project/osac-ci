@@ -792,7 +792,10 @@ accident. Each PR lands in one row:
 | `unreadable` | The PR could not be read, so nothing is claimed about it. |
 
 A required check counts as passed the way GitHub counts it: the latest run is complete and its conclusion is success,
-neutral or skipped. A PR already in the merge queue counts as ready. Draft PRs are left out (`--include-drafts` adds
+neutral or skipped, and when the ruleset names the app the check must come from (every required check in OSAC does), a
+run of the same name from another app does not count. The branch given with `--branch` must exist; a name that does not
+is an error, because the rules endpoint answers with an empty list for any name and that would read as "nothing is
+required". A PR already in the merge queue counts as ready. Draft PRs are left out (`--include-drafts` adds
 them). The report also compares the two lists of checks: checks the ruleset requires that the policy does not know
 (OSAC CI would not wait for them), and checks the policy requires that the ruleset does not.
 
