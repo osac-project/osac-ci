@@ -211,32 +211,29 @@ def publish_queue(
 _FIND_PAGES = 3  # 300 open pull requests, most recently updated first: a PR that just changed is near the top
 
 
-def find_open_prs(client: GitHubClient, repo: str, *, sha: str = "", owner: str = "", branch: str = "") -> list[int]:
-    """The open pull requests a workflow run belongs to, from what the run says about itself.
+def find_open_prs(client: GitHubClient, repo: str, *, sha: str) -> list[int]:
+    """The open pull requests whose head commit is ``sha``, from the head commit a workflow run reports.
 
-    The head commit is exact and is tried first. It also covers a run started by a review, which reports the base
-    repository as its head repository (and the fork's branch name), so the owner and branch of such a run name nothing.
-    Only when no open PR has that head, and the run gave an owner and a branch, is the open PR with that head owner and
-    branch used (a run on a fork reports both correctly). Nothing is guessed: no match is an empty list."""
+    The head commit is exact. The run's head owner and branch are deliberately not used: a run started by a review
+    reports the base repository as its head repository (with the fork's branch name), so a pull request found from them
+    could be an unrelated one that happens to share a branch name, and GitHub's head filter does not prove which pull
+    request a run belongs to. A run whose commit is no longer any pull request's head (the PR moved on) matches nothing,
+    and the push that moved it has already triggered its own refresh. Matches from every page searched are returned,
+    since two open pull requests can share a head commit; no match is an empty list, never a guess."""
     repo = check_repo(repo)
-    if sha:
-        if not COMMIT_SHA.match(sha):
-            raise ValueError(f"invalid commit sha: {sha!r}")
-        for page in range(1, _FIND_PAGES + 1):
-            batch = get(
-                client,
-                f"/repos/{repo}/pulls",
-                {"state": "open", "sort": "updated", "direction": "desc", "per_page": "100", "page": str(page)},
-            )
-            found = [int(pr["number"]) for pr in batch if (pr.get("head") or {}).get("sha") == sha]
-            if found:
-                return found
-            if len(batch) < 100:
-                break
-    if owner and branch:
-        batch = get(client, f"/repos/{repo}/pulls", {"state": "open", "head": f"{owner}:{branch}", "per_page": "10"})
-        return [int(pr["number"]) for pr in batch]
-    return []
+    if not COMMIT_SHA.match(sha):
+        raise ValueError(f"invalid commit sha: {sha!r}")
+    found: list[int] = []
+    for page in range(1, _FIND_PAGES + 1):
+        batch = get(
+            client,
+            f"/repos/{repo}/pulls",
+            {"state": "open", "sort": "updated", "direction": "desc", "per_page": "100", "page": str(page)},
+        )
+        found += [int(pr["number"]) for pr in batch if (pr.get("head") or {}).get("sha") == sha]
+        if len(batch) < 100:
+            break
+    return sorted(set(found))
 
 
 def select_prs(

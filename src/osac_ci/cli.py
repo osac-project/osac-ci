@@ -218,9 +218,7 @@ def _parser() -> argparse.ArgumentParser:
 
     fnd = sub.add_parser("find-pr", help="print the number of the open PR(s) a workflow run belongs to, one per line")
     fnd.add_argument("--repo", required=True, help="owner/name")
-    fnd.add_argument("--sha", default="", help="head commit of the run (exact; tried first)")
-    fnd.add_argument("--owner", default="", help="owner of the repository the run's branch is in")
-    fnd.add_argument("--branch", default="", help="the run's branch")
+    fnd.add_argument("--sha", required=True, help="head commit of the run (exact)")
 
     ovr = sub.add_parser(
         "override",
@@ -254,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "find-pr":
         try:
-            numbers = find_open_prs(build_client(), args.repo, sha=args.sha, owner=args.owner, branch=args.branch)
+            numbers = find_open_prs(build_client(), args.repo, sha=args.sha)
         except (GitHubError, ValueError) as exc:
             print(f"error: find-pr failed: {exc}", file=sys.stderr)
             return 3

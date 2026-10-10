@@ -546,15 +546,17 @@ group and the sweep budget.
     github-token: ${{ github.token }}   # needs checks: write and pull-requests: read
     repo: ${{ github.repository }}
     policy: policy/osac.yml
-    number: ${{ github.event.pull_request.number }}   # or head-sha, head-owner and head-branch from a workflow_run event
+    number: ${{ github.event.pull_request.number }}   # or head-sha from a workflow_run event
 ```
 
 A `workflow_run` event does not name a pull request that comes from a fork, and the usual "which pull request contains
-this commit" lookup is empty for one. The action therefore finds it itself (`osac-ci find-pr`): from the run's head
-commit first, which is exact, and only if no open pull request has that head from the run's head owner and branch. The
-commit matters most for a run started by a review: such a run reports the *base* repository as its head repository (and
-the fork's branch name), so its owner names nothing, but it does carry the pull request's exact head commit. This is
-what lets a review refresh the verdict at once through a tiny relay workflow, with no waiting for the next sweep. Without a
+this commit" lookup is empty for one. The action therefore finds it itself (`osac-ci find-pr`): the open pull requests
+whose head is exactly the run's head commit. It does not use the run's head owner and branch: a run started by a review
+reports the *base* repository as its head repository (with the fork's branch name), so they cannot identify the pull
+request, and a pull request found from them could be an unrelated one. The commit is exact and works for those runs too,
+which is what lets a review refresh the verdict at once through a tiny relay workflow, with no waiting for the next
+sweep. A run whose commit is no longer any pull request's head matches nothing; the push that moved it has already
+triggered its own refresh. Without a
 pull request, `sweep: "true"` evaluates open pull requests within the `recent`, `rotate`, `reserve` and `interval`
 budget described below. The action never checks out the calling repository, so it cannot run pull request code.
 
