@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from osac_ci import lockfacts
 from osac_ci.authorize import authorize, override, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
@@ -220,6 +221,14 @@ def _parser() -> argparse.ArgumentParser:
     fnd.add_argument("--repo", required=True, help="owner/name")
     fnd.add_argument("--sha", required=True, help="head commit of the run (exact)")
 
+    lst = sub.add_parser(
+        "lock-status", help="print whether a job may start on a commit (locked, open, not-applicable or unknown)"
+    )
+    lst.add_argument("--repo", required=True, help="owner/name")
+    lst.add_argument("--sha", required=True, help="the commit the job runs on (full sha)")
+    lst.add_argument("--job", required=True, help="the job id in the policy")
+    lst.add_argument("--check-name", default=CHECK_NAME)
+
     ovr = sub.add_parser(
         "override",
         help="handle an /override <sha> <reason> comment: waive the protected-path approval (text from env)",
@@ -257,6 +266,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: find-pr failed: {exc}", file=sys.stderr)
             return 3
         print("\n".join(str(n) for n in numbers))
+        return 0
+
+    if args.command == "lock-status":
+        try:
+            print(lockfacts.lookup(build_client(), args.repo, args.sha, args.job, args.check_name))
+        except ValueError as exc:
+            print(f"error: lock-status failed: {exc}", file=sys.stderr)
+            return 3
         return 0
 
     try:

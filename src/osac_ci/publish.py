@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from itertools import zip_longest
 from typing import Any
 
+from osac_ci import lockfacts
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, rate_remaining
 from osac_ci.github.snapshot import COMMIT_SHA, fetch_queue_snapshot, fetch_snapshot
 from osac_ci.github.standing import ACTIONS_APP_ID, fetch_standings
@@ -96,13 +97,22 @@ def payload(verdict: Verdict, head_sha: str, *, check_name: str = CHECK_NAME, no
     summary = _short(render_markdown(verdict), _SUMMARY_LIMIT)
     if note:
         summary = f"{note}\n\n{summary}"
+    text = lockfacts.encode(verdict.lock_facts, head_sha)
+    # The facts come from the same job entries the summary lists (status and lock name), so a changed fact is a changed
+    # summary and the digest needs nothing more.
     digest = hashlib.sha256(f"{status}|{conclusion}|{summary}".encode()).hexdigest()[:16]
+    output: dict[str, Any] = {
+        "title": _short(f"{verdict.state.value}: {verdict.headline}", _TITLE_LIMIT),
+        "summary": summary,
+    }
+    if text:
+        output["text"] = text
     body: dict[str, Any] = {
         "name": check_name,
         "head_sha": head_sha,
         "status": status,
         "external_id": f"osac-ci:{digest}",
-        "output": {"title": _short(f"{verdict.state.value}: {verdict.headline}", _TITLE_LIMIT), "summary": summary},
+        "output": output,
     }
     if conclusion:
         body["conclusion"] = conclusion

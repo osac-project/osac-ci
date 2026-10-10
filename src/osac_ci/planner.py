@@ -17,6 +17,7 @@ from osac_ci.model import (
     CheckRun,
     JobEntry,
     JobStatus,
+    LockFact,
     Mode,
     Snapshot,
     State,
@@ -221,9 +222,32 @@ def _enqueue_gate_ok(snapshot: Snapshot, policy: Policy) -> bool:
     return policy.approval is None or approval.evaluate(snapshot, policy.approval).approved
 
 
+def _lock_facts(verdict: Verdict, policy: Policy, mode: Mode) -> tuple[LockFact, ...]:
+    """What each lockable job may do on this commit, for workflows that want to read it (see lockfacts.py)."""
+    if mode is Mode.QUEUE:
+        return ()
+    entries = {e.job_id: e for e in verdict.jobs}
+    facts = []
+    for job_id, job in policy.jobs.items():
+        if not policy.effective_locks(job) or job_id not in entries:
+            continue
+        entry = entries[job_id]
+        if entry.status is JobStatus.LOCKED:
+            facts.append(LockFact(job_id, job.check, "locked", entry.lock, entry.code))
+        elif entry.status is JobStatus.NOT_APPLICABLE:
+            facts.append(LockFact(job_id, job.check, "not-applicable"))
+        else:
+            facts.append(LockFact(job_id, job.check, "open"))
+    return tuple(facts)
+
+
 def plan(snapshot: Snapshot, policy: Policy, mode: Mode = Mode.PR) -> Verdict:
     verdict = _plan(snapshot, policy, mode)
-    return replace(verdict, label_gate_ok=True if mode is Mode.QUEUE else _enqueue_gate_ok(snapshot, policy))
+    return replace(
+        verdict,
+        label_gate_ok=True if mode is Mode.QUEUE else _enqueue_gate_ok(snapshot, policy),
+        lock_facts=_lock_facts(verdict, policy, mode),
+    )
 
 
 def _unlock_next(held: Sequence[JobEntry], policy: Policy) -> tuple[str, str]:
