@@ -1,0 +1,291 @@
+"""Compare: on every open PR, does "OSAC CI says ready" match "every required check passes"?
+
+This is the evidence for the trial stage. Today the merge rules require a fixed list of checks (the repository's
+branch ruleset). OSAC CI computes its own answer from the policy. Before anyone relies on that answer, the two have to
+agree on the PRs people actually open, and every difference has to have a reason. Both answers are computed from the
+same snapshot of the PR, so a difference is never a timing artefact.
+
+Four outcomes per PR:
+
+- ``agree-ready`` and ``agree-blocked``: nothing to explain.
+- ``looser``: OSAC CI says ready while a required check has not passed. This is the unsafe direction: if OSAC CI
+  replaced the list, this PR would get in. Each one is listed with the required checks that stand in the way.
+- ``stricter``: every required check passed while OSAC CI holds the PR back. The reason is OSAC CI's own verdict (an
+  approval, an authorization, an E2E signal, a lock). Safe, but it would block a PR that merges today.
+
+Separately it compares the list itself: checks the ruleset requires that the policy does not know (OSAC CI would not
+wait for them) and the other way round.
+
+Read-only. A PR that cannot be read becomes its own row; it never aborts the run.
+"""
+
+from __future__ import annotations
+
+import json
+from collections import Counter
+from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
+
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
+from osac_ci.github.snapshot import fetch_snapshot
+from osac_ci.model import JobStatus, Mode, Snapshot, State
+from osac_ci.planner import check_outcome, error_verdict, latest_checks, plan_or_error
+from osac_ci.policy import Policy
+from osac_ci.publish import CHECK_NAME
+from osac_ci.report import list_open_prs, md_escape
+
+# In pull-request mode a PR in the merge queue is past the point of being ready, so it counts as ready.
+READY = frozenset({State.READY_TO_ENQUEUE, State.IN_QUEUE})
+
+
+class Outcome(StrEnum):
+    AGREE_READY = "agree-ready"
+    AGREE_BLOCKED = "agree-blocked"
+    LOOSER = "looser"
+    STRICTER = "stricter"
+    UNREADABLE = "unreadable"  # the PR could not be read, so nothing can be claimed about it
+
+
+@dataclass(frozen=True)
+class Row:
+    number: int
+    title: str
+    url: str
+    outcome: Outcome
+    state: State
+    headline: str
+    gaps: tuple[str, ...]  # required checks that have not passed, as "name: why"
+    cause: str = ""  # what a difference comes down to, short enough to count; empty when the two agree
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """The ruleset's list against the policy's. Names only; the planner never sees the ruleset."""
+
+    ruleset_only: tuple[str, ...]  # required by the ruleset, unknown to the policy: OSAC CI would not wait for it
+    policy_only: tuple[str, ...]  # required by the policy at PR time, absent from the ruleset: OSAC CI is stricter
+
+
+@dataclass(frozen=True)
+class Report:
+    repo: str
+    branch: str
+    generated_at: str
+    required: tuple[str, ...]
+    coverage: Coverage
+    rows: tuple[Row, ...]
+
+    def count(self, outcome: Outcome) -> int:
+        return sum(r.outcome is outcome for r in self.rows)
+
+    @property
+    def looser(self) -> tuple[Row, ...]:
+        return tuple(r for r in self.rows if r.outcome is Outcome.LOOSER)
+
+    @property
+    def stricter(self) -> tuple[Row, ...]:
+        return tuple(r for r in self.rows if r.outcome is Outcome.STRICTER)
+
+
+def required_contexts(client: GitHubClient, repo: str, branch: str) -> tuple[str, ...]:
+    """The status checks the branch rules require, in order, without repeats. Public information: it needs no
+    administrative permission. OSAC CI's own check is left out so the comparison stays the same once it is required."""
+    rules = get(client, f"/repos/{check_repo(repo)}/rules/branches/{branch}")
+    found: list[str] = []
+    for rule in rules if isinstance(rules, list) else []:
+        if rule.get("type") != "required_status_checks":
+            continue
+        for entry in (rule.get("parameters") or {}).get("required_status_checks") or []:
+            name = entry.get("context")
+            if isinstance(name, str) and name and name != CHECK_NAME and name not in found:
+                found.append(name)
+    return tuple(found)
+
+
+_GAP_CAUSE = {
+    JobStatus.FAILED: "a required check failed",
+    JobStatus.RUNNING: "a required check is still running",
+    JobStatus.WAITING: "a required check has not reported",
+}
+
+
+def unmet(snapshot: Snapshot, required: Iterable[str]) -> tuple[tuple[str, JobStatus], ...]:
+    """Required checks that have not passed on this head commit, with GitHub's meaning of passing."""
+    latest = latest_checks(snapshot.check_runs)
+    gaps = []
+    for name in required:
+        status, detail = check_outcome(latest.get(name))
+        if status is not JobStatus.PASSED:
+            gaps.append((f"{name}: {detail}", status))
+    return tuple(gaps)
+
+
+def gap_cause(gaps: tuple[tuple[str, JobStatus], ...]) -> str:
+    """The worst thing standing in the way: a failure outranks a run in progress, which outranks silence."""
+    for status in (JobStatus.FAILED, JobStatus.RUNNING, JobStatus.WAITING):
+        if any(s is status for _, s in gaps):
+            return _GAP_CAUSE[status]
+    return "a required check has not passed"
+
+
+def classify(ready: bool, legacy_ready: bool) -> Outcome:
+    if ready == legacy_ready:
+        return Outcome.AGREE_READY if ready else Outcome.AGREE_BLOCKED
+    return Outcome.LOOSER if ready else Outcome.STRICTER
+
+
+def coverage(policy: Policy, required: Iterable[str]) -> Coverage:
+    wanted = {job.check for job in policy.jobs.values() if "pr" in job.required_at} - {CHECK_NAME}
+    listed = set(required)
+    return Coverage(ruleset_only=tuple(sorted(listed - wanted)), policy_only=tuple(sorted(wanted - listed)))
+
+
+def compare(
+    client: GitHubClient,
+    policy: Policy,
+    repo: str,
+    *,
+    generated_at: str,
+    branch: str = "main",
+    org: str | None = None,
+    org_client: GitHubClient | None = None,
+    include_drafts: bool = False,
+    limit: int | None = None,
+    lookup_membership: bool = False,
+    workers: int = 6,
+) -> Report:
+    required = required_contexts(client, repo, branch)
+    prs = list_open_prs(client, repo, include_drafts=include_drafts)
+    if limit is not None:
+        prs = prs[:limit]
+    org = org or repo.split("/", 1)[0]
+
+    def one(pr: dict[str, Any]) -> Row:
+        number = pr["number"]
+        title, url = str(pr.get("title", "")), str(pr.get("html_url", ""))
+        try:
+            snapshot = fetch_snapshot(
+                client,
+                repo,
+                number,
+                org=org,
+                lookup_membership=lookup_membership,
+                approval=policy.approval,
+                protected=policy.protected_paths,
+                override=policy.override,
+                org_client=org_client,
+                trust=policy.trust,
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            verdict = error_verdict(f"could not read PR #{number}: {exc}", Mode.PR)
+            return Row(number, title, url, Outcome.UNREADABLE, verdict.state, verdict.headline, (), "unreadable")
+        verdict = plan_or_error(snapshot, policy, Mode.PR)
+        gaps = unmet(snapshot, required)
+        outcome = classify(verdict.state in READY, not gaps)
+        cause = {Outcome.LOOSER: gap_cause(gaps), Outcome.STRICTER: verdict.state.value}.get(outcome, "")
+        return Row(number, title, url, outcome, verdict.state, verdict.headline, tuple(g for g, _ in gaps), cause)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        rows = sorted(pool.map(one, prs), key=lambda r: r.number)
+    return Report(repo, branch, generated_at, required, coverage(policy, required), tuple(rows))
+
+
+# rendering ------------------------------------------------------------------------------------------------
+
+
+def _cell(text: str, limit: int = 160) -> str:
+    return md_escape(text, limit=limit)
+
+
+def render(report: Report) -> str:
+    total = len(report.rows)
+    lines = [
+        f"# OSAC CI against the required checks: {report.repo} ({report.branch})",
+        "",
+        f"Generated {report.generated_at}. {len(report.required)} required checks. {total} open PRs compared.",
+        "",
+        "| Outcome | PRs |",
+        "|---|---|",
+        *[f"| {o.value} | {report.count(o)} |" for o in Outcome],
+    ]
+    if report.looser:
+        lines += [
+            "",
+            "## OSAC CI says ready, a required check has not passed (the unsafe direction)",
+            "",
+            "| PR | OSAC CI state | Required checks not passed |",
+            "|---|---|---|",
+            *[f"| [#{r.number}]({r.url}) | {r.state.value} | {_cell('; '.join(r.gaps), 300)} |" for r in report.looser],
+        ]
+    if report.stricter:
+        causes = Counter(r.cause for r in report.stricter)
+        lines += [
+            "",
+            "## Every required check passed, OSAC CI holds the PR back",
+            "",
+            "| Cause | PRs |",
+            "|---|---|",
+            *[f"| {_cell(cause)} | {count} |" for cause, count in causes.most_common()],
+            "",
+            "| PR | OSAC CI state | Reason |",
+            "|---|---|---|",
+            *[f"| [#{r.number}]({r.url}) | {r.state.value} | {_cell(r.headline)} |" for r in report.stricter],
+        ]
+    unreadable = [r for r in report.rows if r.outcome is Outcome.UNREADABLE]
+    if unreadable:
+        lines += [
+            "",
+            "## Could not be read",
+            "",
+            "| PR | Why |",
+            "|---|---|",
+            *[f"| [#{r.number}]({r.url}) | {_cell(r.headline)} |" for r in unreadable],
+        ]
+    cov = report.coverage
+    lines += ["", "## The two lists of checks", ""]
+    if not (cov.ruleset_only or cov.policy_only):
+        lines.append("Both lists name the same checks.")
+    if cov.ruleset_only:
+        lines += [
+            "Required by the ruleset, unknown to the policy (OSAC CI would not wait for them):",
+            "",
+            *[f"- {_cell(name)}" for name in cov.ruleset_only],
+            "",
+        ]
+    if cov.policy_only:
+        lines += [
+            "Required by the policy at PR time, not by the ruleset (OSAC CI is stricter):",
+            "",
+            *[f"- {_cell(name)}" for name in cov.policy_only],
+            "",
+        ]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def to_json(report: Report) -> str:
+    return json.dumps(
+        {
+            "repo": report.repo,
+            "branch": report.branch,
+            "generated_at": report.generated_at,
+            "required": list(report.required),
+            "counts": {o.value: report.count(o) for o in Outcome},
+            "ruleset_only": list(report.coverage.ruleset_only),
+            "policy_only": list(report.coverage.policy_only),
+            "rows": [
+                {
+                    "number": r.number,
+                    "outcome": r.outcome.value,
+                    "state": r.state.value,
+                    "headline": r.headline,
+                    "cause": r.cause,
+                    "gaps": list(r.gaps),
+                }
+                for r in report.rows
+            ],
+        },
+        indent=2,
+    )

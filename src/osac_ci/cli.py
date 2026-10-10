@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from osac_ci import compare as compare_mod
 from osac_ci import lockfacts
 from osac_ci.authorize import authorize, override, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
@@ -244,6 +245,23 @@ def _parser() -> argparse.ArgumentParser:
     ovr.add_argument("--commenter", required=True, help="login of whoever commented")
     ovr.add_argument("--dry-run", action="store_true", help="decide, but post neither the check nor the reply")
 
+    cmp = sub.add_parser(
+        "compare", help="compare 'OSAC CI says ready' with 'every required check passed' on every open PR"
+    )
+    cmp.add_argument("--policy", type=Path, required=True)
+    cmp.add_argument("--repo", required=True, help="owner/name")
+    cmp.add_argument("--branch", default="main", help="branch whose rules list the required checks")
+    cmp.add_argument("--include-drafts", action="store_true")
+    cmp.add_argument("--limit", type=int)
+    cmp.add_argument("--workers", type=int, default=6)
+    cmp.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
+    cmp.add_argument("--lookup-membership", action="store_true", help="look up org membership (needs an org token)")
+    cmp.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    cmp.add_argument("--json-file", type=Path, help="also write the JSON here, so one run gives both formats")
+    cmp.add_argument(
+        "--fail-on-looser", action="store_true", help="exit 1 when OSAC CI says ready while a required check has not"
+    )
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -430,6 +448,33 @@ def main(argv: list[str] | None = None) -> int:
         state = "granted" if result.granted else ("refused" if result.handled else "ignored")
         print(f"PR #{args.number}: {state}: {result.message}")
         return 0
+
+    if args.command == "compare":
+        try:
+            found = compare_mod.compare(
+                build_client(),
+                policy,
+                args.repo,
+                generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                branch=args.branch,
+                org=args.org,
+                org_client=build_org_client(),
+                include_drafts=args.include_drafts,
+                limit=args.limit,
+                lookup_membership=args.lookup_membership,
+                workers=args.workers,
+            )
+        except (GitHubError, ValueError) as exc:
+            print(f"error: compare failed: {exc}", file=sys.stderr)
+            return 3
+        if args.json_file:
+            try:
+                args.json_file.write_text(compare_mod.to_json(found) + "\n", encoding="utf-8")
+            except OSError as exc:
+                print(f"error: cannot write {args.json_file}: {exc}", file=sys.stderr)
+                return 3
+        print(compare_mod.to_json(found) if args.json else compare_mod.render(found), end="")
+        return 1 if args.fail_on_looser and found.looser else 0
 
     if args.command == "replay":
         try:

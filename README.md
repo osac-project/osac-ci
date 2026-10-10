@@ -263,6 +263,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | Publisher | `src/osac_ci/publish.py` | Posts the verdict as the *OSAC CI* check run, for a PR or for a merge-queue commit; the sweep budget lives here. |
 | Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` and `/override <sha> <reason>` comments. |
 | Report | `src/osac_ci/report.py`, `render.py` | A table of every open PR (markdown, HTML, JSON). |
+| Compare | `src/osac_ci/compare.py` | On every open PR, compares "OSAC CI says ready" with "every required check passed". |
 | Replay | `src/osac_ci/replay.py` | Compares the planner's answers with merged PRs. `parity/explained.yaml` lists signed-off disagreements. |
 | CLI | `src/osac_ci/cli.py` | The `osac-ci` command. |
 | Policies | `policy/` | `osac-ci.yml` (this repository), `osac.yml` (the OSAC mono-repo's current rules), `osac-filters.yml` (a copy of its path filters), `toy.yml` (a tiny example that proves the engine is generic). |
@@ -277,6 +278,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | `osac-ci-authorize.yml` | a PR comment starting with `/ok-to-test` | Verifies the commenter is an org member and records the authorization on that exact commit. |
 | `osac-ci-queue.yml` | a required check finished on a merge-queue branch, manual | Posts the *OSAC CI* check on the merge-queue commit. |
 | `report.yml` (`open-pr-report`) | nightly | Publishes the open-PR report as an artifact and job summary. |
+| `compare.yml` (`compare-required-checks`) | daily | Publishes the comparison with the required checks as an artifact and job summary. |
 
 ### Command line
 
@@ -286,11 +288,12 @@ uv run osac-ci policy check policy/osac.yml
 uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json   # offline
 GH_TOKEN=... uv run osac-ci explain-pr --policy policy/osac.yml --repo osac-project/osac --number 1438
 GH_TOKEN=... uv run osac-ci report  --policy policy/osac.yml --repo osac-project/osac --out-dir report
+GH_TOKEN=... uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac
 GH_TOKEN=... uv run osac-ci replay  --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
 GH_TOKEN=... uv run osac-ci publish --policy policy/osac-ci.yml --repo osac-project/osac-ci --number 12 --dry-run
 ```
 
-`policy check`, `explain`, `explain-pr`, `report` and `replay` only read. `publish`, `publish-queue` and `authorize`
+`policy check`, `explain`, `explain-pr`, `report`, `compare` and `replay` only read. `publish`, `publish-queue` and `authorize`
 write check runs; `--dry-run` prints instead.
 
 ## Policy reference
@@ -769,6 +772,33 @@ Writes `report.md`, `report.html` (filterable, self-contained) and `report.json`
 as a `planner-error` row, so nothing silently disappears. PR titles are treated as untrusted text in every format.
 The `open-pr-report` workflow runs it every night and keeps the files as a workflow artifact and in the job summary. On the
 built-in token it makes about 7 requests per PR, which may hit its rate limit on a very large run.
+
+### Comparing with the required checks
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac
+```
+
+Before anyone relies on the *OSAC CI* answer, it has to agree with the rule that gates merging today: the list of
+required status checks in the branch ruleset (read from the public branch-rules API, so it needs no administrative
+permission). For each open pull request, both answers come from the same snapshot, so a difference is never a timing
+accident. Each PR lands in one row:
+
+| Outcome | Meaning |
+|---|---|
+| `agree-ready`, `agree-blocked` | Both say the same. |
+| `looser` | OSAC CI says ready while a required check has not passed. The unsafe direction: if OSAC CI replaced the list, this PR would get in. Listed with the required checks in the way. |
+| `stricter` | Every required check passed, OSAC CI holds the PR back (an approval, an authorization, an E2E signal, a lock). Safe, but it would block a PR that merges today. Counted by cause. |
+| `unreadable` | The PR could not be read, so nothing is claimed about it. |
+
+A required check counts as passed the way GitHub counts it: the latest run is complete and its conclusion is success,
+neutral or skipped. A PR already in the merge queue counts as ready. Draft PRs are left out (`--include-drafts` adds
+them). The report also compares the two lists of checks: checks the ruleset requires that the policy does not know
+(OSAC CI would not wait for them), and checks the policy requires that the ruleset does not.
+
+The command exits 0 whatever it finds; `--fail-on-looser` exits 1 when there is a `looser` row. `--json` prints JSON
+instead of markdown, and `--json-file PATH` writes the JSON next to the markdown so one run gives both. The
+`compare-required-checks` workflow runs it every day and keeps the files as an artifact and in the job summary.
 
 ### Replay (parity evidence)
 

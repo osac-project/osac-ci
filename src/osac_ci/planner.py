@@ -69,7 +69,7 @@ def latest_checks(check_runs: Sequence[CheckRun]) -> dict[str, CheckRun]:
     return latest
 
 
-def _from_check(run: CheckRun | None) -> tuple[JobStatus, str]:
+def check_outcome(run: CheckRun | None) -> tuple[JobStatus, str]:
     if run is None:
         return JobStatus.WAITING, "not reported yet"
     if run.status != "completed":
@@ -184,7 +184,7 @@ def _evaluate(
             decision = readiness.decide(labels, snapshot.reviews, snapshot.head_sha, snapshot.label_events)
         if not decision.allowed:
             return JobEntry(job_id, job.check, JobStatus.WAITING, decision.reason, decision.code)
-    status, detail = _from_check(run)
+    status, detail = check_outcome(run)
     note = _filter_note(job, run, holds) if policy.path_filters.mode == "shadow" else ""
     return JobEntry(job_id, job.check, status, detail, note=note)
 
