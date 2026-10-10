@@ -1,5 +1,7 @@
 """This repository's own policy must describe this repository's own CI."""
 
+import re
+
 import pytest
 import yaml
 from helpers import ROOT
@@ -186,6 +188,18 @@ def test_the_daily_comparison_only_reads_and_takes_its_inputs_through_the_enviro
     # the `on:` key loads as the boolean True in YAML 1.1
     assert set(workflow[True]) == {"schedule", "workflow_dispatch"}
     assert "${{ inputs." not in "\n".join(s.get("run", "") for s in workflow["jobs"]["compare"]["steps"])
-    assert "secrets." not in text
+    assert set(re.findall(r"secrets\.(\w+)", text)) == {"OSAC_CI_READER_APP_ID", "OSAC_CI_READER_PRIVATE_KEY"}
     steps = workflow["jobs"]["compare"]["steps"]
     assert all(s["with"]["persist-credentials"] is False for s in steps if "checkout@" in str(s.get("uses")))
+
+
+def test_the_daily_comparison_reads_the_organization_only_with_the_members_permission_from_the_environment() -> None:
+    job = _workflow("compare.yml")["jobs"]["compare"]
+    assert job["environment"] == "org-read"
+    (mint,) = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+    assert {k for k in mint["with"] if k.startswith("permission-")} == {"permission-members"}
+    assert mint["with"]["permission-members"] == "read" and mint["continue-on-error"] is True
+    assert len(mint["uses"].split("@")[1].split()[0]) == 40
+    run = next(s for s in job["steps"] if s.get("name") == "Compare")
+    assert run["env"]["OSAC_CI_ORG_TOKEN"] == "${{ steps.org-token.outputs.token }}"
+    assert "--lookup-membership" in run["run"]

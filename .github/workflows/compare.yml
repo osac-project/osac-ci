@@ -2,7 +2,11 @@
 name: compare-required-checks
 
 # Every day: on each open osac PR, does "OSAC CI says ready" match "every required check passed"? Each difference
-# comes with its reason. Read-only: it reads public GitHub data and uploads files. It changes nothing anywhere.
+# comes with its reason. Read-only: it reads GitHub data and uploads files. It changes nothing anywhere.
+#
+# The organization-read key lives in the `org-read` environment, which only the default branch may use. The minted
+# token is limited to the Members permission; the policy needs it to read the members of the override team and the
+# authors' organization membership. Without it those PRs show up as unreadable rather than wrongly compared.
 
 on:
   schedule:
@@ -26,6 +30,7 @@ concurrency:
 jobs:
   compare:
     name: compare
+    environment: org-read
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -41,14 +46,28 @@ jobs:
       # Inputs go through the environment, never into the command line (they are user-controlled text).
       # About 7 API requests per PR: the built-in token's rate limit may cut a very large run short. PRs that could
       # not be read then appear as "unreadable" rows instead of disappearing.
+      - name: Mint the organization-read token
+        id: org-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          client-id: ${{ secrets.OSAC_CI_READER_APP_ID }}
+          private-key: ${{ secrets.OSAC_CI_READER_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-members: read
       - name: Compare
         env:
           GH_TOKEN: ${{ github.token }}
+          OSAC_CI_ORG_TOKEN: ${{ steps.org-token.outputs.token }}
+          TOKEN_OUTCOME: ${{ steps.org-token.outcome }}
           REPO: ${{ inputs.repo || 'osac-project/osac' }}
           LIMIT: ${{ inputs.limit }}
         run: |
+          if [ "$TOKEN_OUTCOME" != "success" ]; then
+            echo "::warning::The organization token could not be created; PRs that need it show as unreadable."
+          fi
           mkdir compare
-          args=(--policy policy/osac.yml --repo "$REPO" --json-file compare/compare.json)
+          args=(--policy policy/osac.yml --repo "$REPO" --lookup-membership --json-file compare/compare.json)
           if [ -n "$LIMIT" ]; then args+=(--limit "$LIMIT"); fi
           uv run osac-ci compare "${args[@]}" > compare/compare.md
       - name: Show it in the job summary
