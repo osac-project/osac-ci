@@ -93,11 +93,16 @@ def build_org_client(*, required: bool = False) -> GitHubClient | None:
     return _NoOrgToken() if required else None
 
 
-def build_client() -> GitHubClient:
-    """The real client, with the token taken from the environment (never from an argument or a file)."""
+def build_client(*, anonymous_ok: bool = False) -> GitHubClient:
+    """The real client, with the token taken from the environment (never from an argument or a file).
+
+    ``anonymous_ok`` lets a command that reads public data only go on without one; the rate limit is then GitHub's low
+    one for unauthenticated requests, and a private repository answers "not found"."""
     for name in TOKEN_ENV:
         if token := os.environ.get(name):
             return HttpClient(token)
+    if anonymous_ok:
+        return HttpClient("", anonymous=True)
     raise SystemExit(f"error: set one of {' or '.join(TOKEN_ENV)} (for example GH_TOKEN=$(gh auth token))")
 
 
@@ -270,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "lock-status":
         try:
-            print(lockfacts.lookup(build_client(), args.repo, args.sha, args.job, args.check_name))
+            print(lockfacts.lookup(build_client(anonymous_ok=True), args.repo, args.sha, args.job, args.check_name))
         except ValueError as exc:
             print(f"error: lock-status failed: {exc}", file=sys.stderr)
             return 3

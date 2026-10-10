@@ -95,11 +95,12 @@ class HttpClient:
         self,
         token: str,
         *,
+        anonymous: bool = False,
         root: str = API_ROOT,
         timeout: float = 30.0,
         opener: Callable[..., Any] = urllib.request.urlopen,
     ) -> None:
-        if not token:
+        if not token and not anonymous:
             raise ValueError("a GitHub token is required")
         self._token = token
         self._root = root.rstrip("/")
@@ -133,11 +134,12 @@ class HttpClient:
             url += "?" + urllib.parse.urlencode(params)
         data = json.dumps(body).encode() if body is not None else None
         headers = {
-            "Authorization": f"Bearer {self._token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "osac-ci",
         }
+        if self._token:  # an anonymous client (public data only) sends no credential at all
+            headers["Authorization"] = f"Bearer {self._token}"
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310 - https root only
