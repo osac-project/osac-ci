@@ -146,6 +146,17 @@ class JobEntry:
 
 
 @dataclass(frozen=True)
+class LockFact:
+    """Whether one lockable job may start on this commit, as the planner decided it (see rules/lockfacts.py)."""
+
+    job_id: str
+    check: str
+    state: str  # locked | open | not-applicable
+    lock: str = ""  # the lock that holds the job, when state is locked
+    code: str = ""
+
+
+@dataclass(frozen=True)
 class Verdict:
     state: State
     headline: str
@@ -158,3 +169,5 @@ class Verdict:
     # Would today's enqueue rule (auto-queue.sh) have let this PR in? Not a draft, and the labels or approval are in
     # order. It ignores check results, which that rule does not read. Always true in queue mode.
     label_gate_ok: bool = True
+    # One entry per job that has locks, in policy order; empty in queue mode, where locks are not evaluated.
+    lock_facts: tuple[LockFact, ...] = ()

@@ -531,6 +531,27 @@ default_locks: [membership]                                            # every j
   old form calls it passed, the lock form calls it locked. On the open `osac` pull requests that was the only difference,
   on about a third of them, and the state of the PR was the same on all of them.
 
+#### Reading a lock back (`lock-status`)
+
+When a policy has locks, the `OSAC CI` check run carries a hidden block in its output text, with a small table of the
+same facts for people:
+
+```
+<!-- osac-ci-locks:v1 {"head":"<sha>","jobs":{"e2e-vmaas":{"lock":"cost","state":"locked"}}} -->
+```
+
+`locked` means a lock holds the job, `open` that every lock is open, `not-applicable` that the job has nothing to do for
+these files. A job without locks is not listed, and a policy without locks adds nothing to the check run. A job that
+wants to know whether it may start asks `osac-ci lock-status --repo R --sha SHA --job ID`, which prints `locked`, `open`,
+`not-applicable` or `unknown`, and needs no policy and no secret. `unknown` covers every case with no usable fact (no
+OSAC CI check on the commit, no block, a block for another commit, a job without locks, an API error); a caller decides
+what it means, and for advisory use it means go on.
+
+This is a fact for advisory use. Any workflow in a repository can write a check run of any name, so a pull request can
+post a block of its own. A job that reads it only decides whether to spend runner minutes, and a pull request could just
+delete that step. Anything that spends money or uses a secret must not read it; it asks the planner from a workflow the
+pull request cannot edit. The verdict itself never depends on this block.
+
 ### Native approval (`approval:`)
 
 A policy with an `approval:` section decides approval from GitHub reviews and CODEOWNERS, not from labels:
