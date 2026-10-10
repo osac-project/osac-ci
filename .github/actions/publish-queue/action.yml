@@ -1,0 +1,56 @@
+---
+name: Publish the OSAC CI check on a merge-queue commit
+description: >-
+  Evaluate a merge-queue commit with an osac-ci policy and post the verdict as the "OSAC CI" check run on it, so that a
+  required OSAC CI is reported on the commit the queue is waiting on. A repository calls this from a workflow triggered
+  by the completion of the workflows that report its required checks, pinned to a commit of osac-ci.
+
+# The calling workflow decides when this runs (a finished run of a merge_group on a queue branch), which token it holds
+# and the concurrency. This action never checks out the calling repository, so it cannot run pull request code. Every
+# input reaches the shell through an environment variable, never through the script text. The commit and the branch
+# come from a workflow_run event: the program validates both (a full commit sha, a real queue branch name) and
+# refuses anything else.
+inputs:
+  github-token:
+    description: Token that can write checks (normally the job's built-in token)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The merge-queue commit (40 hex digits)
+    required: true
+  branch:
+    description: Its queue branch, gh-readonly-queue/<base>/pr-<n>-<sha>
+    required: true
+  policy:
+    description: Policy file, relative to the root of osac-ci at the pinned commit
+    default: policy/osac.yml
+  note:
+    description: Text placed above the verdict in the check summary
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Post the verdict on the queue commit
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        BRANCH: ${{ inputs.branch }}
+        POLICY: ${{ inputs.policy }}
+        NOTE: ${{ inputs.note }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        case "$BRANCH" in gh-readonly-queue/*) ;; *) echo "::error::This is not a merge-queue branch."; exit 1 ;; esac
+        root="$ACTION_PATH/../../.."
+        note=()
+        if [ -n "$NOTE" ]; then note=(--note "$NOTE"); fi
+        uv run --locked --project "$root" osac-ci publish-queue --policy "$root/$POLICY" --repo "$REPO" \
+          --sha "$SHA" --branch "$BRANCH" "${note[@]}"

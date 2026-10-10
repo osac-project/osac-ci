@@ -691,7 +691,10 @@ them, so a required `OSAC CI` has to be reported on that commit too, or the entr
 - A commit that cannot be read is a visible `failure` naming the cause, never a pass. When the list of changed files
   cannot be read completely (the compare API stops at 300 files) no path-gated job is skipped on a guess.
 
-`.github/workflows/osac-ci-queue.yml` runs it when a required check of a queue branch completes, from the default
+A repository other than this one calls the composite action `.github/actions/publish-queue` (inputs `repo`, `sha`,
+`branch`, `policy`, `note`, `github-token`), pinned to a full commit sha of osac-ci, from a workflow triggered by
+`workflow_run` for the workflows that report its required checks. It refuses a branch that is not a queue branch before
+the program runs, passes everything as data, and checks nothing out. `.github/workflows/osac-ci-queue.yml` runs it when a required check of a queue branch completes, from the default
 branch. Two events carry that: `workflow_run` when a GitHub Actions workflow finishes, and `check_run` for a check from
 another app. Both are needed: GitHub does not trigger `check_run` workflows when the check suite was created by GitHub
 Actions (to prevent recursive workflows), so the Actions checks, which are nearly all of them, only arrive through
