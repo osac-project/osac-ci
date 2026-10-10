@@ -1,0 +1,91 @@
+---
+name: Lock gate
+description: >-
+  Tell a job whether OSAC CI has it locked on this commit, so a workflow can leave the job out instead of running it.
+  Advisory: it only reads the lock fact in the OSAC CI check run, and it goes on whenever there is no usable fact.
+
+# How to use it. Put the gate in a job of its own and make the real job depend on it with a job-level `if`:
+#
+#   gate:
+#     runs-on: ubuntu-latest
+#     outputs: {locked: "${{ steps.gate.outputs.locked }}"}
+#     steps:
+#       - id: gate
+#         uses: osac-project/osac-ci/.github/actions/lock-gate@<full sha>
+#         with: {repo: "${{ github.repository }}", sha: "${{ github.event.pull_request.head.sha }}", job: unit-tests}
+#   unit-tests:
+#     needs: gate
+#     if: needs.gate.outputs.locked != 'true'
+#
+# Do not skip the steps of the real job instead. A job whose steps are all skipped still ends as a success, which both
+# GitHub and OSAC CI read as a result: the lock would turn into a pass. A job skipped by its own `if` ends as skipped,
+# which is not a result, so OSAC CI keeps reporting it as locked.
+#
+# This is a convenience for jobs that only cost runner minutes. A fact in a check run can be written by any workflow of
+# the repository, and a pull request can remove the gate from its own copy of the workflow. Anything that spends money or
+# uses a secret must be started by a workflow the pull request cannot edit instead (see the osac-ci README).
+inputs:
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: Full commit sha the job runs on (the pull request's head)
+    required: true
+  job:
+    description: Id of the job in the OSAC CI policy
+    required: true
+  check-name:
+    description: Name of the OSAC CI check run
+    default: OSAC CI
+  wait-seconds:
+    description: >-
+      How long to wait for OSAC CI to post its check on the commit when there is none yet (0 to 300). Right after a push
+      the workflows start before the check exists. Without a fact in time the job goes on
+    default: "0"
+  github-token:
+    description: Token that can read checks. Optional for a public repository
+    default: ""
+
+outputs:
+  state:
+    description: locked, open, not-applicable or unknown
+    value: ${{ steps.read.outputs.state }}
+  locked:
+    description: '"true" only when OSAC CI says the job is locked, otherwise "false" (unknown included)'
+    value: ${{ steps.read.outputs.locked }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Read the lock fact
+      id: read
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        JOB: ${{ inputs.job }}
+        CHECK_NAME: ${{ inputs.check-name }}
+        WAIT: ${{ inputs.wait-seconds }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        case "$WAIT" in ""|*[!0-9]*) echo "::error::wait-seconds must be digits only."; exit 1 ;; esac
+        if [ "$WAIT" -gt 300 ]; then echo "::error::wait-seconds must be 300 or less."; exit 1; fi
+        deadline=$((SECONDS + WAIT))
+        while true; do
+          state=$(uv run --locked --project "$ACTION_PATH/../../.." osac-ci lock-status \
+            --repo "$REPO" --sha "$SHA" --job "$JOB" --check-name "$CHECK_NAME")
+          if [ "$state" != "unknown" ] || [ "$SECONDS" -ge "$deadline" ]; then break; fi
+          sleep 5
+        done
+        case "$state" in
+          locked|open|not-applicable|unknown) ;;
+          *) echo "::error::Unexpected answer from lock-status."; exit 1 ;;
+        esac
+        echo "state=$state" >> "$GITHUB_OUTPUT"
+        if [ "$state" = "locked" ]; then echo "locked=true" >> "$GITHUB_OUTPUT"; else echo "locked=false" >> "$GITHUB_OUTPUT"; fi
+        echo "Job $JOB is $state on $SHA."
