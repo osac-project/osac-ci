@@ -64,7 +64,7 @@ states, 26 checks and workflow logs. osac-ci computes that answer from one polic
 | **Job** | One required check described in the policy: its check name, whether it is a cheap check or a costly E2E suite, which files make it apply. |
 | **Planner** | A pure function `plan(snapshot, policy, mode)` that returns a verdict. It does no I/O, so the same input always gives the same answer. |
 | **Verdict** | The planner's answer: a **state**, a headline, the blockers, the status of every job, the next action and who must take it. |
-| **State** | Exactly one of 14 names that describe the PR right now (see [the state machine](#the-life-of-a-pull-request)). A state is *derived* from the snapshot every time, never remembered. |
+| **State** | Exactly one of 15 names that describe the PR right now (see [the state machine](#the-life-of-a-pull-request)). A state is *derived* from the snapshot every time, never remembered. |
 | **Mode** | `pr` evaluates the head commit of the pull request; `queue` evaluates the merge-queue commit. |
 | **OSAC CI check** | The check run the publisher posts on a commit. It is the verdict in GitHub's vocabulary: `success`, `in_progress`, `action_required` or `failure`. |
 | **Fail closed** | Anything unexpected (bad policy, unreadable team, API error) becomes the `planner-error` state with its cause. Never a pass. |
@@ -85,7 +85,8 @@ The planner looks at the snapshot and returns the *first* state in this list tha
 6. `needs-authorization`, if a fork PR must run an E2E job but may not yet use secrets.
 7. `checks-running`, if a cheap check is running or has not reported.
 8. `awaiting-approval`, if a required label is missing, a blocking label is present, or native approval is not met.
-9. `awaiting-e2e-signal`, if an E2E job is held back by the unlock rule.
+9. `awaiting-e2e-signal`, if an E2E job is held back by the unlock rule, then `awaiting-unlock`, if a job is held back by a
+   lock of the policy (see [Locks](#locks-locks)).
 10. `e2e-running`, if E2E checks are in progress.
 11. `in-queue` if the PR is in the merge queue, otherwise `ready-to-enqueue`.
 
@@ -157,6 +158,7 @@ checks are tied to a commit.
 | `checks-failed` | A required cheap check failed. | author | Fix and push, or comment `/retest` for a flaky check. | `action_required` |
 | `awaiting-approval` | Approval is missing: the `lgtm`/`approved` labels, or the native approvals and code-owner approval; or a blocking label is on the PR. | reviewer or code owner | Review and approve; remove the blocking label. | `action_required` |
 | `awaiting-e2e-signal` | Everything else is fine, but the cost gate holds the E2E jobs back. | reviewer | Provide an unlock signal (`/lgtm`, `/e2e-ready`, a CodeRabbit approval on the current commit, or per policy a human approval). | `action_required` |
+| `awaiting-unlock` | Everything else is fine, but a lock of the policy holds a job back (the blockers name the job and the lock). | reviewer | Open the lock: the verdict names the shortest way. | `action_required` |
 | `e2e-running` | E2E suites are running (about 100 minutes). | nobody | Wait. | `in_progress` |
 | `e2e-failed` | An E2E suite failed. | author | Fix and push, or `/retest` if it looks like an infrastructure flake. | `action_required` |
 | `ready-to-enqueue` | All pull-request requirements are met. | nobody | The queue script picks it up. | `success` |
@@ -483,6 +485,51 @@ There is no sticky signal: the legacy ladder keeps E2E unlocked once `lgtm` was 
 changed, for as long as no human "changes requested" review is open. In `policy` mode each signal is judged against the
 PR's state now, by its own rule. The verdict names what would unlock it; when suites need different signals it joins
 their requirements with "and".
+
+### Locks (`locks:`)
+
+A lock holds a job back until something says it may start. It is how any job, not only E2E, can wait for a person, and
+it is reported as **locked**: yellow (`action_required`), never red, and never a pass.
+
+```yaml
+locks:
+  membership:                       # who is asking
+    open_when: [org-member, trusted-bot, authorized-commit]          # any one opens it
+  cost:                             # has anyone looked at it
+    open_when: [human-approval, coderabbit-approval]
+    block_on_changes_requested: true
+jobs:
+  e2e-vmaas:  {kind: e2e, check: e2e-vmaas-gate, suite: vmaas, locks: [membership, cost]}
+  e2e-bmaas:  {kind: e2e, check: e2e-bmaas-gate, suite: bmaas/sanity, locks: [membership, cost],
+               lock_overrides: {cost: [human-approval]}}               # this suite needs a person
+  unit-tests: {check: "Run unit tests", locks: [membership]}           # any job can be locked
+default_locks: [membership]                                            # every job unless it says locks: []
+```
+
+- A job is open when **every** lock it names is open; a lock is open when **any one** of its signals holds. The first
+  closed lock, in the order the job lists them, is the one reported.
+- Signals about who is asking: `org-member` (the author or the owner of the fork is a member, or the PR comes from a
+  branch of the repository itself), `trusted-bot`, `authorized-commit` (`/ok-to-test <full sha>`, or the label in label
+  mode, as `trust.authorization` says). Signals about review: `human-approval`, `coderabbit-approval`, `lgtm-label`,
+  `e2e-ready-label`, with the meanings of the E2E unlock. `legacy-readiness` is today's osac-test-infra ladder as it is,
+  sticky `lgtm` included, and must stand alone in its lock. A lock that uses it describes the current behavior exactly.
+- `needs_readiness: true` keeps working and means the legacy gate; a job uses it or `locks`, not both, and it takes no
+  `default_locks`. A policy written with locks (`membership` and a `cost` lock using `legacy-readiness`, or the signals
+  of `e2e.unlock`) gives the same verdict as the same policy written with `needs_readiness`, for any pull request.
+  A property test checks this over random pull requests and four policy shapes, and a replay over open `osac` pull
+  requests agreed on the state of all 100 of them.
+- **Locked, not failed and not passed.** While a job has no result of its own, a closed lock holds it and its own check
+  is ignored. A job that ran keeps its result (success, failure, cancelled) whatever the locks say now. A check that
+  was *skipped* is no result, because GitHub counts a skipped required check as a pass, with one exception: when the
+  path filters say the job does not apply to these files, a skip is the workflow reporting "nothing to do" (real pull
+  requests show it) and it stands. A job that does not apply is `not-applicable`, never locked. Locks are not
+  evaluated for a merge-queue commit.
+- States: a membership lock gives `needs-authorization`, any other lock gives `awaiting-unlock`. Both come after failed
+  checks and approval, as the E2E ones always did.
+- This only reports. It starts nothing and stops nothing: the workflows still decide whether a job runs. The one
+  difference from the old form that shows today is a skipped E2E gate of a pull request that was never unlocked: the
+  old form calls it passed, the lock form calls it locked. On the open `osac` pull requests that was the only difference,
+  on about a third of them, and the state of the PR was the same on all of them.
 
 ### Native approval (`approval:`)
 

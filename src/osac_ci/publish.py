@@ -57,6 +57,7 @@ OUTCOME: dict[State, tuple[str, str | None]] = {
     State.CHECKS_FAILED: PERSON_NEEDED,
     State.AWAITING_APPROVAL: PERSON_NEEDED,
     State.AWAITING_E2E_SIGNAL: PERSON_NEEDED,
+    State.AWAITING_UNLOCK: PERSON_NEEDED,
     State.E2E_FAILED: PERSON_NEEDED,
     # A failed required check on a queue commit is a real failure, not an unmet condition, and it must be red: an
     # action_required check would leave the entry waiting for its timeout instead of being ejected.
