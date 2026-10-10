@@ -29,7 +29,7 @@ from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
 from osac_ci.planner import plan_or_error
 from osac_ci.policy import PolicyError, load_policy
-from osac_ci.publish import CHECK_NAME, describe, publish_pr, publish_queue, sweep
+from osac_ci.publish import CHECK_NAME, describe, find_open_prs, publish_pr, publish_queue, sweep
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
@@ -216,6 +216,12 @@ def _parser() -> argparse.ArgumentParser:
     auth.add_argument("--org", help="org used for the membership check (default: the repo owner)")
     auth.add_argument("--dry-run", action="store_true", help="decide, but post neither the check nor the reply")
 
+    fnd = sub.add_parser("find-pr", help="print the number of the open PR(s) a workflow run belongs to, one per line")
+    fnd.add_argument("--repo", required=True, help="owner/name")
+    fnd.add_argument("--sha", default="", help="head commit of the run (exact; tried first)")
+    fnd.add_argument("--owner", default="", help="owner of the repository the run's branch is in")
+    fnd.add_argument("--branch", default="", help="the run's branch")
+
     ovr = sub.add_parser(
         "override",
         help="handle an /override <sha> <reason> comment: waive the protected-path approval (text from env)",
@@ -246,6 +252,15 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "find-pr":
+        try:
+            numbers = find_open_prs(build_client(), args.repo, sha=args.sha, owner=args.owner, branch=args.branch)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: find-pr failed: {exc}", file=sys.stderr)
+            return 3
+        print("\n".join(str(n) for n in numbers))
+        return 0
+
     try:
         policy = load_policy(args.policy)
     except PolicyError as exc:

@@ -208,6 +208,37 @@ def publish_queue(
     return Outcome(0, sha, verdict.state, status, conclusion, "created", body["output"]["title"])
 
 
+_FIND_PAGES = 3  # 300 open pull requests, most recently updated first: a PR that just changed is near the top
+
+
+def find_open_prs(client: GitHubClient, repo: str, *, sha: str = "", owner: str = "", branch: str = "") -> list[int]:
+    """The open pull requests a workflow run belongs to, from what the run says about itself.
+
+    The head commit is exact and is tried first. It also covers a run started by a review, which reports the base
+    repository as its head repository (and the fork's branch name), so the owner and branch of such a run name nothing.
+    Only when no open PR has that head, and the run gave an owner and a branch, is the open PR with that head owner and
+    branch used (a run on a fork reports both correctly). Nothing is guessed: no match is an empty list."""
+    repo = check_repo(repo)
+    if sha:
+        if not COMMIT_SHA.match(sha):
+            raise ValueError(f"invalid commit sha: {sha!r}")
+        for page in range(1, _FIND_PAGES + 1):
+            batch = get(
+                client,
+                f"/repos/{repo}/pulls",
+                {"state": "open", "sort": "updated", "direction": "desc", "per_page": "100", "page": str(page)},
+            )
+            found = [int(pr["number"]) for pr in batch if (pr.get("head") or {}).get("sha") == sha]
+            if found:
+                return found
+            if len(batch) < 100:
+                break
+    if owner and branch:
+        batch = get(client, f"/repos/{repo}/pulls", {"state": "open", "head": f"{owner}:{branch}", "per_page": "10"})
+        return [int(pr["number"]) for pr in batch]
+    return []
+
+
 def select_prs(
     prs: Sequence[dict[str, Any]], *, recent: int | None, rotate: int | None, tick: int, limit: int | None = None
 ) -> list[dict[str, Any]]:
