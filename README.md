@@ -552,6 +552,39 @@ post a block of its own. A job that reads it only decides whether to spend runne
 delete that step. Anything that spends money or uses a secret must not read it; it asks the planner from a workflow the
 pull request cannot edit. The verdict itself never depends on this block.
 
+#### Leaving a cheap job out (`lock-gate`)
+
+For a job that only costs runner minutes, the composite action `.github/actions/lock-gate` reads the lock fact above and
+answers `locked`, `open`, `not-applicable` or `unknown`. Put it in a job of its own and make the real job depend on it
+with a job-level `if`:
+
+```yaml
+gate:
+  runs-on: ubuntu-latest
+  outputs: {locked: "${{ steps.gate.outputs.locked }}"}
+  steps:
+    - id: gate
+      uses: osac-project/osac-ci/.github/actions/lock-gate@<full sha>
+      with: {repo: "${{ github.repository }}", sha: "${{ github.event.pull_request.head.sha }}", job: unit-tests}
+unit-tests:
+  needs: gate
+  if: needs.gate.outputs.locked != 'true'
+```
+
+- **Skip the job, not its steps.** A job whose steps are all skipped still ends as a success, which both GitHub and
+  OSAC CI read as a result, so the lock would turn into a pass. A job skipped by its own `if` ends as `skipped`, which is
+  not a result: OSAC CI keeps reporting it as locked, and shows it yellow, not red.
+- **Only `locked` leaves the job out.** `open`, `not-applicable` and `unknown` (no fact yet, an API error) all run it. A
+  gate that cannot tell never blocks work.
+- `wait-seconds` (0 to 300, default 0) waits for OSAC CI to post its check on the commit. Right after a push the
+  workflows start before the check exists, so without a wait the first run of a new commit usually sees `unknown`.
+- A job that was left out does not start by itself when the lock opens. Something has to run it again: today a person or
+  a re-run, and later the trusted starter that opens locks (the next step of the design). Until then this is for trying
+  locks out, not for production gating.
+- This is advisory, like the fact it reads. A pull request can remove the gate from its own copy of the workflow, and
+  any workflow can write a check run of any name. Jobs that spend money or use a secret must be started by a workflow the
+  pull request cannot edit.
+
 ### Native approval (`approval:`)
 
 A policy with an `approval:` section decides approval from GitHub reviews and CODEOWNERS, not from labels:
