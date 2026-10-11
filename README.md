@@ -870,9 +870,8 @@ this order:
 | `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
 | `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
 | `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit, has approved the head commit; the author cannot approve their own PR |
-| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
-| `wait-cheap-checks` | a cheap check has not finished or has not reported |
-| `start` | none of the above; the suites to start are listed |
+| `blocked-cheap-checks-failed` | a cheap check has already failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
+| `start` | none of the above; the suites to start are listed. Cheap checks that are still running or have not reported do not delay it: the E2E runs in parallel with them (both must pass for the merge), and they are listed in the reason |
 
 An approval counts only when it is on the current head commit. GitHub keeps an approval through a clean rebase and moves it
 to the new head (the repository has to dismiss stale approvals on push, so a real change drops it); a review left on an
@@ -893,7 +892,7 @@ would start on `false`. A job that needs the list of pull requests reads the JSO
 
 ### Keeping the pull request's E2E status
 
-The full-install E2E starts from a workflow on the default branch, after the pull request is approved and CI has passed, so
+The full-install E2E starts from a workflow on the default branch, after the pull request is approved (CI runs in parallel and is not waited for), so
 its jobs are not on the pull request. A required check that has not reported blocks the merge without saying why. These two
 commands give the pull request ONE commit status named `E2E` and keep it up to date, from the first push to the result. It is
 a commit status and not a check run on purpose: the pull request page draws statuses, but not check runs that a workflow
@@ -910,7 +909,7 @@ reason in 140 characters; the link goes to the workflow run, whose job summary h
 
 | Answer | The status |
 |---|---|
-| `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
+| `wait-approval`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
 | `skip-not-applicable` | success, "Not affected by this change" |
 | `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only. The same step writes `E2E / <Suite>` as "Waiting for a runner" for each suite, so the lines appear together |
 | `skip-closed` | nothing |
