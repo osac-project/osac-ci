@@ -869,7 +869,7 @@ this order:
 | `skip-closed`, `skip-draft` | the PR is not open, or is a draft |
 | `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
 | `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
-| `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit, has approved the head commit; the author cannot approve their own PR |
+| `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit or the OSAC CI app (`osac-ci[bot]`, which approves dependency updates), has approved the head commit; the author cannot approve their own PR |
 | `blocked-cheap-checks-failed` | a cheap check has already failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
 | `start` | none of the above; the suites to start are listed. Cheap checks that are still running or have not reported do not delay it: the E2E runs in parallel with them (both must pass for the merge), and they are listed in the reason |
 
@@ -880,7 +880,7 @@ approved by a stale review. The summary also lists the E2E checks that are alrea
 current label-based flow did, so the two can be compared.
 
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
-commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
+commit of osac-ci like the publish action. The workflow decides when, and it never waits for the cheap workflows: it asks when a pull request gets a push (so the status says what it waits for), after a review, and when the pull request changes between draft and ready. The E2E starts as soon as the approval is there, in parallel with the cheap workflows.
 
 Besides `json-file` it has three outputs for a job that acts on the answer: `ready` (`true` only when exactly one pull
 request was evaluated and the answer is `start`; every other case, including no pull request found or several with the same
