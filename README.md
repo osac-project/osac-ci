@@ -880,7 +880,7 @@ approved by a stale review. The summary also lists the E2E checks that are alrea
 current label-based flow did, so the two can be compared.
 
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
-commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
+commit of osac-ci like the publish action. The workflow decides when, and it never waits for the cheap workflows: it asks when a pull request gets a push (so the status says what it waits for), after a review, and when the pull request changes between draft and ready. The E2E starts as soon as the approval is there, in parallel with the cheap workflows.
 
 Besides `json-file` it has three outputs for a job that acts on the answer: `ready` (`true` only when exactly one pull
 request was evaluated and the answer is `start`; every other case, including no pull request found or several with the same
