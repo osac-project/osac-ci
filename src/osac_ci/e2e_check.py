@@ -142,7 +142,8 @@ def waiting_description(entry: Mapping[str, Any]) -> str:
     action = str(entry.get("action", ""))
     title = WAITING_TITLES.get(action, f"Waiting: {action}")
     reason = str(entry.get("reason", "")).strip()
-    return describe(f"{title}: {reason}" if reason else title)
+    # a reason that only says again what the title says (a draft) is left out
+    return describe(f"{title}: {reason}" if reason and reason.lower() not in title.lower() else title)
 
 
 def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callable[[int], bool]) -> Outcome:
