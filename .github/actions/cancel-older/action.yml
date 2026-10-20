@@ -1,0 +1,68 @@
+name: Cancel the E2E of older commits
+description: >-
+  Cancel the runs of the E2E workflow that are for an older commit of a pull request, which are of no use any more and hold
+  a runner. A run is found by the commit its title ends with (`... @ <40 hex digits>`), whatever the rest of the title
+  says, and belongs to the pull request when that commit is one of its commits. Called from a workflow of osac-ci, pinned
+  to a commit, like the other actions.
+
+# The calling workflow holds the token (its own, with actions write). This action never checks out the calling repository,
+# so it cannot run pull request code. Every input reaches the shell through an environment variable, never through the
+# script text. A run title is data: it is read as JSON and only its last ` @ ` part is used, which must be a commit.
+inputs:
+  github-token:
+    description: Token that lists and cancels workflow runs and reads the pull request (actions write, pull requests read)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number
+    required: true
+  head-sha:
+    description: The head commit of the pull request that was decided on (40 hex digits); its runs are left alone
+    required: true
+  workflow-ref:
+    description: >-
+      `github.workflow_ref` of the calling job: in a called workflow it names the caller's workflow file (for example
+      `o/r/.github/workflows/e2e-pr.yml@refs/heads/main`), whose runs are looked at
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Cancel
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        CURRENT: ${{ inputs.head-sha }}
+        WORKFLOW_REF: ${{ inputs.workflow-ref }}
+      run: |
+        set -euo pipefail
+        [[ "${NUMBER}" =~ ^[0-9]+$ ]] || { echo "::error::The pull request number must be digits only."; exit 1; }
+        [[ "${CURRENT}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The head commit must be 40 lower-case hex digits."; exit 1; }
+        WORKFLOW_FILE=$(basename "${WORKFLOW_REF%%@*}")
+        [[ "${WORKFLOW_FILE}" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] || { echo "::error::The workflow reference must name a workflow file."; exit 1; }
+        # The commits of the pull request (GitHub lists up to 250): a run of an older one is a run for this pull request,
+        # whatever its title says before the commit (the repository and branch used to be there, and a fork or two can
+        # share both).
+        commits=$(gh api --paginate "repos/${REPO}/pulls/${NUMBER}/commits" --jq '.[].sha')
+        for status in queued waiting pending in_progress; do
+          gh run list --repo "${REPO}" --workflow "${WORKFLOW_FILE}" --status "${status}" --limit 100 \
+            --json databaseId,displayTitle \
+          | jq -r --arg current "${CURRENT}" \
+              '.[] | select(.displayTitle | endswith($current) | not)
+               | "\(.databaseId) \(.displayTitle | split(" @ ") | last)"'
+        done | while read -r id sha; do
+          # Only a title that ends with a commit of this pull request is one of its runs (the rest of the title is free).
+          grep -qx "${sha}" <<<"${commits}" || continue
+          # Never cancel the run of a commit that belongs to another open pull request too.
+          others=$(gh api "repos/${REPO}/commits/${sha}/pulls" --jq "[.[] | select(.state == \"open\" and .number != ${NUMBER})] | length")
+          if [[ "${others}" != "0" ]]; then
+            echo "Leaving run ${id}: its commit belongs to another open pull request"
+            continue
+          fi
+          echo "Cancelling run ${id}, which is for an older commit"
+          gh run cancel "${id}" --repo "${REPO}" || echo "run ${id} already finished"
+        done

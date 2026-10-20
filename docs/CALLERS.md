@@ -34,12 +34,14 @@ Call each one by a full commit SHA of an osac-ci release, with the tag in a comm
 
 ```yaml
 name: E2E for pull requests
-# The decision cancels the E2E of older commits by reading run titles: keep this exact format.
+# The decision cancels the E2E of older commits by the commit a run title ENDS with (` @ <head sha>`); the rest is free.
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch' && format('E2E #{0} (started by hand)', inputs.number) ||
   github.event_name == 'issue_comment' && format('E2E #{0} (suites checked in the comment)', github.event.issue.number) ||
-  format('E2E {0}:{1} @ {2}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch,
-  github.event.workflow_run.head_sha) }}
+  github.event.workflow_run.pull_requests[0].number && format('E2E #{0} · {1} @ {2}',
+  github.event.workflow_run.pull_requests[0].number, github.event.workflow_run.display_title,
+  github.event.workflow_run.head_sha) ||
+  format('E2E · {0} @ {1}', github.event.workflow_run.display_title, github.event.workflow_run.head_sha) }}
 
 on:
   workflow_run:
@@ -115,6 +117,15 @@ The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay`
 `pull_request_review` and on `pull_request` `ready_for_review`, `converted_to_draft`, `enqueued`, `dequeued`,
 `auto_merge_enabled` and `auto_merge_disabled`; finishing wakes `e2e-pr.yml`, which refreshes the control comment (the
 last four are what keep its merge queue and auto-merge rows current).
+
+### The run title
+
+The title of a run of `e2e-pr.yml` is what you scan in the Actions tab, so it starts with what you look for: `E2E #1703 ·
+OSAC-6228: constrain catalog architecture @ <sha>` (the number of the pull request, when GitHub gives it for the run, which
+it does not for a pull request from a fork, then the title of the pull request: `E2E · <title> @ <sha>`). The commit has to
+stay at the end, as ` @ <40 hex digits>`: the decision cancels the runs of older commits of a pull request by it, and an
+expression cannot shorten it. Before the title was `E2E <repository>:<branch> @ <sha>`; runs with that title are still
+found.
 
 ## The caller of the early comment (`.github/workflows/e2e-comment.yml`)
 

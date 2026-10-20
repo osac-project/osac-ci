@@ -34,8 +34,10 @@
 #     types requested, completed), on
 #     `workflow_dispatch` with a `number` input, and on `issue_comment` (types edited, for the boxes of the comment, and
 #     created, for a `/test` comment);
-#   * set `run-name` to `E2E <head repository>:<head branch> @ <head sha>` for a `workflow_run` (the cancel step reads run
-#     titles, because a run of a workflow_run belongs to the default branch, not to the pull request commit);
+#   * set `run-name` so that the title of a run for a `workflow_run` ENDS with ` @ <head sha>` (the cancel step reads the
+#     commit from the end of the title, because a run of a workflow_run belongs to the default branch, not to the pull
+#     request commit, and finds the runs of older commits of the pull request by it). The rest of the title is free: the
+#     number and the title of the pull request make it easy to find (see docs/CALLERS.md);
 #   * give the calling job at least these permissions: contents read, pull-requests read, checks read, actions write;
 #   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`).
 name: E2E pull request decision
@@ -322,39 +324,14 @@ jobs:
       # The E2E of an older commit of this pull request is of no use any more, and it holds a runner. Only a decision
       # that found the pull request still at this commit gets here, so a late event for an old commit cancels nothing.
       # The caller's workflow file is found from `github.workflow_ref` (in a called workflow it names the caller).
-      - name: Cancel the E2E of older commits
+      - uses: $/.github/actions/cancel-older
         if: steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ steps.report.outputs.number }}
-          DECISION: ${{ steps.decide.outputs.json-file }}
-          WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          set -euo pipefail
-          workflow_file=$(basename "${WORKFLOW_REF%%@*}")
-          current=$(jq -r '.[0].head_sha' "${DECISION}")
-          # The run title names the repository and branch of the event: the fork for a CI run, this repository for a
-          # run started by a review. Match both, from the pull request itself.
-          branch=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.ref')
-          head_repo=$(gh api "repos/${REPO}/pulls/${NUMBER}" --jq '.head.repo.full_name // empty')
-          for status in queued waiting pending in_progress; do
-            gh run list --repo "${REPO}" --workflow "${workflow_file}" --status "${status}" --limit 100 \
-              --json databaseId,displayTitle \
-            | jq -r --arg a "E2E ${REPO}:${branch} @ " --arg b "E2E ${head_repo}:${branch} @ " --arg current "${current}" \
-                '.[] | select((.displayTitle | startswith($a)) or (.displayTitle | startswith($b))) | select(.displayTitle | endswith($current) | not) | "\(.databaseId) \(.displayTitle | split(" @ ") | last)"'
-          done | while read -r id sha; do
-            # A title names a repository and a branch, and two fork pull requests can share both (a branch called
-            # main, say). Never cancel the run of a commit that belongs to another open pull request.
-            [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || { echo "Leaving run ${id}: no commit in its title"; continue; }
-            others=$(gh api "repos/${REPO}/commits/${sha}/pulls" --jq "[.[] | select(.state == \"open\" and .number != ${NUMBER})] | length")
-            if [[ "${others}" != "0" ]]; then
-              echo "Leaving run ${id}: its commit belongs to another open pull request"
-              continue
-            fi
-            echo "Cancelling run ${id}, which is for an older commit"
-            gh run cancel "${id}" --repo "${REPO}" || echo "run ${id} already finished"
-          done
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.report.outputs.number }}
+          head-sha: ${{ steps.report.outputs.sha }}
+          workflow-ref: ${{ github.workflow_ref }}
 
   # The review relay only wakes the caller. Once it has, its run is of no use and its row on the pull request is noise,
   # so delete it (a deleted run takes its check rows with it). Only a relay that succeeded: a failed one stays, to be
