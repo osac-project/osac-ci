@@ -10,7 +10,7 @@ import pytest
 
 from osac_ci import e2e_check, manual_run
 from osac_ci.compare import Requirement
-from osac_ci.e2e_start import NEEDED, Action, Inputs, Suite, decide, to_json
+from osac_ci.e2e_start import NEEDED, Action, Inputs, Review, Suite, decide, to_json
 from osac_ci.github.api import GitHubError, Response
 from osac_ci.model import CheckRun
 
@@ -114,8 +114,6 @@ def test_the_automatic_decision_never_chooses_a_hand_only_suite() -> None:
 
 # suites that passed by hand are not run again by the approval ------------------------------------------------------
 
-from osac_ci.e2e_start import Review  # noqa: E402
-
 
 def approved() -> tuple[Review, ...]:
     return (Review("bob", "APPROVED", "MEMBER", HEAD, permission="write"),)
@@ -179,6 +177,8 @@ class Fake:
         self.delete_status = 204
         self.patch_status = 200
         self.reviews: list[dict[str, Any]] = []
+        self.roles: dict[str, str] = {"carol": "write", "dave": "write"}
+        self.roles_status = 200
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -192,6 +192,11 @@ class Fake:
             return Response(200, self.pr, {})
         if method == "GET" and path == f"/repos/{REPO}/pulls/7/reviews":
             return Response(200, self.reviews, {})
+        if method == "GET" and path.startswith(f"/repos/{REPO}/collaborators/") and path.endswith("/permission"):
+            user = path.split("/")[-2]
+            if self.roles_status != 200:
+                return Response(self.roles_status, {}, {})
+            return Response(200 if user in self.roles else 404, {"permission": self.roles.get(user, "none")}, {})
         if method == "POST" and path.endswith("/check-runs"):
             self.runs.append({"name": body["name"], "status": body.get("status"), "conclusion": body.get("conclusion")})  # type: ignore[index]
             return Response(201, {}, {})
@@ -714,7 +719,20 @@ def app_check(name: str, conclusion: str | None, title: str = "") -> dict[str, A
 
 
 def review(login: str, state: str, commit: str = HEAD, at: str = "2026-10-10T10:00:00Z") -> dict[str, Any]:
-    return {"user": {"login": login}, "state": state, "commit_id": commit, "submitted_at": at}
+    """A review as GitHub lists it."""
+    return {"user": {"login": login, "type": "User"}, "state": state, "commit_id": commit, "submitted_at": at}
+
+
+def rv(
+    login: str,
+    state: str,
+    commit: str = HEAD,
+    at: str = "2026-10-10T10:00:00Z",
+    permission: str = "write",
+    kind: str = "User",
+) -> Review:
+    """A review the way the decision reads it: with the reviewer's role."""
+    return Review(login, state, "", commit, at, permission, kind)
 
 
 OLD = "b" * 40
@@ -795,33 +813,83 @@ def test_a_failed_ci_names_the_checks_that_failed_but_not_the_e2e_lines_or_a_che
     assert passing is not None and passing.failed == ()
 
 
+LATER = "2026-10-10T11:00:00Z"
+
+
 @pytest.mark.parametrize(
     ("reviews", "kind", "who"),
     [
         ([], "waiting", ()),
-        ([review("a", "COMMENTED")], "waiting", ()),
-        ([review("a", "APPROVED")], "approved", ("a",)),
-        ([review("b", "APPROVED"), review("a", "APPROVED")], "approved", ("a", "b")),
-        ([review("a", "APPROVED", OLD)], "older", ("a",)),
-        ([review("a", "APPROVED", OLD), review("b", "APPROVED")], "approved", ("b",)),
-        ([review("a", "APPROVED"), review("a", "DISMISSED", at="2026-10-10T11:00:00Z")], "waiting", ()),
-        ([review("a", "APPROVED"), review("a", "COMMENTED", at="2026-10-10T11:00:00Z")], "approved", ("a",)),
-        ([review("a", "CHANGES_REQUESTED"), review("a", "APPROVED", at="2026-10-10T11:00:00Z")], "approved", ("a",)),
-        ([review("a", "APPROVED"), review("a", "CHANGES_REQUESTED", at="2026-10-10T11:00:00Z")], "changes", ("a",)),
-        ([review("a", "APPROVED"), review("b", "CHANGES_REQUESTED")], "changes", ("b",)),
-        ([review("a", "PENDING")], "waiting", ()),
-        ([{"user": None, "state": "APPROVED", "commit_id": HEAD}], "waiting", ()),
+        ([rv("a", "COMMENTED")], "waiting", ()),
+        ([rv("a", "APPROVED")], "approved", ("a",)),
+        ([rv("b", "APPROVED"), rv("a", "APPROVED")], "approved", ("a", "b")),
+        ([rv("a", "APPROVED", OLD)], "older", ("a",)),
+        ([rv("a", "APPROVED", OLD), rv("b", "APPROVED")], "approved", ("b",)),
+        ([rv("a", "APPROVED"), rv("a", "DISMISSED", at=LATER)], "waiting", ()),
+        ([rv("a", "APPROVED"), rv("a", "COMMENTED", at=LATER)], "approved", ("a",)),
+        ([rv("a", "CHANGES_REQUESTED"), rv("a", "APPROVED", at=LATER)], "approved", ("a",)),
+        ([rv("a", "APPROVED"), rv("a", "CHANGES_REQUESTED", at=LATER)], "changes", ("a",)),
+        ([rv("a", "APPROVED"), rv("b", "CHANGES_REQUESTED")], "changes", ("b",)),
+        ([rv("a", "PENDING")], "waiting", ()),
+        # who may approve: the role of a person counts, as in the decision
+        ([rv("a", "APPROVED", permission="admin")], "approved", ("a",)),
+        ([rv("a", "APPROVED", permission="maintain")], "approved", ("a",)),
+        ([rv("a", "APPROVED", permission="triage")], "waiting", ()),
+        ([rv("a", "APPROVED", permission="read")], "waiting", ()),
+        ([rv("a", "APPROVED", permission="none")], "waiting", ()),
+        ([rv("a", "APPROVED", permission="")], "waiting", ()),
+        ([rv("a", "CHANGES_REQUESTED", permission="read"), rv("b", "APPROVED")], "approved", ("b",)),
+        ([rv("author", "APPROVED")], "waiting", ()),  # the author does not approve their own pull request
+        # CodeRabbit counts on a branch of the repository, never blocks
+        ([rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot")], "approved", ("coderabbitai[bot]",)),
+        ([rv("coderabbitai[bot]", "CHANGES_REQUESTED", permission="", kind="Bot")], "waiting", ()),
+        (
+            [rv("coderabbitai[bot]", "CHANGES_REQUESTED", permission="", kind="Bot"), rv("a", "APPROVED")],
+            "approved",
+            ("a",),
+        ),
     ],
 )
-def test_the_approval_is_read_from_the_newest_review_of_each_person_on_the_head_commit(
-    reviews: list[dict[str, Any]], kind: str, who: tuple[str, ...]
+def test_the_approval_follows_the_rule_of_the_decision_on_the_head_commit(
+    reviews: list[Review], kind: str, who: tuple[str, ...]
 ) -> None:
-    assert manual_run.approval_of(reviews, HEAD) == (kind, who)
+    assert manual_run.approval_of(reviews, HEAD, "author", False)[:2] == (kind, who)
+
+
+@pytest.mark.parametrize(
+    ("reviews", "kind", "who"),
+    [
+        ([rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot")], "waiting", ()),  # not on a fork
+        ([rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot"), rv("a", "APPROVED")], "approved", ("a",)),
+        ([rv("some-app", "APPROVED", permission="write", kind="Bot")], "waiting", ()),  # a person only, on a fork
+        ([rv("a", "APPROVED", permission="write")], "approved", ("a",)),
+    ],
+)
+def test_on_a_fork_only_a_person_with_write_access_counts(
+    reviews: list[Review], kind: str, who: tuple[str, ...]
+) -> None:
+    assert manual_run.approval_of(reviews, HEAD, "author", True)[:2] == (kind, who)
+
+
+def test_an_approval_that_does_not_count_is_named_so_the_row_does_not_say_approved() -> None:
+    reviews = [rv("outsider", "APPROVED", permission="read"), rv("author", "APPROVED"), rv("a", "COMMENTED")]
+    assert manual_run.approval_of(reviews, HEAD, "author", False) == ("waiting", (), ("author", "outsider"))
+    assert manual_run.approval_of([rv("b", "APPROVED"), *reviews], HEAD, "author", False) == (
+        "approved",
+        ("b",),
+        ("author", "outsider"),
+    )
+    assert (
+        manual_run.approval_of(
+            [rv("x", "APPROVED", permission="read"), rv("x", "DISMISSED", at=LATER)], HEAD, "a", False
+        )[2]
+        == ()
+    )
 
 
 def full_status(**changes: Any) -> manual_run.PrStatus:
     base = manual_run.PrStatus(
-        "approved", ("alice",), manual_run.CheckView("passed", "https://x/CI"), manual_run.CheckView("passed", "https://x/J"),
+        "approved", ("alice",), (), manual_run.CheckView("passed", "https://x/CI"), manual_run.CheckView("passed", "https://x/J"),
         manual_run.CheckView("passed", "https://x/e2e", "Passed: all suites"), "squash",
     )  # fmt: skip
     return replace(base, **changes)
@@ -857,6 +925,14 @@ def test_each_state_of_the_pull_request_has_its_own_row() -> None:
         approval="older", approvers=("a",)
     )
     assert "- ❌ **Approval:** changes requested by `a`, `b`" in rows(approval="changes", approvers=("a", "b"))
+    assert (
+        "waiting for an approval (an approval by `x`, `y` does not count: not from someone who may approve here)"
+        in rows(approval="waiting", approvers=(), ignored=("x", "y"))
+    )
+    assert "- ❔ **Approval:** the reviews show an approval by `a`; who may approve could not be checked" in rows(
+        approval="unchecked", approvers=("a",)
+    )
+    assert "- ⏳ **Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
     assert "- ❌ **CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
     assert "- ⏳ **CI:** running" in rows(ci=manual_run.CheckView("active"))
     assert "- 🚫 **CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
@@ -890,18 +966,41 @@ def test_a_comment_with_no_status_yet_says_it_is_loading_and_keeps_the_markers()
 
 
 def test_the_status_of_a_pull_request_comes_from_its_data_its_reviews_and_its_checks() -> None:
-    pr = {"head": {"sha": HEAD}, "draft": True, "mergeable_state": "dirty", "auto_merge": {"merge_method": "squash"}}
+    mine = {"full_name": REPO}
+    pr = {"head": {"sha": HEAD, "repo": mine}, "user": {"login": "author"}, "draft": True, "mergeable_state": "dirty",
+          "auto_merge": {"merge_method": "squash"}}  # fmt: skip
     runs = [actions_check("CI"), actions_check("jira-reference", "failure"), app_check("E2E", "success", "Passed")]
-    status = manual_run.pr_status(pr, [review("alice", "APPROVED")], runs)
+    status = manual_run.pr_status(pr, [rv("alice", "APPROVED")], runs, repo=REPO)
     assert status.approval == "approved" and status.approvers == ("alice",)
     assert status.ci is not None and status.ci.state == "passed"
     assert status.jira is not None and status.jira.state == "failed"
     assert status.e2e == manual_run.CheckView("passed", "https://x/e2e", "Passed")
     assert status.auto_merge == "squash" and status.draft and status.conflict
-    plain = manual_run.pr_status({"head": {"sha": HEAD}, "auto_merge": None, "mergeable_state": "clean"}, [], [])
-    assert plain == manual_run.PrStatus("waiting") and not plain.auto_merge
-    assert manual_run.pr_status({"head": {"sha": HEAD}, "auto_merge": {}}, [], []).auto_merge == "on"
-    assert manual_run.pr_status({}, [], []).approval == "waiting"  # a pull request with no head says nothing
+    plain = {"head": {"sha": HEAD, "repo": mine}, "auto_merge": None, "mergeable_state": "clean"}
+    assert manual_run.pr_status(plain, [], [], repo=REPO) == manual_run.PrStatus("waiting")
+    assert manual_run.pr_status({**plain, "auto_merge": {}}, [], [], repo=REPO).auto_merge == "on"
+    assert manual_run.pr_status({}, [], [], repo=REPO).approval == "waiting"  # a pull request with no head says nothing
+
+
+def test_a_pull_request_from_another_repository_is_a_fork_for_the_approval() -> None:
+    coderabbit = [rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot")]
+    own = {"head": {"sha": HEAD, "repo": {"full_name": REPO}}, "user": {"login": "author"}}
+    fork = {"head": {"sha": HEAD, "repo": {"full_name": "someone/r"}}, "user": {"login": "author"}}
+    assert manual_run.pr_status(own, coderabbit, [], repo=REPO).approval == "approved"
+    assert manual_run.pr_status(fork, coderabbit, [], repo=REPO).approval == "waiting"
+    gone = {"head": {"sha": HEAD, "repo": None}, "user": {"login": "author"}}  # the fork was deleted
+    assert manual_run.pr_status(gone, coderabbit, [], repo=REPO).approval == "waiting"
+    assert manual_run.pr_status(own, coderabbit, [], repo="O/R").approval == "approved", (
+        "the repository name has no case"
+    )
+
+
+def test_when_the_roles_cannot_be_read_the_row_says_what_the_reviews_show_and_not_approved() -> None:
+    pr = {"head": {"sha": HEAD, "repo": {"full_name": REPO}}, "user": {"login": "author"}}
+    status = manual_run.pr_status(
+        pr, [rv("a", "APPROVED", permission=""), rv("b", "APPROVED", OLD)], [], repo=REPO, roles_known=False
+    )
+    assert status.approval == "unchecked" and status.approvers == ("a",) and status.ignored == ()
 
 
 def test_a_refresh_writes_the_status_and_follows_the_pull_request() -> None:
@@ -911,12 +1010,32 @@ def test_a_refresh_writes_the_status_and_follows_the_pull_request() -> None:
     body = fake.comments[0]["body"]
     assert "**Approval:** waiting" in body and "**CI:** [running]" in body and "**Auto-merge:** off" in body
     fake.runs[0] = actions_check("CI", "success")
-    fake.reviews = [review("alice", "APPROVED")]
+    fake.reviews = [review("carol", "APPROVED")]
     fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "approved by `alice`" in body and "**CI:** [passed]" in body and "**Auto-merge:** on (squash)" in body
+    assert "approved by `carol`" in body and "**CI:** [passed]" in body and "**Auto-merge:** on (squash)" in body
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "unchanged"  # type: ignore[arg-type]
+
+
+def test_a_refresh_asks_for_the_role_of_each_reviewer_and_does_not_count_who_may_not_approve() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.reviews = [review("erin", "APPROVED"), review("alice", "APPROVED")]  # erin has no role; alice is the author
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    body = fake.comments[0]["body"]
+    assert "waiting for an approval (an approval by `alice`, `erin` does not count" in body
+    asked = [p[1] for p in fake.posted if "/collaborators/" in p[1]]
+    assert asked == [f"/repos/{REPO}/collaborators/erin/permission"], "the author is not asked about"
+
+
+def test_a_refresh_that_cannot_read_the_roles_does_not_say_approved() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.reviews = [review("carol", "APPROVED")]
+    fake.roles_status = 403
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
+    body = fake.comments[0]["body"]
+    assert "the reviews show an approval by `carol`; who may approve could not be checked" in body
+    assert "approved by" not in body
 
 
 # the status block on its own ---------------------------------------------------------------------------------------
@@ -931,7 +1050,7 @@ def commented(fake: Fake, **changes: Any) -> Fake:
 def test_the_status_block_alone_is_rewritten_and_the_rest_of_the_comment_is_kept() -> None:
     fake = Fake([actions_check("CI")])
     fake.pr = {**fake.pr, "auto_merge": None}
-    fake.reviews = [review("alice", "APPROVED")]
+    fake.reviews = [review("carol", "APPROVED")]
     commented(fake)
     first = fake.comments[0]["body"]
     kept = first.replace(manual_run.NOTES_START, manual_run.NOTES_START + "\n> [!NOTE]\n> **Last request by bob**")

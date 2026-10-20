@@ -176,16 +176,24 @@ def _qualifies(review: Review, author: str, fork: bool) -> bool:
 def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """(approvers on the head commit, approvals left on an older commit, people whose latest review requests changes).
     Only people who may approve are listed; CodeRabbit never blocks (its changes-requested review is advice)."""
+    return approvals_of(inputs.reviews, inputs.head_sha, inputs.author, inputs.fork)
+
+
+def approvals_of(
+    reviews: Iterable[Review], head_sha: str, author: str, fork: bool
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """``approvals`` for the given reviews (each with the reviewer's role in ``permission``): the one rule that the
+    decision and the status of the control comment share."""
     approvers: list[str] = []
     stale: list[str] = []
     blocking: list[str] = []
-    for user, review in sorted(_latest_reviews(inputs.reviews).items()):
-        if not _qualifies(review, inputs.author, inputs.fork):
+    for user, review in sorted(_latest_reviews(reviews).items()):
+        if not _qualifies(review, author, fork):
             continue
         if review.state == "CHANGES_REQUESTED" and user not in TRUSTED_BOTS:
             blocking.append(user)
         elif review.state == "APPROVED":
-            (approvers if review.commit_id == inputs.head_sha else stale).append(user)
+            (approvers if review.commit_id == head_sha else stale).append(user)
     return tuple(approvers), tuple(stale), tuple(blocking)
 
 
@@ -447,21 +455,8 @@ def fetch_inputs(
         required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
     not_cheap = extend(flow(), policy.flow).not_cheap  # the central rules plus what this repository added
     cheap = tuple(r for r in required if r.context not in gates and r.context not in not_cheap)
-    reviews = tuple(
-        Review(
-            user=raw["user"]["login"],
-            state=raw["state"],
-            association=raw.get("author_association") or "",
-            commit_id=raw.get("commit_id") or "",
-            submitted_at=raw.get("submitted_at") or "",
-            user_type=raw["user"].get("type") or "",
-        )
-        for raw in paginate(client, f"{base}/pulls/{number}/reviews")
-        if raw.get("user")
-    )
     author = str((pr.get("user") or {}).get("login", ""))
-    permissions = _permissions(client, repo, reviews, author)
-    reviews = tuple(replace(r, permission=permissions.get(r.user, "")) for r in reviews)
+    reviews = reviews_with_roles(client, repo, paginate(client, f"{base}/pulls/{number}/reviews"), author)
     runs = tuple(
         CheckRun(
             raw["name"],
@@ -503,6 +498,51 @@ def fetch_inputs(
         request_refused=request_refused,
         comment_ignored=comment_given and not requested and not request_refused,
     )
+
+
+def unqualified_approvers(reviews: Iterable[Review], author: str, fork: bool) -> tuple[str, ...]:
+    """People whose latest review is an approval that does not count: the author, CodeRabbit on a fork, someone without
+    write access."""
+    return tuple(
+        user
+        for user, review in sorted(_latest_reviews(reviews).items())
+        if review.state == "APPROVED" and not _qualifies(review, author, fork)
+    )
+
+
+def approvals_seen(reviews: Iterable[Review], head_sha: str) -> tuple[str, ...]:
+    """The people whose newest review is an approval of ``head_sha``, with no check of who may approve: all that can be
+    said when the roles could not be read."""
+    return tuple(
+        user
+        for user, review in sorted(_latest_reviews(reviews).items())
+        if review.state == "APPROVED" and review.commit_id == head_sha
+    )
+
+
+def _review(raw: Mapping[str, Any]) -> Review:
+    return Review(
+        user=raw["user"]["login"],
+        state=raw["state"],
+        association=raw.get("author_association") or "",
+        commit_id=raw.get("commit_id") or "",
+        submitted_at=raw.get("submitted_at") or "",
+        user_type=raw["user"].get("type") or "",
+    )
+
+
+def reviews_with_roles_unread(raw_reviews: Iterable[Mapping[str, Any]]) -> tuple[Review, ...]:
+    """The reviews of a pull request with no role for any reviewer (they could not be read)."""
+    return tuple(_review(raw) for raw in raw_reviews if raw.get("user"))
+
+
+def reviews_with_roles(
+    client: GitHubClient, repo: str, raw_reviews: Iterable[Mapping[str, Any]], author: str
+) -> tuple[Review, ...]:
+    """The reviews of a pull request as the decision reads them: each with the reviewer's role on the repository."""
+    reviews = reviews_with_roles_unread(raw_reviews)
+    permissions = _permissions(client, repo, reviews, author)
+    return tuple(replace(r, permission=permissions.get(r.user, "")) for r in reviews)
 
 
 def _permissions(client: GitHubClient, repo: str, reviews: Iterable[Review], author: str) -> dict[str, str]:
