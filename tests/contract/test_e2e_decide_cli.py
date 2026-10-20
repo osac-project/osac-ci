@@ -461,9 +461,10 @@ def test_a_pending_status_line_is_a_suite_that_is_running() -> None:
     assert latest["e2e-vmaas-gate"].status == "in_progress" and latest["e2e-vmaas-gate"].app == "osac-ci"
 
 
-def test_a_status_of_someone_else_with_a_suite_s_name_is_not_a_line() -> None:
+@pytest.mark.parametrize("creator", ["mallory", "github-actions[bot]"])
+def test_a_status_of_someone_else_or_of_the_actions_bot_with_a_suite_s_name_is_not_a_line(creator: str) -> None:
     fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
-    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "success", creator="mallory")])
+    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "success", creator=creator)])
     assert decide(fetch_inputs(fake, POLICY, REPO, 7)).suites == ("vmaas", "caas", "bmaas/sanity")
 
 

@@ -116,15 +116,23 @@ def test_the_statuses_come_back_oldest_first_so_that_of_equal_times_the_newer_is
     assert [r["conclusion"] for r in runs] == [None, "success"]
 
 
-def test_only_the_named_contexts_by_our_own_writers_are_lines() -> None:
+def test_only_the_named_contexts_written_by_the_app_are_lines() -> None:
     hub = Hub()
     hub.status(VM, "success", creator="osac-ci[bot]")
-    hub.status(VM, "success", creator="github-actions[bot]")
+    hub.status(VM, "success", creator="github-actions[bot]")  # any workflow can write one of these
     hub.status(VM, "failure", creator="mallory")  # the same name, anyone else
     hub.status("license/snyk", "success")
     hub.status(CA, "success")
     runs = suite_line_runs(hub, REPO, SHA, [VM], APP)  # type: ignore[arg-type]
-    assert [(r["name"], r["conclusion"]) for r in runs] == [(VM, "success"), (VM, "success")]
+    assert [(r["name"], r["conclusion"]) for r in runs] == [(VM, "success")]
+
+
+def test_a_forged_passing_line_of_the_actions_bot_is_not_believed_by_the_sum_of_a_run_by_hand() -> None:
+    hub = Hub()
+    hub.status(VM, "success", creator="github-actions[bot]")
+    assert e2e_check.suite_states(hub, REPO, SHA, {"vmaas": VM})["vmaas"] == "none"  # type: ignore[arg-type]
+    assert "not every suite has passed" in e2e_check.finish_by_hand(hub, REPO, SHA, {"vmaas": VM}, RUN_URL, "checks")  # type: ignore[arg-type]
+    assert not [1 for kind, _ in hub.posts if kind == "check"], "the E2E check was not written"
 
 
 def test_no_contexts_asks_for_nothing_and_a_bad_commit_is_refused() -> None:
@@ -252,6 +260,13 @@ def test_tracking_and_settling_with_statuses_link_the_row_straight_to_the_job() 
     settle(hub, REPO, SHA, RUN, RUN_URL, {"vmaas": VM}, "statuses")  # type: ignore[arg-type]
     assert (hub.statuses[0]["state"], hub.statuses[0]["description"]) == ("success", "Passed")
     assert e2e_check.suite_states(hub, REPO, SHA, {"vmaas": VM})["vmaas"] == "passed"  # type: ignore[arg-type]
+
+
+def test_the_status_of_a_workflow_s_own_token_still_says_which_run_owns_an_e2e_status() -> None:
+    hub = Hub()
+    hub.status("E2E", "pending", creator="github-actions[bot]", url="https://example.invalid/o/r/actions/runs/502")
+    newest = e2e_check.newest_status(hub, REPO, SHA, "E2E", "statuses")  # type: ignore[arg-type]
+    assert newest is not None and e2e_check.run_of_url(str(newest["target_url"])) == 502
 
 
 def test_the_lines_of_an_app_that_wrote_them_as_statuses_count_as_ours_when_tracking() -> None:

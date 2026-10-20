@@ -1155,9 +1155,10 @@ def test_a_status_line_and_a_check_run_line_of_one_suite_show_the_newer() -> Non
     assert "VMaaS Full Install** · ❌ failed" in fake.comments[0]["body"]
 
 
-def test_a_status_of_someone_else_is_not_a_suite_line_in_the_comment() -> None:
+@pytest.mark.parametrize("creator", ["mallory", "github-actions[bot]"])
+def test_a_status_of_someone_else_or_of_the_actions_bot_is_not_a_suite_line_in_the_comment(creator: str) -> None:
     fake = Fake([actions_check("CI")])
-    fake.statuses = [status_line("E2E / VMaaS Full Install", "success", creator="mallory")]
+    fake.statuses = [status_line("E2E / VMaaS Full Install", "success", creator=creator)]
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
     assert "VMaaS Full Install** · ➖ not run on this commit" in fake.comments[0]["body"]
 
