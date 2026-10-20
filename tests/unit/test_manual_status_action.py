@@ -38,7 +38,7 @@ def test_the_auto_merge_job_refreshes_the_status_after_it_has_enabled_auto_merge
     steps = job["steps"]
     assert [s.get("name") or s["uses"] for s in steps] == [
         "Token of the OSAC CI app",
-        "Enable auto-merge",
+        "$/.github/actions/auto-merge",
         "$/.github/actions/manual-status",
     ]
     last = steps[-1]

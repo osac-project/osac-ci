@@ -182,10 +182,23 @@ def test_the_newest_no_and_the_newest_approval_of_the_head_commit_decide(tmp_pat
         ("APPROVED", OLD, "2026-10-20T13:00:00Z"),
     )
     assert merged(run(other, GH_TIMELINE=twice, GH_REVIEWS=newer)[1]), "a newer approval of the head commit"
-    third = tmp_path / "third"
-    third.mkdir()
-    only_old = reviews(("APPROVED", OLD, "2026-10-20T13:00:00Z"), ("CHANGES_REQUESTED", HEAD, "2026-10-20T13:00:00Z"))
-    assert not merged(run(third, GH_TIMELINE=twice, GH_REVIEWS=only_old)[1]), "an approval of another commit is none"
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        {"GH_REVIEWS": reviews()},
+        {"GH_REVIEWS": reviews(("APPROVED", OLD, "2026-10-20T13:00:00Z"))},  # an approval of another commit is none
+        {"GH_REVIEWS": reviews(("CHANGES_REQUESTED", HEAD, APPROVED_AT), ("COMMENTED", HEAD, APPROVED_AT))},
+        {"GH_REVIEWS": reviews(("DISMISSED", HEAD, APPROVED_AT))},
+    ],
+)
+def test_without_an_approval_of_the_head_commit_nothing_is_turned_on_and_the_timeline_is_not_read(
+    tmp_path: Path, given: dict[str, str]
+) -> None:
+    code, calls, out = run(tmp_path, **given)
+    assert code == 0 and f"has no approval of {HEAD}" in out
+    assert not merged(calls) and not any(c.startswith("api graphql ") for c in calls)
 
 
 def test_a_failed_merge_is_a_warning_and_not_an_error(tmp_path: Path) -> None:

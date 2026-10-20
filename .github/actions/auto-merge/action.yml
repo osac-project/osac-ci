@@ -47,6 +47,12 @@ runs:
         fi
         approved_at=$(gh api --paginate --slurp "repos/${REPO}/pulls/${NUMBER}/reviews" \
           | jq -r --arg sha "${HEAD_SHA}" '[.[][] | select(.state == "APPROVED" and .commit_id == $sha) | .submitted_at] | max // ""')
+        # The decision found an approval of this commit; if there is none now (it was dismissed in the meantime), there is
+        # nothing to turn on.
+        if [[ -z "${approved_at}" ]]; then
+          echo "PR #${NUMBER} has no approval of ${HEAD_SHA}; leaving auto-merge off"
+          exit 0
+        fi
         # What a person did to say "not this one": turned auto-merge off, or took the pull request out of the merge queue
         # (that does not turn auto-merge off, so it would be put back at once). What GitHub did on its own does not count:
         # closing a pull request or a push by someone without write access also turn auto-merge off.
