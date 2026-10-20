@@ -429,6 +429,8 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-pull-requests: write
           permission-contents: write
+          permission-checks: read  # the status block of the control comment reads the check runs
+          permission-issues: write  # and edits the comment
       - name: Enable auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -453,3 +455,11 @@ jobs:
           # Only for the commit that was decided on: if the pull request has moved on, GitHub refuses.
           gh pr merge "${NUMBER}" --repo "${REPO}" --auto --match-head-commit "${HEAD_SHA}" \
             || echo "::warning::Could not enable auto-merge on PR #${NUMBER}"
+      # The control comment was written by the decision a moment ago, before auto-merge was on: show it now. A failure
+      # here must not matter (the next refresh of the comment shows it too).
+      - uses: $/.github/actions/manual-status
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ needs.decide.outputs.approved-number }}

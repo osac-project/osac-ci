@@ -411,6 +411,13 @@ def _parser() -> argparse.ArgumentParser:
     mcom.add_argument("--by", default="", help="who asked, for the answer")
     mcom.add_argument("--run-url", default="", help="link of the workflow run, shown with the answer")
 
+    mstat = sub.add_parser(
+        "manual-status",
+        help="rewrite only the status block of the control comment (for what changed after the comment was written)",
+    )
+    mstat.add_argument("--repo", required=True, help="owner/name")
+    mstat.add_argument("--number", type=int, required=True, help="the pull request")
+
     strack = sub.add_parser(
         "e2e-suites-track",
         help="create the suite lines on the pull request and keep them current until the jobs run",
@@ -635,6 +642,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("e2e-suites-track", "e2e-suites-settle"):
         return _e2e_suites(args)
+
+    if args.command == "manual-status":
+        try:
+            result = manual_run.refresh_status(build_client(), args.repo, args.number)
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: manual-status failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"PR #{args.number}: status block {result}")
+        return 0
 
     try:
         policy = load_policy(args.policy)

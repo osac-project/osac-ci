@@ -50,13 +50,26 @@ STATE_TEXT = {
     "failed": "❌ failed",
 }
 RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
-# The CI check: the one aggregate job of the repository's own CI workflow (GitHub Actions), whose name every repository
-# of the flow shares because it is the required check.
+# The checks the status block shows. CI and the Jira reference are jobs of the repository's own workflows (GitHub
+# Actions), whose names every repository of the flow shares because they are required checks; the E2E check is written
+# by this app. Only the app of that name counts: another app can create a check with the same name.
 CI_CHECK = "CI"
-CI_APP = "github-actions"
-CI_TEXT = {"active": "⏳ running", "passed": "✅ passed", "failed": "❌ failed", "cancelled": "🚫 cancelled"}
-CI_FAILED = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
-FAILED_SHOWN = 5  # how many failed checks the status line names
+JIRA_CHECK = "jira-reference"
+E2E_CHECK = "E2E"
+ACTIONS_APP = "github-actions"
+STATUS_START = "<!-- status:start -->"
+STATUS_END = "<!-- status:end -->"
+STATUS_BLOCK = re.compile(rf"{re.escape(STATUS_START)}.*?{re.escape(STATUS_END)}", re.DOTALL)
+CHECK_ICON = {"active": "⏳", "passed": "✅", "failed": "❌", "cancelled": "🚫", "other": "➖"}
+CHECK_WORD = {
+    "active": "running",
+    "passed": "passed",
+    "failed": "failed",
+    "cancelled": "cancelled",
+    "other": "no result",
+}
+FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
+FAILED_SHOWN = 5  # how many failed checks the CI row names
 
 
 @dataclass(frozen=True)
@@ -74,13 +87,29 @@ class SuiteView:
 
 
 @dataclass(frozen=True)
-class CiView:
-    """The ``CI`` check of the head commit as the comment shows it: active | passed | failed | cancelled, the link of
-    its run, and the names of the other checks that failed on the commit (the E2E lines are not among them)."""
+class CheckView:
+    """A check of the head commit as the status block shows it: active | passed | failed | cancelled | other, the link
+    of its run, what it says (the E2E check's title) and, for CI, the names of the other checks that failed."""
 
     state: str
     url: str = ""
+    title: str = ""
     failed: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PrStatus:
+    """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting, with the
+    logins behind it; ``auto_merge`` is the merge method when auto-merge is on, empty when it is off."""
+
+    approval: str
+    approvers: tuple[str, ...] = ()
+    ci: CheckView | None = None
+    jira: CheckView | None = None
+    e2e: CheckView | None = None
+    auto_merge: str = ""
+    draft: bool = False
+    conflict: bool = False
 
 
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
@@ -88,61 +117,87 @@ def _alert(kind: str, lines: Sequence[str]) -> list[str]:
     return [f"> [!{kind}]", *(f"> {line}".rstrip() for line in lines)]
 
 
-def status_lines(views: Sequence[SuiteView], ci: CiView | None = None) -> list[str]:
-    """The status of the head commit in one line: the CI check (a link to its run), then what the E2E suites say as
-    counts (passed, failed, running, not run). A failed CI names the checks that failed in a second line."""
-    counts = {state: sum(v.state == state for v in views) for state in ("failed", "active", "passed", "none")}
-    e2e = " · ".join(
-        f"{icon} {counts[state]} {word}"
+def _check_row(name: str, view: CheckView) -> str:
+    icon = CHECK_ICON.get(view.state, "➖")
+    text = view.title or CHECK_WORD.get(view.state, view.state)
+    text = f"[{text}]({view.url})" if view.url else text
+    row = f"- {icon} **{name}:** {text}"
+    if view.failed:
+        names = ", ".join(f"`{n}`" for n in view.failed[:FAILED_SHOWN])
+        more = len(view.failed) - FAILED_SHOWN
+        row += f" · failed: {names}" + (f" and {more} more" if more > 0 else "")
+    return row
+
+
+def _approval_row(status: PrStatus, sha: str) -> str:
+    who = ", ".join(f"`{login}`" for login in status.approvers)
+    if status.approval == "approved":
+        return f"- ✅ **Approval:** approved by {who} on `{sha[:7]}`"
+    if status.approval == "older":
+        return f"- 🔄 **Approval:** approved by {who} on an older commit; needs a new approval on `{sha[:7]}`"
+    if status.approval == "changes":
+        return f"- ❌ **Approval:** changes requested by {who}"
+    return "- ⏳ **Approval:** waiting for an approval"
+
+
+def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
+    """The status of the pull request in one alert, between two markers so that it can be refreshed on its own. Rows
+    that do not apply are left out (a check the commit does not have, a draft that is not one)."""
+    rows: list[str] = []
+    if status is None:
+        rows = [f"Loading the status of the head commit `{sha[:7]}`..."]
+    else:
+        if status.draft:
+            rows.append("- ✏️ **Draft:** mark it ready for review")
+        if status.conflict:
+            rows.append("- ❌ **Merge conflict:** rebase on the target branch")
+        rows.append(_approval_row(status, sha))
+        for name, view in (("CI", status.ci), ("Jira reference", status.jira), ("E2E", status.e2e)):
+            if view is not None:
+                rows.append(_check_row(name, view))
+        if status.auto_merge:
+            rows.append(f"- ✅ **Auto-merge:** on ({status.auto_merge})")
+        else:
+            rows.append("- ➖ **Auto-merge:** off")
+    return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
+
+
+def suites_summary(views: Sequence[SuiteView]) -> str:
+    """What the suites say, as counts in the fixed order failed, running, passed, not run: the E2E section's title."""
+    counts = [
+        (state, icon, word, sum(v.state == state for v in views))
         for state, icon, word in (
             ("failed", "❌", "failed"),
             ("active", "⏳", "running"),
             ("passed", "✅", "passed"),
             ("none", "➖", "not run"),
         )
-        if counts[state]
-    )
-    parts = []
-    if ci is not None:
-        text = CI_TEXT.get(ci.state, ci.state)
-        icon, _, word = text.partition(" ")
-        parts.append(f"**CI** {icon} [{word}]({ci.url})" if ci.url else f"**CI** {text}")
-    if e2e:
-        parts.append(f"**E2E** {e2e}")
-    lines = [" · ".join(parts), ""] if parts else []
-    if ci is not None and ci.failed:
-        names = ", ".join(f"`{n}`" for n in ci.failed[:FAILED_SHOWN])
-        more = len(ci.failed) - FAILED_SHOWN
-        lines += [f"Failed checks: {names}" + (f" and {more} more" if more > 0 else ""), ""]
-    return lines
+    ]
+    return " · ".join(f"{icon} {n} {word}" for _, icon, word, n in counts if n)
 
 
-def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", ci: CiView | None = None) -> str:
-    """The comment: the status of the head commit, an alert that says what it is for, the suites with a checkbox each
-    in a collapsed section, and the answer to the last request. Every box is unchecked: a box that was checked is
-    cleared when the request has been answered."""
+def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status: PrStatus | None = None) -> str:
+    """The comment: the status of the pull request, then the E2E tests section (how to start a suite, and the suites
+    with a checkbox each, collapsed) and the answer to the last request. Every box is unchecked: a box that was checked
+    is cleared when the request has been answered."""
+    summary = suites_summary(views)
     lines = [
         MARKER,
         f"<!-- head:{sha} -->",
-        *status_lines(views, ci),
-        *_alert(
-            "TIP",
-            [
-                "## 🧪 E2E tests",
-                "",
-                "**Who:** any member of the organization, on any pull request (a draft, a fork or your own).",
-                "",
-                "**How to start a suite:**",
-                "- Check a box below. The box clears itself.",
-                "- Or comment `/test` for the suites this change needs.",
-                "- Or comment `/test <suite>` for the ones you name (the ids are in the boxes below).",
-                "",
-                f"**Good to know:** suites run on the head commit `{sha[:7]}`. A suite that is already running, or "
-                "has already passed on this commit, is not started again.",
-            ],
-        ),
+        *status_block(sha, status),
         "",
-        f"<details><summary><b>Run E2E tests now</b> ({len(views)} available)</summary>",
+        f"<details><summary><b>🧪 E2E tests</b>{' · ' + summary if summary else ''}"
+        f" · run them now ({len(views)} available)</summary>",
+        "",
+        "**Who:** any member of the organization, on any pull request (a draft, a fork or your own).",
+        "",
+        "**How to start a suite:**",
+        "- Check a box below. The box clears itself.",
+        "- Or comment `/test` for the suites this change needs.",
+        "- Or comment `/test <suite>` for the ones you name (the ids are in the boxes below).",
+        "",
+        f"**Good to know:** suites run on the head commit `{sha[:7]}`. A suite that is already running, or "
+        "has already passed on this commit, is not started again.",
         "",
     ]
     for view in views:
@@ -153,7 +208,13 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", ci: Ci
     lines += ["", "</details>", "", NOTES_START]
     if notes.strip():
         lines += _alert("NOTE", notes.strip().splitlines())
-    lines += [NOTES_END, "", f"<sub>[How suites are started by hand]({RULES_URL}) · osac-ci</sub>", ""]
+    lines += [
+        NOTES_END,
+        "",
+        f"<sub>[How suites are started by hand]({RULES_URL}) · The status is refreshed when CI starts or ends, "
+        "a review changes, or someone comments · osac-ci</sub>",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -300,44 +361,136 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
     return tuple(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, "")) for s in suites)
 
 
-def ci_view(runs: Sequence[Mapping[str, object]]) -> CiView | None:
-    """The ``CI`` check of the head commit, from its raw check runs; None when the commit has none (or it was skipped,
-    which says nothing). Only the GitHub Actions check of that name counts: another app can create one too. The newest
-    run of a check wins, as everywhere else. The failed checks are those, of any app but this one, whose newest run
-    failed; the E2E lines are left out because the comment shows them below."""
+def _started(r: Mapping[str, object]) -> str:
+    return str(r.get("started_at") or "")
 
-    def started(r: Mapping[str, object]) -> str:
-        return str(r.get("started_at") or "")
 
-    def slug(r: Mapping[str, object]) -> object:
-        app = r.get("app")
-        return app.get("slug") if isinstance(app, Mapping) else None
+def _slug(r: Mapping[str, object]) -> object:
+    app = r.get("app")
+    return app.get("slug") if isinstance(app, Mapping) else None
 
-    ci = [r for r in runs if r.get("name") == CI_CHECK and slug(r) == CI_APP]
-    if not ci:
+
+def check_view(
+    runs: Sequence[Mapping[str, object]], name: str, app: str, *, keep_other: bool = False, with_failed: bool = False
+) -> CheckView | None:
+    """The newest run of the check ``name`` written by ``app`` on the head commit, from its raw check runs; None when
+    there is none. A run that ended with neither success nor failure (skipped, neutral) says nothing and gives None,
+    unless ``keep_other`` (the E2E check, whose title says what it is). With ``with_failed`` the view also names the
+    other checks whose newest run failed (this app's own lines and the E2E ones are left out: the E2E section shows
+    them)."""
+    own = [r for r in runs if r.get("name") == name and _slug(r) == app]
+    if not own:
         return None
-    run = max(ci, key=started)
+    run = max(own, key=_started)
     conclusion = _conclusion(run)
     if run.get("status") != "completed":
         state = "active"
     elif conclusion == "success":
         state = "passed"
-    elif conclusion in CI_FAILED:
+    elif conclusion in FAILED_CONCLUSIONS:
         state = "failed"
     elif conclusion == "cancelled":
         state = "cancelled"
+    elif keep_other:
+        state = "other"
     else:
         return None
-    newest: dict[str, Mapping[str, object]] = {}
-    for r in sorted(runs, key=started):
-        if slug(r) != CHECK_APP and r.get("name") != CI_CHECK:
-            newest[str(r.get("name"))] = r
-    failed = tuple(
-        sorted(
-            n for n, r in newest.items() if n != CI_CHECK and not n.startswith("E2E") and _conclusion(r) in CI_FAILED
+    failed: tuple[str, ...] = ()
+    if with_failed and state == "failed":
+        newest: dict[str, Mapping[str, object]] = {}
+        for r in sorted(runs, key=_started):
+            if _slug(r) != CHECK_APP and r.get("name") != name:
+                newest[str(r.get("name"))] = r
+        failed = tuple(
+            sorted(n for n, r in newest.items() if not n.startswith("E2E") and _conclusion(r) in FAILED_CONCLUSIONS)
         )
+    output = run.get("output")
+    title = str(output.get("title") or "") if isinstance(output, Mapping) else ""
+    url = str(run.get("details_url") or run.get("html_url") or "")
+    return CheckView(state, url, title if keep_other else "", failed)
+
+
+def approval_of(reviews: Sequence[Mapping[str, object]], head: str) -> tuple[str, tuple[str, ...]]:
+    """Where the approval of the pull request stands on ``head``, from its reviews: changes (someone's newest review
+    asks for changes) | approved (an approval on this commit) | older (an approval, but of an older commit) | waiting.
+    The newest review of each person counts; a comment or a pending review changes nothing, and a dismissed one is no
+    approval."""
+    latest: dict[str, Mapping[str, object]] = {}
+    for r in sorted(reviews, key=lambda r: str(r.get("submitted_at") or "")):
+        user = r.get("user")
+        login = user.get("login") if isinstance(user, Mapping) else None
+        if isinstance(login, str) and str(r.get("state", "")).upper() not in ("COMMENTED", "PENDING"):
+            latest[login] = r
+
+    def who(state: str, *, on_head: bool | None = None) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                login
+                for login, r in latest.items()
+                if str(r.get("state", "")).upper() == state
+                and (on_head is None or (r.get("commit_id") == head) == on_head)
+            )
+        )
+
+    for kind, found in (
+        ("changes", who("CHANGES_REQUESTED")),
+        ("approved", who("APPROVED", on_head=True)),
+        ("older", who("APPROVED", on_head=False)),
+    ):
+        if found:
+            return kind, found
+    return "waiting", ()
+
+
+def pr_status(
+    pr: Mapping[str, object], reviews: Sequence[Mapping[str, object]], runs: Sequence[Mapping[str, object]]
+) -> PrStatus:
+    """The status of the pull request from its own data, its reviews and the check runs of the head commit."""
+    head = pr.get("head")
+    sha = str(head.get("sha", "")) if isinstance(head, Mapping) else ""
+    approval, approvers = approval_of(reviews, sha)
+    auto = pr.get("auto_merge")
+    return PrStatus(
+        approval=approval,
+        approvers=approvers,
+        ci=check_view(runs, CI_CHECK, ACTIONS_APP, with_failed=True),
+        jira=check_view(runs, JIRA_CHECK, ACTIONS_APP),
+        e2e=check_view(runs, E2E_CHECK, CHECK_APP, keep_other=True),
+        auto_merge=str(auto.get("merge_method") or "on") if isinstance(auto, Mapping) else "",
+        draft=bool(pr.get("draft")),
+        conflict=pr.get("mergeable_state") == "dirty",
     )
-    return CiView(state, str(run.get("details_url") or run.get("html_url") or ""), failed if state == "failed" else ())
+
+
+def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
+    """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
+    the comment was written, such as the app turning on auto-merge. It needs no policy, creates nothing and leaves the
+    suites and the last answer alone; a comment written for another head commit is left to the full refresh."""
+    repo = check_repo(repo)
+    pr = get(client, f"/repos/{repo}/pulls/{number}")
+    if str(pr.get("state")) != "open":
+        return "skipped: the pull request is not open"
+    existing = find_control_comment(client, repo, number, bot)
+    if existing is None:
+        return "skipped: the pull request has no control comment"
+    body = str(existing.get("body", ""))
+    sha = str(pr["head"]["sha"])
+    if not STATUS_BLOCK.search(body) or head_of(body) != sha:
+        return "skipped: the comment has no status block for this commit"
+    runs = [
+        r
+        for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
+        if isinstance(r, Mapping)
+    ]
+    reviews = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
+    block = "\n".join(status_block(sha, pr_status(pr, reviews, runs)))
+    new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
+    if new == body:
+        return "unchanged"
+    response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": new})
+    if response.status != 200:
+        raise GitHubError(response.status, "updating the status block")
+    return "updated"
 
 
 def refresh(
@@ -372,8 +525,9 @@ def refresh(
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
+    reviews = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
     kept = notes if notes is not None else (notes_of(str(existing.get("body", ""))) if existing else "")
-    body = render_comment(sha, views_for(suites, runs), kept, ci_view(runs))
+    body = render_comment(sha, views_for(suites, runs), kept, pr_status(pr, reviews, runs))
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:

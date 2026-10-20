@@ -1,0 +1,44 @@
+name: Refresh the status block of the control comment
+description: >-
+  Rewrite only the status block (approval, checks, auto-merge) of the comment that osac-ci keeps on a pull request, from
+  the pull request as it is now. Use it after something changed that the decision did not see when it wrote the comment,
+  such as the app turning on auto-merge. It creates nothing and starts nothing. Called from a workflow of the repository,
+  pinned to a commit of osac-ci, like the other actions.
+
+# The calling workflow decides when this runs and which token it holds: github-token reads the pull request, its reviews
+# and the check runs, and writes the comment (the OSAC CI app: pull requests write, checks read, issues write). This
+# action never checks out the calling repository, so it cannot run pull request code. Every input reaches the shell
+# through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (pull requests write, issues write, checks read)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Refresh the status
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci manual-status --repo "$REPO" --number "$NUMBER" \
+          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

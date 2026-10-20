@@ -66,7 +66,7 @@ runs:
         }
         if [[ "${FRESH}" != "true" && -n "$(existing)" ]]; then echo "The comment is already there."; exit 0; fi
         # shellcheck disable=SC2016  # the backticks are markdown, not command substitution
-        body=$(printf '%s\n<!-- head:%s -->\n> [!TIP]\n> ## 🧪 E2E tests\n>\n> Loading the list of E2E suites for the head commit `%s`...\n\n<!-- notes:start -->\n<!-- notes:end -->\n' \
+        body=$(printf '%s\n<!-- head:%s -->\n<!-- status:start -->\n> [!TIP]\n> ## 🚦 CI status\n>\n> Loading the status of the head commit `%s`...\n<!-- status:end -->\n\n<!-- notes:start -->\n<!-- notes:end -->\n' \
           "${marker}" "${HEAD_SHA}" "${HEAD_SHA:0:7}")
         mine=$(gh api "repos/${REPO}/issues/${NUMBER}/comments" -f body="${body}" --jq .id)
         # Two runs can both have found none (this one and the one that waits for CI): keep the oldest, which has the place

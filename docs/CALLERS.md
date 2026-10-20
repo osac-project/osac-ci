@@ -146,10 +146,13 @@ with a checkbox per suite; the caller above only needs the `issue_comment` trigg
 extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.yml`; a job with `manual_only: true` is
 listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
 for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
-The first line of the comment is the status of the head commit, so the pull request says where it stands without a
-look at the checks: `**CI** ✅ passed · **E2E** ✅ 2 passed · ➖ 1 not run`. The CI part is the `CI` check of the
-repository's own workflow (a link to its run; when it failed, the names of the checks that failed follow), and it is
-left out for a repository whose commits have no such check. The line is refreshed when CI starts and when it ends.
+The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
+on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, and whether auto-merge is on; a draft and a
+merge conflict get a row of their own. The E2E suites and the ways to start them are below it, in a collapsed section. Rows
+that do not apply (a check the commit does not have) are left out. The block is refreshed when CI starts or ends, a review
+is submitted or dismissed, or someone comments, and right after the app turns on auto-merge (the `manual-status` action, in
+the auto-merge job). What happens with no event - a person turning auto-merge on or off by hand, a pull request entering the
+merge queue - shows at the next refresh; the merge queue has no row for that reason.
 The rules are in [`RULES.md`](RULES.md).
 
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)

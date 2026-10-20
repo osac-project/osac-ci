@@ -177,6 +177,8 @@ class Fake:
         self.next_id = 9
         self.early: dict[str, Any] | None = None  # a control comment another run posts while this one creates its own
         self.delete_status = 204
+        self.patch_status = 200
+        self.reviews: list[dict[str, Any]] = []
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -188,6 +190,8 @@ class Fake:
             return Response(200, self.comments, {})
         if method == "GET" and path == f"/repos/{REPO}/pulls/7":
             return Response(200, self.pr, {})
+        if method == "GET" and path == f"/repos/{REPO}/pulls/7/reviews":
+            return Response(200, self.reviews, {})
         if method == "POST" and path.endswith("/check-runs"):
             self.runs.append({"name": body["name"], "status": body.get("status"), "conclusion": body.get("conclusion")})  # type: ignore[index]
             return Response(201, {}, {})
@@ -201,8 +205,9 @@ class Fake:
             return Response(201, {"id": created}, {})
         if method == "PATCH" and "/issues/comments/" in path:
             wanted = int(path.rsplit("/", 1)[1])
-            next(c for c in self.comments if c["id"] == wanted)["body"] = body["body"]  # type: ignore[index]
-            return Response(200, {}, {})
+            if self.patch_status == 200:
+                next(c for c in self.comments if c["id"] == wanted)["body"] = body["body"]  # type: ignore[index]
+            return Response(self.patch_status, {}, {})
         if method == "DELETE" and "/issues/comments/" in path:
             wanted = int(path.rsplit("/", 1)[1])
             if self.delete_status == 204:
@@ -257,11 +262,14 @@ def test_the_comment_lists_every_suite_with_an_unchecked_box() -> None:
     assert manual_run.requested_suites(body) == ()
 
 
-def test_the_tip_is_in_sections_and_names_both_ways_to_start() -> None:
-    tip = manual_run.render_comment(HEAD, views()).split("<details>")[0]
+def test_the_e2e_section_names_both_ways_to_start_and_the_status_comes_first() -> None:
+    body = manual_run.render_comment(HEAD, views())
+    status, section = body.split("<details>")
+    assert "## 🚦 CI status" in status and "## 🧪" not in status
     for part in ("**Who:**", "**How to start a suite:**", "**Good to know:**", "`/test`", "`/test <suite>`", HEAD[:7]):
-        assert part in tip
-    assert max(len(line) for line in tip.splitlines() if line.startswith("> ")) < 200  # no wall of text
+        assert part in section
+    assert "<summary><b>🧪 E2E tests</b> · ✅ 1 passed · ➖ 1 not run · run them now (2 available)</summary>" in section
+    assert max(len(line) for line in body.splitlines() if line.startswith("> ")) < 200  # no wall of text
 
 
 def test_checked_boxes_are_read_in_order() -> None:
@@ -688,7 +696,7 @@ def test_a_command_inside_the_control_comment_text_of_someone_else_is_not_read_a
     assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "", "")  # type: ignore[arg-type]
 
 
-# the status line ----------------------------------------------------------------------------------------------------
+# the status block ---------------------------------------------------------------------------------------------------
 
 
 def actions_check(
@@ -700,8 +708,16 @@ def actions_check(
     }  # fmt: skip
 
 
-def status_of(body: str) -> str:
-    return body.split("<!-- head:")[1].split("-->", 1)[1].split("> [!TIP]")[0].strip()
+def app_check(name: str, conclusion: str | None, title: str = "") -> dict[str, Any]:
+    return {**passed(name), "conclusion": conclusion, "status": "completed" if conclusion else "in_progress",
+            "output": {"title": title}, "details_url": "https://x/e2e"}  # fmt: skip
+
+
+def review(login: str, state: str, commit: str = HEAD, at: str = "2026-10-10T10:00:00Z") -> dict[str, Any]:
+    return {"user": {"login": login}, "state": state, "commit_id": commit, "submitted_at": at}
+
+
+OLD = "b" * 40
 
 
 @pytest.mark.parametrize(
@@ -714,17 +730,17 @@ def status_of(body: str) -> str:
         ([actions_check("CI", "cancelled")], "cancelled"),
     ],
 )
-def test_the_ci_check_state_is_read_from_its_newest_run(runs: list[dict[str, Any]], state: str) -> None:
-    view = manual_run.ci_view(runs)
+def test_a_check_state_is_read_from_its_newest_run(runs: list[dict[str, Any]], state: str) -> None:
+    view = manual_run.check_view(runs, "CI", "github-actions")
     assert view is not None and view.state == state and view.url == "https://x/CI"
 
 
-def test_the_newest_run_of_the_ci_check_wins() -> None:
+def test_the_newest_run_of_a_check_wins() -> None:
     runs = [
         actions_check("CI", "failure", "2026-10-10T10:00:00Z"),
         actions_check("CI", "success", "2026-10-10T11:00:00Z"),
     ]
-    view = manual_run.ci_view(runs)
+    view = manual_run.check_view(runs, "CI", "github-actions")
     assert view is not None and view.state == "passed"
 
 
@@ -739,8 +755,23 @@ def test_the_newest_run_of_the_ci_check_wins() -> None:
         [{**actions_check("CI"), "app": None}],
     ],
 )
-def test_a_commit_with_no_usable_ci_check_has_no_ci_status(runs: list[dict[str, Any]]) -> None:
-    assert manual_run.ci_view(runs) is None
+def test_a_commit_with_no_usable_check_of_that_name_has_no_view(runs: list[dict[str, Any]]) -> None:
+    assert manual_run.check_view(runs, "CI", "github-actions") is None
+
+
+def test_the_e2e_check_keeps_what_it_says_even_when_it_neither_passed_nor_failed() -> None:
+    view = manual_run.check_view(
+        [app_check("E2E", "neutral", "Waiting: approval needed")], "E2E", "osac-ci", keep_other=True
+    )
+    assert view == manual_run.CheckView("other", "https://x/e2e", "Waiting: approval needed")
+    waiting = manual_run.check_view([app_check("E2E", None, "Waiting: approval")], "E2E", "osac-ci", keep_other=True)
+    assert waiting is not None and waiting.state == "active" and waiting.title == "Waiting: approval"
+
+
+def test_only_the_e2e_check_shows_its_title_the_title_of_an_actions_job_is_just_its_name() -> None:
+    run = {**actions_check("CI"), "output": {"title": "CI"}}
+    view = manual_run.check_view([run], "CI", "github-actions")
+    assert view == manual_run.CheckView("passed", "https://x/CI")
 
 
 def test_a_failed_ci_names_the_checks_that_failed_but_not_the_e2e_lines_or_a_check_that_passed_since() -> None:
@@ -754,60 +785,222 @@ def test_a_failed_ci_names_the_checks_that_failed_but_not_the_e2e_lines_or_a_che
         passed("E2E / VMaaS Full Install") | {"conclusion": "failure"},
         actions_check("E2E", "failure"),
         {**actions_check("Snyk", "failure"), "app": {"slug": "snyk"}},
+        {**actions_check("Netris suite", "failure"), "app": {"slug": "osac-ci"}},  # a line of this app is no check
     ]
-    view = manual_run.ci_view(runs)
-    assert view is not None
-    assert view.failed == ("Integration test", "Snyk", "Unit tests")
+    view = manual_run.check_view(runs, "CI", "github-actions", with_failed=True)
+    assert view is not None and view.failed == ("Integration test", "Snyk", "Unit tests")
+    passing = manual_run.check_view(
+        [actions_check("CI"), actions_check("Optional", "failure")], "CI", "github-actions", with_failed=True
+    )
+    assert passing is not None and passing.failed == ()
 
 
-def test_a_suite_line_of_the_app_is_not_a_failed_check_whatever_its_name() -> None:
-    runs = [actions_check("CI", "failure"), {**actions_check("Netris suite", "failure"), "app": {"slug": "osac-ci"}}]
-    view = manual_run.ci_view(runs)
-    assert view is not None and view.failed == ()
+@pytest.mark.parametrize(
+    ("reviews", "kind", "who"),
+    [
+        ([], "waiting", ()),
+        ([review("a", "COMMENTED")], "waiting", ()),
+        ([review("a", "APPROVED")], "approved", ("a",)),
+        ([review("b", "APPROVED"), review("a", "APPROVED")], "approved", ("a", "b")),
+        ([review("a", "APPROVED", OLD)], "older", ("a",)),
+        ([review("a", "APPROVED", OLD), review("b", "APPROVED")], "approved", ("b",)),
+        ([review("a", "APPROVED"), review("a", "DISMISSED", at="2026-10-10T11:00:00Z")], "waiting", ()),
+        ([review("a", "APPROVED"), review("a", "COMMENTED", at="2026-10-10T11:00:00Z")], "approved", ("a",)),
+        ([review("a", "CHANGES_REQUESTED"), review("a", "APPROVED", at="2026-10-10T11:00:00Z")], "approved", ("a",)),
+        ([review("a", "APPROVED"), review("a", "CHANGES_REQUESTED", at="2026-10-10T11:00:00Z")], "changes", ("a",)),
+        ([review("a", "APPROVED"), review("b", "CHANGES_REQUESTED")], "changes", ("b",)),
+        ([review("a", "PENDING")], "waiting", ()),
+        ([{"user": None, "state": "APPROVED", "commit_id": HEAD}], "waiting", ()),
+    ],
+)
+def test_the_approval_is_read_from_the_newest_review_of_each_person_on_the_head_commit(
+    reviews: list[dict[str, Any]], kind: str, who: tuple[str, ...]
+) -> None:
+    assert manual_run.approval_of(reviews, HEAD) == (kind, who)
 
 
-def test_a_passing_ci_names_no_failed_checks() -> None:
-    view = manual_run.ci_view([actions_check("CI"), actions_check("Optional", "failure")])
-    assert view is not None and view.failed == ()
+def full_status(**changes: Any) -> manual_run.PrStatus:
+    base = manual_run.PrStatus(
+        "approved", ("alice",), manual_run.CheckView("passed", "https://x/CI"), manual_run.CheckView("passed", "https://x/J"),
+        manual_run.CheckView("passed", "https://x/e2e", "Passed: all suites"), "squash",
+    )  # fmt: skip
+    return replace(base, **changes)
 
 
-def test_the_comment_starts_with_the_status_of_the_head_commit() -> None:
-    ci = manual_run.CiView("passed", "https://x/CI")
-    body = manual_run.render_comment(HEAD, views(), "", ci)
-    assert status_of(body) == "**CI** ✅ [passed](https://x/CI) · **E2E** ✅ 1 passed · ➖ 1 not run"
-    assert body.index("**CI**") < body.index("> [!TIP]")
-    assert manual_run.requested_suites(body) == () and manual_run.head_of(body) == HEAD
+def block_of(body: str) -> str:
+    return body.split(manual_run.STATUS_START)[1].split(manual_run.STATUS_END)[0]
 
 
-def test_the_status_counts_every_state_of_the_suites_in_a_fixed_order() -> None:
+def test_the_status_block_is_a_list_of_what_the_pull_request_waits_for() -> None:
+    block = block_of(manual_run.render_comment(HEAD, views(), "", full_status()))
+    assert block.splitlines()[1:] == [
+        "> [!TIP]",
+        "> ## 🚦 CI status",
+        ">",
+        "> - ✅ **Approval:** approved by `alice` on `aaaaaaa`",
+        "> - ✅ **CI:** [passed](https://x/CI)",
+        "> - ✅ **Jira reference:** [passed](https://x/J)",
+        "> - ✅ **E2E:** [Passed: all suites](https://x/e2e)",
+        "> - ✅ **Auto-merge:** on (squash)",
+    ]
+
+
+def test_each_state_of_the_pull_request_has_its_own_row() -> None:
+    def rows(**changes: Any) -> str:
+        return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
+
+    assert "- ➖ **Auto-merge:** off" in rows(auto_merge="")
+    assert "- ✏️ **Draft:** mark it ready for review" in rows(draft=True)
+    assert "- ❌ **Merge conflict:** rebase on the target branch" in rows(conflict=True)
+    assert "- ⏳ **Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
+    assert "- 🔄 **Approval:** approved by `a` on an older commit; needs a new approval on `aaaaaaa`" in rows(
+        approval="older", approvers=("a",)
+    )
+    assert "- ❌ **Approval:** changes requested by `a`, `b`" in rows(approval="changes", approvers=("a", "b"))
+    assert "- ❌ **CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
+    assert "- ⏳ **CI:** running" in rows(ci=manual_run.CheckView("active"))
+    assert "- 🚫 **CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
+    assert "Jira" not in rows(jira=None) and "**CI:**" not in rows(ci=None) and "**E2E:**" not in rows(e2e=None)
+    assert "Draft" not in rows() and "Merge conflict" not in rows()
+
+
+def test_a_failed_ci_names_the_failed_checks_and_says_how_many_more_there_are() -> None:
+    names = tuple(f"check {i}" for i in range(8))
+    ci = manual_run.CheckView("failed", "https://x/CI", failed=names)
+    block = block_of(manual_run.render_comment(HEAD, views(), "", full_status(ci=ci)))
+    assert "failed: `check 0`, `check 1`, `check 2`, `check 3`, `check 4` and 3 more" in block
+    few = block_of(manual_run.render_comment(HEAD, views(), "", full_status(ci=replace(ci, failed=("a", "b")))))
+    assert "failed: `a`, `b`" in few and "more" not in few
+
+
+def test_the_suites_summary_counts_every_state_in_a_fixed_order() -> None:
     many = tuple(
         manual_run.SuiteView(f"s{i}", f"E2E / S{i}", st)
         for i, st in enumerate(["none", "passed", "active", "failed", "failed"])
     )
-    line = status_of(manual_run.render_comment(HEAD, many))
-    assert line == "**E2E** ❌ 2 failed · ⏳ 1 running · ✅ 1 passed · ➖ 1 not run"
+    assert manual_run.suites_summary(many) == "❌ 2 failed · ⏳ 1 running · ✅ 1 passed · ➖ 1 not run"
+    assert manual_run.suites_summary(()) == ""
 
 
-def test_a_failed_ci_lists_the_failed_checks_and_says_how_many_more_there_are() -> None:
-    names = tuple(f"check {i}" for i in range(8))
-    body = manual_run.render_comment(HEAD, views(), "", manual_run.CiView("failed", "https://x/CI", names))
-    status = status_of(body)
-    assert status.splitlines()[0].startswith("**CI** ❌ [failed](https://x/CI)")
-    assert "Failed checks: `check 0`, `check 1`, `check 2`, `check 3`, `check 4` and 3 more" in status
-    short = manual_run.render_comment(HEAD, views(), "", manual_run.CiView("failed", "", ("a", "b")))
-    assert "Failed checks: `a`, `b`" in short and "more" not in status_of(short).split("Failed checks:")[1]
-    assert "**CI** ❌ failed" in short  # no link when the check has no address
+def test_a_comment_with_no_status_yet_says_it_is_loading_and_keeps_the_markers() -> None:
+    body = manual_run.render_comment(HEAD, views())
+    assert "Loading the status of the head commit `aaaaaaa`..." in body
+    assert manual_run.requested_suites(body) == () and manual_run.head_of(body) == HEAD
+    assert manual_run.STATUS_BLOCK.search(body)
 
 
-def test_the_status_without_a_ci_check_is_the_e2e_part_only() -> None:
-    assert status_of(manual_run.render_comment(HEAD, views())).startswith("**E2E**")
+def test_the_status_of_a_pull_request_comes_from_its_data_its_reviews_and_its_checks() -> None:
+    pr = {"head": {"sha": HEAD}, "draft": True, "mergeable_state": "dirty", "auto_merge": {"merge_method": "squash"}}
+    runs = [actions_check("CI"), actions_check("jira-reference", "failure"), app_check("E2E", "success", "Passed")]
+    status = manual_run.pr_status(pr, [review("alice", "APPROVED")], runs)
+    assert status.approval == "approved" and status.approvers == ("alice",)
+    assert status.ci is not None and status.ci.state == "passed"
+    assert status.jira is not None and status.jira.state == "failed"
+    assert status.e2e == manual_run.CheckView("passed", "https://x/e2e", "Passed")
+    assert status.auto_merge == "squash" and status.draft and status.conflict
+    plain = manual_run.pr_status({"head": {"sha": HEAD}, "auto_merge": None, "mergeable_state": "clean"}, [], [])
+    assert plain == manual_run.PrStatus("waiting") and not plain.auto_merge
+    assert manual_run.pr_status({"head": {"sha": HEAD}, "auto_merge": {}}, [], []).auto_merge == "on"
+    assert manual_run.pr_status({}, [], []).approval == "waiting"  # a pull request with no head says nothing
 
 
-def test_the_status_line_is_the_part_of_the_comment_a_refresh_changes_when_ci_ends() -> None:
+def test_a_refresh_writes_the_status_and_follows_the_pull_request() -> None:
     fake = Fake([actions_check("CI", None)])
+    fake.pr = {**fake.pr, "auto_merge": None}
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
-    assert "**CI** ⏳ [running]" in fake.comments[0]["body"]
+    body = fake.comments[0]["body"]
+    assert "**Approval:** waiting" in body and "**CI:** [running]" in body and "**Auto-merge:** off" in body
     fake.runs[0] = actions_check("CI", "success")
+    fake.reviews = [review("alice", "APPROVED")]
+    fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
-    assert "**CI** ✅ [passed]" in fake.comments[0]["body"]
+    body = fake.comments[0]["body"]
+    assert "approved by `alice`" in body and "**CI:** [passed]" in body and "**Auto-merge:** on (squash)" in body
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "unchanged"  # type: ignore[arg-type]
+
+
+# the status block on its own ---------------------------------------------------------------------------------------
+
+
+def commented(fake: Fake, **changes: Any) -> Fake:
+    """A Fake that already holds a control comment written for the head commit."""
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    return fake
+
+
+def test_the_status_block_alone_is_rewritten_and_the_rest_of_the_comment_is_kept() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.pr = {**fake.pr, "auto_merge": None}
+    fake.reviews = [review("alice", "APPROVED")]
+    commented(fake)
+    first = fake.comments[0]["body"]
+    kept = first.replace(manual_run.NOTES_START, manual_run.NOTES_START + "\n> [!NOTE]\n> **Last request by bob**")
+    fake.comments[0]["body"] = kept
+    fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
+    assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
+    body = fake.comments[0]["body"]
+    assert "**Auto-merge:** on (squash)" in body and "**Auto-merge:** off" not in body
+    assert body.replace("➖ **Auto-merge:** off", "").split("<details>")[1] == kept.split("<details>")[1], (
+        "only the block changed"
+    )
+    assert manual_run.refresh_status(fake, REPO, 7) == "unchanged"  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("setup", "why"),
+    [
+        ("closed", "not open"),
+        ("none", "no control comment"),
+        ("old", "no status block"),
+        ("other-head", "no status block"),
+    ],
+)
+def test_the_status_block_is_left_alone_when_it_cannot_be_trusted(setup: str, why: str) -> None:
+    fake = Fake([actions_check("CI")])
+    if setup != "none":
+        commented(fake)
+    if setup == "closed":
+        fake.pr = {**fake.pr, "state": "closed"}
+    if setup == "old":  # a comment written before the status block existed
+        fake.comments[0]["body"] = manual_run.STATUS_BLOCK.sub("", fake.comments[0]["body"])
+    if setup == "other-head":
+        fake.pr = {**fake.pr, "head": {"sha": "c" * 40}}
+    before = [dict(c) for c in fake.comments]
+    assert why in manual_run.refresh_status(fake, REPO, 7)  # type: ignore[arg-type]
+    assert fake.comments == before
+    assert not [p for p in fake.posted if p[0] == "PATCH"], "nothing was written"
+
+
+def test_a_failed_write_of_the_status_block_is_an_error() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.pr = {**fake.pr, "auto_merge": None}
+    commented(fake)
+    fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
+    fake.patch_status = 500
+    with pytest.raises(GitHubError):
+        manual_run.refresh_status(fake, REPO, 7)  # type: ignore[arg-type]
+
+
+def test_the_command_rewrites_the_status_block_and_reports_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = Fake([actions_check("CI")])
+    fake.pr = {**fake.pr, "auto_merge": None}
+    commented(fake)
+    fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
+    monkeypatch.setattr(cli, "build_client", lambda **_: fake)
+    assert cli.main(["manual-status", "--repo", REPO, "--number", "7"]) == 0
+    assert "PR #7: status block updated" in capsys.readouterr().out
+    assert "Auto-merge:** on (squash)" in fake.comments[0]["body"]
+
+
+def test_a_failure_of_the_command_is_reported_and_exits_with_3(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = Fake([actions_check("CI")])
+    commented(fake)
+    fake.pr = {**fake.pr, "auto_merge": {"merge_method": "squash"}}
+    fake.patch_status = 500
+    monkeypatch.setattr(cli, "build_client", lambda **_: fake)
+    assert cli.main(["manual-status", "--repo", REPO, "--number", "7"]) == 3
+    assert "manual-status failed" in capsys.readouterr().err
