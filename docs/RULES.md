@@ -20,7 +20,9 @@ it cannot drift from what the code applies.
    failed.
 4. Auto-merge is switched on for an approved pull request (with the OSAC CI app's token, so that what follows starts
    its workflows). GitHub puts the pull request in the merge queue once every required check and the approval are in
-   place.
+   place. A person can say no: it is not switched on while changes are requested, and not again after someone turned
+   auto-merge off, or took the pull request out of the merge queue, since the approval (a new approval of the head
+   commit counts again; what GitHub does on its own, such as closing the pull request, does not count as a no).
 5. The merge queue runs `CI` and `E2E` once more on the exact commit that will land and merges it.
 
 ## Who may start the E2E

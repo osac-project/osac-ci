@@ -1,0 +1,71 @@
+name: Turn on auto-merge for an approved pull request
+description: >-
+  Turn on auto-merge for a pull request whose head commit has an approval that counts, unless a person has said they do
+  not want it merged: auto-merge was turned off, or the pull request was taken out of the merge queue, after the approval,
+  or changes are requested. Called from a workflow of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token: the OSAC CI app's, not the workflow's, because a pull request queued with the
+# workflow's token starts no workflow for the queue (GitHub does not run workflows for what that token causes), so it
+# would wait for its checks for ever. This action never checks out the calling repository, so it cannot run pull request
+# code. Every input reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (pull requests write, contents write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number
+    required: true
+  head-sha:
+    description: The head commit that was decided on (40 hex digits); GitHub refuses when the pull request has moved on
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Enable auto-merge
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+      run: |
+        set -euo pipefail
+        [[ "${NUMBER}" =~ ^[0-9]+$ ]] || { echo "::error::The pull request number must be digits only."; exit 1; }
+        [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The head commit must be 40 lower-case hex digits."; exit 1; }
+        view=$(gh pr view "${NUMBER}" --repo "${REPO}" --json autoMergeRequest,isDraft,reviewDecision)
+        if [[ "$(jq -r '.autoMergeRequest != null or .isDraft' <<<"${view}")" == "true" ]]; then
+          echo "PR #${NUMBER} has auto-merge already, or is a draft"
+          exit 0
+        fi
+        if [[ "$(jq -r '.reviewDecision' <<<"${view}")" == "CHANGES_REQUESTED" ]]; then
+          echo "Changes are requested on PR #${NUMBER}; leaving auto-merge off"
+          exit 0
+        fi
+        approved_at=$(gh api --paginate --slurp "repos/${REPO}/pulls/${NUMBER}/reviews" \
+          | jq -r --arg sha "${HEAD_SHA}" '[.[][] | select(.state == "APPROVED" and .commit_id == $sha) | .submitted_at] | max // ""')
+        # What a person did to say "not this one": turned auto-merge off, or took the pull request out of the merge queue
+        # (that does not turn auto-merge off, so it would be put back at once). What GitHub did on its own does not count:
+        # closing a pull request or a push by someone without write access also turn auto-merge off.
+        query='query($owner: String!, $name: String!, $number: Int!) {
+          repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+            timelineItems(last: 100, itemTypes: [AUTO_MERGE_DISABLED_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+              nodes { __typename
+                ... on AutoMergeDisabledEvent { createdAt reason }
+                ... on RemovedFromMergeQueueEvent { createdAt reason } } } } } }'
+        said_no_at=$(gh api graphql -f query="${query}" -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F number="${NUMBER}" \
+          | jq -r '[.data.repository.pullRequest.timelineItems.nodes[]
+              | select((.__typename == "AutoMergeDisabledEvent"
+                        and ((.reason // "") | IN("Pull request was closed", "Head branch was pushed to by a user without write access") | not))
+                       or (.__typename == "RemovedFromMergeQueueEvent" and .reason == "manual"))
+              | .createdAt] | max // ""')
+        if [[ -n "${said_no_at}" && "${said_no_at}" > "${approved_at}" ]]; then
+          echo "Auto-merge was turned off, or the pull request taken out of the queue, on PR #${NUMBER} after its approval; leaving it off"
+          exit 0
+        fi
+        # Only for the commit that was decided on: if the pull request has moved on, GitHub refuses.
+        gh pr merge "${NUMBER}" --repo "${REPO}" --auto --match-head-commit "${HEAD_SHA}" \
+          || echo "::warning::Could not enable auto-merge on PR #${NUMBER}"
