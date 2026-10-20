@@ -431,30 +431,14 @@ jobs:
           permission-contents: write
           permission-checks: read  # the status block of the control comment reads the check runs
           permission-issues: write  # and edits the comment
-      - name: Enable auto-merge
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          REPO: ${{ github.repository }}
-          NUMBER: ${{ needs.decide.outputs.approved-number }}
-          HEAD_SHA: ${{ needs.decide.outputs.approved-sha }}
-        run: |
-          set -euo pipefail
-          view=$(gh pr view "${NUMBER}" --repo "${REPO}" --json autoMergeRequest,isDraft)
-          if [[ "$(jq -r '.autoMergeRequest != null or .isDraft' <<<"${view}")" == "true" ]]; then
-            echo "PR #${NUMBER} has auto-merge already, or is a draft"
-            exit 0
-          fi
-          approved_at=$(gh api --paginate --slurp "repos/${REPO}/pulls/${NUMBER}/reviews" \
-            | jq -r --arg sha "${HEAD_SHA}" '[.[][] | select(.state == "APPROVED" and .commit_id == $sha) | .submitted_at] | max // ""')
-          disabled_at=$(gh api --paginate --slurp "repos/${REPO}/issues/${NUMBER}/events" \
-            | jq -r '[.[][] | select(.event == "auto_merge_disabled") | .created_at] | max // ""')
-          if [[ -n "${disabled_at}" && "${disabled_at}" > "${approved_at}" ]]; then
-            echo "Auto-merge was turned off on PR #${NUMBER} after its approval; leaving it off"
-            exit 0
-          fi
-          # Only for the commit that was decided on: if the pull request has moved on, GitHub refuses.
-          gh pr merge "${NUMBER}" --repo "${REPO}" --auto --match-head-commit "${HEAD_SHA}" \
-            || echo "::warning::Could not enable auto-merge on PR #${NUMBER}"
+      # `$/` is this workflow's own repository at the exact commit the caller pinned. Not turned on when a person said no
+      # (auto-merge turned off, or the pull request taken out of the merge queue, after the approval) or asked for changes.
+      - uses: $/.github/actions/auto-merge
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ needs.decide.outputs.approved-number }}
+          head-sha: ${{ needs.decide.outputs.approved-sha }}
       # The control comment was written by the decision a moment ago, before auto-merge was on: show it now. A failure
       # here must not matter (the next refresh of the comment shows it too).
       - uses: $/.github/actions/manual-status
