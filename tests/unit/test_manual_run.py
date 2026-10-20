@@ -181,6 +181,7 @@ class Fake:
         self.roles: dict[str, str] = {"carol": "write", "dave": "write"}
         self.roles_status = 200
         self.statuses_status = 200
+        self.queue: dict[str, Any] | None = None  # the pull request as GraphQL gives it; None: the token may not ask
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -190,6 +191,10 @@ class Fake:
             return Response(200, {"check_runs": self.runs}, {})
         if method == "GET" and "/issues/" in path and "/comments" in path:
             return Response(200, self.comments, {})
+        if method == "POST" and path == "/graphql":
+            if self.queue is None:
+                return Response(403, {"message": "Resource not accessible by integration"}, {})
+            return Response(200, {"data": {"repository": {"pullRequest": self.queue}}}, {})
         if method == "GET" and path.endswith("/statuses") and "/commits/" in path:
             return Response(self.statuses_status, self.statuses if self.statuses_status == 200 else {}, {})
         if method == "GET" and path == f"/repos/{REPO}/pulls/7":
@@ -400,9 +405,9 @@ def test_the_comment_is_created_for_a_member_s_pull_request_and_lists_every_suit
 def test_a_second_refresh_with_nothing_new_writes_nothing() -> None:
     fake = Fake([])
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
-    before = len([p for p in fake.posted if p[0] in ("POST", "PATCH")])
+    before = len([p for p in fake.posted if p[0] in ("POST", "PATCH") and p[1] != "/graphql"])
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "unchanged"  # type: ignore[arg-type]
-    assert len([p for p in fake.posted if p[0] in ("POST", "PATCH")]) == before
+    assert len([p for p in fake.posted if p[0] in ("POST", "PATCH") and p[1] != "/graphql"]) == before
 
 
 def test_a_changed_line_updates_the_comment_and_keeps_the_last_answer() -> None:
@@ -1168,3 +1173,159 @@ def test_a_token_that_cannot_read_statuses_leaves_the_comment_written_from_the_c
     fake.statuses_status = 403
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
     assert "VMaaS Full Install** · ✅ passed" in fake.comments[0]["body"]
+
+
+# the merge queue ---------------------------------------------------------------------------------------------------
+
+
+def queue_answer(entry: dict[str, Any] | None = None, *events: tuple[str, str, str]) -> dict[str, Any]:
+    """The pull request as GraphQL gives it: its queue entry and its added/removed events (type, time, reason)."""
+    nodes = [
+        {"__typename": kind, "createdAt": at, **({"reason": reason} if kind.startswith("Removed") else {})}
+        for kind, at, reason in events
+    ]
+    return {"mergeQueueEntry": entry, "timelineItems": {"nodes": nodes}}
+
+
+ADDED = "AddedToMergeQueueEvent"
+REMOVED = "RemovedFromMergeQueueEvent"
+
+
+def queue_of(answer: dict[str, Any] | None) -> manual_run.QueueView | None:
+    fake = Fake([])
+    fake.queue = answer
+    return manual_run.queue_view(fake, REPO, 7)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("state", "word"),
+    [
+        ("QUEUED", "waiting its turn"),
+        ("AWAITING_CHECKS", "checks are running"),
+        ("MERGEABLE", "ready to merge"),
+        ("LOCKED", "locked, a pull request before it is failing"),
+        ("UNMERGEABLE", "cannot be merged"),
+        ("SOMETHING_NEW", "in the queue"),
+    ],
+)
+def test_a_pull_request_in_the_queue_says_its_place_and_what_the_entry_is_doing(state: str, word: str) -> None:
+    view = queue_of(queue_answer({"state": state, "position": 2}, (ADDED, "2026-10-20T10:00:00Z", "")))
+    assert view == manual_run.QueueView("queued", f"position 2, {word}")
+    no_place = queue_of(queue_answer({"state": "QUEUED", "position": None}))
+    assert no_place == manual_run.QueueView("queued", "waiting its turn")
+
+
+@pytest.mark.parametrize(
+    ("reason", "detail", "person"),
+    [
+        ("failed_checks", "checks failed", False),
+        ("checks_timed_out", "checks timed out", False),
+        ("merge_conflict", "merge conflict", False),
+        ("manual", "taken out by a person", True),
+        ("some_new_reason", "some new reason", False),
+    ],
+)
+def test_a_pull_request_the_queue_let_go_says_why(reason: str, detail: str, person: bool) -> None:
+    view = queue_of(queue_answer(None, (ADDED, "2026-10-20T10:00:00Z", ""), (REMOVED, "2026-10-20T11:00:00Z", reason)))
+    assert view == manual_run.QueueView("removed", detail, person)
+
+
+def test_a_pull_request_that_was_removed_and_queued_again_is_in_the_queue_and_one_removed_before_is_forgotten() -> None:
+    again = queue_answer(
+        {"state": "QUEUED", "position": 1},
+        (REMOVED, "2026-10-20T10:00:00Z", "failed_checks"),
+        (ADDED, "2026-10-20T11:00:00Z", ""),
+    )
+    assert queue_of(again) == manual_run.QueueView("queued", "position 1, waiting its turn")
+    later = queue_answer(None, (REMOVED, "2026-10-20T10:00:00Z", "failed_checks"), (ADDED, "2026-10-20T11:00:00Z", ""))
+    assert queue_of(later) == manual_run.QueueView("none"), "added last, and no entry now: nothing to say"
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        queue_answer(None),
+        queue_answer(None, (ADDED, "2026-10-20T10:00:00Z", "")),
+        queue_answer(None, (ADDED, "2026-10-20T10:00:00Z", ""), (REMOVED, "2026-10-20T11:00:00Z", "merged")),
+    ],
+)
+def test_a_pull_request_never_queued_or_merged_through_the_queue_is_not_queued(answer: dict[str, Any]) -> None:
+    assert queue_of(answer) == manual_run.QueueView("none")
+
+
+def test_the_events_are_read_by_time_not_by_the_order_they_come_in() -> None:
+    answer = queue_answer(None, (REMOVED, "2026-10-20T11:00:00Z", "manual"), (ADDED, "2026-10-20T10:00:00Z", ""))
+    assert queue_of(answer) == manual_run.QueueView("removed", "taken out by a person", True)
+
+
+def test_a_queue_that_the_token_may_not_read_has_no_view() -> None:
+    assert queue_of(None) is None
+
+
+def test_graphql_errors_and_a_missing_pull_request_give_no_view() -> None:
+    class Odd:
+        def __init__(self, response: Any) -> None:
+            self.response = response
+
+        def request(self, *_: Any, **__: Any) -> Any:
+            if isinstance(self.response, Exception):
+                raise self.response
+            return self.response
+
+    assert manual_run.queue_view(Odd(Response(200, {"errors": [{"message": "no"}]}, {})), REPO, 7) is None  # type: ignore[arg-type]
+    assert (
+        manual_run.queue_view(Odd(Response(200, {"data": {"repository": {"pullRequest": None}}}, {})), REPO, 7) is None
+    )  # type: ignore[arg-type]
+    assert manual_run.queue_view(Odd(Response(200, {"data": {"repository": None}}, {})), REPO, 7) is None  # type: ignore[arg-type]
+    assert manual_run.queue_view(Odd(Response(500, {}, {})), REPO, 7) is None  # type: ignore[arg-type]
+    good = {"data": {"repository": {"pullRequest": queue_answer({"state": "QUEUED", "position": 1})}}}
+    assert manual_run.queue_view(Odd(Response(200, good, {})), REPO, 7) is not None  # type: ignore[arg-type]
+    assert manual_run.queue_view(Odd(Response(502, good, {})), REPO, 7) is None  # type: ignore[arg-type]
+    assert manual_run.queue_view(Odd(Response(200, {**good, "errors": [{"message": "partial"}]}, {})), REPO, 7) is None  # type: ignore[arg-type]
+    assert manual_run.queue_view(Odd(GitHubError(502, "bad gateway")), REPO, 7) is None  # type: ignore[arg-type]
+
+
+def test_the_question_names_the_repository_and_the_pull_request() -> None:
+    fake = Fake([])
+    fake.queue = queue_answer(None)
+    manual_run.queue_view(fake, "o/r", 7)  # type: ignore[arg-type]
+    method, path, body = next(p for p in fake.posted if p[1] == "/graphql")
+    assert (method, body["variables"]) == ("POST", {"owner": "o", "name": "r", "number": 7})
+    assert "mergeQueueEntry" in body["query"] and "REMOVED_FROM_MERGE_QUEUE_EVENT" in body["query"]
+
+
+def rows_of(**changes: Any) -> str:
+    return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
+
+
+def test_each_state_of_the_queue_has_its_row_after_auto_merge() -> None:
+    queued = rows_of(queue=manual_run.QueueView("queued", "position 3, checks are running"))
+    assert "- ⏳ **Merge queue:** in the queue (position 3, checks are running)" in queued
+    assert queued.index("Auto-merge") < queued.index("Merge queue")
+    failed = rows_of(queue=manual_run.QueueView("removed", "checks failed"))
+    assert "- ❌ **Merge queue:** removed from the queue: checks failed" in failed
+    person = rows_of(queue=manual_run.QueueView("removed", "taken out by a person", True))
+    assert "- ➖ **Merge queue:** taken out by a person" in person and "removed from the queue" not in person
+    assert "- ➖ **Merge queue:** not queued" in rows_of(queue=manual_run.QueueView("none"))
+    assert "Merge queue" not in rows_of(queue=None), "a queue that could not be read has no row"
+
+
+def test_a_refresh_shows_the_queue_and_follows_it() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.queue = queue_answer({"state": "AWAITING_CHECKS", "position": 1}, (ADDED, "2026-10-20T10:00:00Z", ""))
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert "**Merge queue:** in the queue (position 1, checks are running)" in fake.comments[0]["body"]
+    fake.queue = queue_answer(
+        None, (ADDED, "2026-10-20T10:00:00Z", ""), (REMOVED, "2026-10-20T11:00:00Z", "failed_checks")
+    )
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
+    assert "**Merge queue:** removed from the queue: checks failed" in fake.comments[0]["body"]
+
+
+def test_the_status_block_on_its_own_follows_the_queue_too() -> None:
+    fake = Fake([actions_check("CI")])
+    commented(fake)
+    assert "Merge queue" not in fake.comments[0]["body"], "no row when the queue could not be read"
+    fake.queue = queue_answer(None, (ADDED, "2026-10-20T10:00:00Z", ""), (REMOVED, "2026-10-20T11:00:00Z", "manual"))
+    assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
+    assert "**Merge queue:** taken out by a person" in fake.comments[0]["body"]
