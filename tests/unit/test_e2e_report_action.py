@@ -65,7 +65,7 @@ def stand_in(tmp_path: Path, answer: dict | None, uv_exit: int = 0) -> dict:
 
 
 def run_report(tmp_path: Path, *, decision: str | None = "d.json", run_id: str = "42", answer: dict | None = None,
-               uv_exit: int = 0, kind: str = "statuses"):  # type: ignore[no-untyped-def]  # fmt: skip
+               uv_exit: int = 0, kind: str = "statuses", lines_kind: str = ""):  # type: ignore[no-untyped-def]  # fmt: skip
     if decision == "d.json":
         (tmp_path / "d.json").write_text("[{}]")
         decision = str(tmp_path / "d.json")
@@ -73,6 +73,7 @@ def run_report(tmp_path: Path, *, decision: str | None = "d.json", run_id: str =
     env = {
         **stand_in(tmp_path, answer, uv_exit), "GH_TOKEN": "t", "REPO": "o/r", "DECISION": decision or "",
         "RUN_ID": run_id, "RUN_URL": "https://x/run/42", "ACTION_PATH": "/a/b/c", "KIND": kind,
+        "LINES_KIND": lines_kind,
         "OUT_DIR": str(tmp_path),
         "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary),
     }  # fmt: skip
@@ -103,6 +104,23 @@ def test_the_decision_file_and_the_run_are_passed_to_the_program(tmp_path: Path)
 def test_the_kind_is_passed_to_the_program(tmp_path: Path) -> None:
     _, args, _, _, _ = run_report(tmp_path, answer=ANSWER, kind="checks")
     assert args.rstrip().endswith("--kind checks")
+
+
+def test_the_lines_kind_is_passed_to_the_program_only_when_given(tmp_path: Path) -> None:
+    _, args, _, _, _ = run_report(tmp_path, answer=ANSWER, kind="checks", lines_kind="statuses")
+    assert args.rstrip().endswith("--kind checks --lines-kind statuses")
+    other = tmp_path / "none"
+    other.mkdir()
+    _, args, _, _, _ = run_report(other, answer=ANSWER, kind="checks")
+    assert "--lines-kind" not in args
+
+
+@pytest.mark.parametrize("lines_kind", ["status", "check", "$(id)", "statuses checks"])
+def test_a_lines_kind_that_is_not_statuses_or_checks_is_refused_before_the_program_runs(
+    tmp_path: Path, lines_kind: str
+) -> None:
+    code, args, _, _, log = run_report(tmp_path, answer=ANSWER, lines_kind=lines_kind)
+    assert code == 1 and args == "" and "lines kind must be statuses or checks" in log
 
 
 @pytest.mark.parametrize("kind", ["", "status", "check", "$(id)"])

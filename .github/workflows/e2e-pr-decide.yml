@@ -71,6 +71,13 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         description: Id of the OSAC CI app
         type: string
         default: "4966101"
+      lines-kind:
+        description: >-
+          Where the lines of the suites (`E2E / VMaaS Full Install`) are written: `checks` (check runs of the app, with a
+          spinner while a suite runs; the row opens the Checks tab first) or `statuses` (commit statuses, a dot instead of
+          a spinner; the row links straight to the job). Give every workflow of the flow the same value.
+        type: string
+        default: checks
     secrets:
       OSAC_CI_APP_PRIVATE_KEY:
         description: Private key of the OSAC CI app (an organization secret)
@@ -210,6 +217,7 @@ jobs:
           permission-actions: read
           permission-issues: write
           permission-pull-requests: write  # a comment on a pull request needs this one, not only issues
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
           permission-members: read
       # `$/` is this workflow's own repository at the exact commit the caller pinned, so the actions used here are the ones
       # that were reviewed with this file (a plain `./` would resolve against the caller's workspace).
@@ -222,6 +230,7 @@ jobs:
           number: ${{ github.event.inputs.number || github.event.issue.number }}
           head-sha: ${{ github.event.workflow_run.head_sha }}
           org-token: ${{ steps.app-token.outputs.token }}
+          statuses-token: ${{ inputs.lines-kind == 'statuses' && steps.app-token.outputs.token || '' }}
           manual-comment-id: ${{ github.event_name == 'issue_comment' && github.event.comment.id || '' }}
           manual-by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
       - uses: $/.github/actions/e2e-report
@@ -229,6 +238,7 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           kind: checks
+          lines-kind: ${{ inputs.lines-kind }}
           repo: ${{ github.repository }}
           decision-file: ${{ steps.decide.outputs.json-file }}
       # A run started by hand, and the suites the change needs (the finish workflow sums them up).

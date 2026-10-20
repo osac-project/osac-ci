@@ -139,6 +139,28 @@ with the pull request, posts the placeholder sooner. The decision keeps its job 
 request, a missed event) and fills the placeholder in. When this run finishes, the `E2E comment` entry in the `workflow_run`
 list of `e2e-pr.yml` wakes the decision, which deletes the run so its row does not stay on the pull request.
 
+## The lines of the suites: check runs or commit statuses
+
+The line of each suite on the pull request (`E2E / VMaaS Full Install`) is a check run of the OSAC CI app by default. A
+click on its name opens the Checks tab first, and GitHub does not let an app change that link, so reaching the job's
+logs takes several clicks. With `lines-kind: statuses` the lines are commit statuses instead: the row of a status links
+straight to its target, which is the job, so one click on the name opens the logs. The price: a running suite shows a dot
+and not a spinner, and the row has no app icon. The required `E2E` line stays a check run of the app either way.
+
+Give `decide`, `track` and `finish` the same value in `e2e-pr.yml`:
+
+```yaml
+  decide:
+    uses: osac-project/osac-ci/.github/workflows/e2e-pr-decide.yml@<sha>  # <tag>
+    with:
+      lines-kind: statuses
+```
+
+(and the same `with:` on `track` and `finish`). The workflows then ask the app token for `statuses: write`, so the OSAC CI
+app needs the permission "Commit statuses: read and write" on the installation; nothing else changes in the caller. The
+decision, the control comment and the sum of a run started by hand read the lines of either kind, so a commit that has
+both (for example one tried before the switch) is read by the newest line of each name.
+
 ## Suites started by hand
 
 The decision workflow keeps a comment on the pull request of a member of the organization (written by the OSAC CI app)

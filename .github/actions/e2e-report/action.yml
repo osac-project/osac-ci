@@ -34,6 +34,12 @@ inputs:
       Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
       app whose token is given, shown with a spinner; the token must be an app installation token with checks: write)
     default: statuses
+  lines-kind:
+    description: >-
+      Where the lines of the suites are written, when that is not where the E2E line goes: "statuses" (the row of a
+      status links straight to the job, with a dot instead of a spinner; the token needs statuses: write) or "checks".
+      Empty: as `kind`
+    default: ""
 
 outputs:
   start:
@@ -75,6 +81,7 @@ runs:
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         KIND: ${{ inputs.kind }}
+        LINES_KIND: ${{ inputs.lines-kind }}
         ACTION_PATH: ${{ github.action_path }}
         OUT_DIR: ${{ runner.temp }}
       run: |
@@ -83,6 +90,10 @@ runs:
         case "$KIND" in
           statuses | checks) ;;
           *) echo "::error::The kind must be statuses or checks."; exit 1 ;;
+        esac
+        case "$LINES_KIND" in
+          "" | statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
         esac
         case "$RUN_ID" in
           "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
@@ -102,7 +113,8 @@ runs:
         json="$OUT_DIR/e2e-report.json"
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-report --repo "$REPO" --decision-file "$DECISION" \
-          --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" --kind "$KIND" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" --kind "$KIND" \
+          ${LINES_KIND:+--lines-kind "$LINES_KIND"} | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         {
           echo "start=$(jq -r '.start' "$json")"
           echo "sha=$(jq -r '.sha' "$json")"

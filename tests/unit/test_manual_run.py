@@ -177,8 +177,10 @@ class Fake:
         self.delete_status = 204
         self.patch_status = 200
         self.reviews: list[dict[str, Any]] = []
+        self.statuses: list[dict[str, Any]] = []  # commit statuses of the head commit, newest first
         self.roles: dict[str, str] = {"carol": "write", "dave": "write"}
         self.roles_status = 200
+        self.statuses_status = 200
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -188,6 +190,8 @@ class Fake:
             return Response(200, {"check_runs": self.runs}, {})
         if method == "GET" and "/issues/" in path and "/comments" in path:
             return Response(200, self.comments, {})
+        if method == "GET" and path.endswith("/statuses") and "/commits/" in path:
+            return Response(self.statuses_status, self.statuses if self.statuses_status == 200 else {}, {})
         if method == "GET" and path == f"/repos/{REPO}/pulls/7":
             return Response(200, self.pr, {})
         if method == "GET" and path == f"/repos/{REPO}/pulls/7/reviews":
@@ -1123,3 +1127,43 @@ def test_a_failure_of_the_command_is_reported_and_exits_with_3(
     monkeypatch.setattr(cli, "build_client", lambda **_: fake)
     assert cli.main(["manual-status", "--repo", REPO, "--number", "7"]) == 3
     assert "manual-status failed" in capsys.readouterr().err
+
+
+# suite lines that are commit statuses ------------------------------------------------------------------------------
+
+
+def status_line(context: str, state: str, url: str = "", creator: str = "osac-ci[bot]") -> dict[str, Any]:
+    return {
+        "context": context, "state": state, "description": "", "target_url": url, "creator": {"login": creator},
+        "created_at": "2026-10-10T10:00:00Z",
+    }  # fmt: skip
+
+
+def test_a_suite_line_that_is_a_status_shows_its_state_and_links_the_job_in_the_comment() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.statuses = [status_line("E2E / VMaaS Full Install", "success", "https://x/o/r/actions/runs/5/job/9")]
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    body = fake.comments[0]["body"]
+    assert "**VMaaS Full Install** · ✅ passed ([run](https://x/o/r/actions/runs/5/job/9))" in body
+    assert "<summary><b>🧪 E2E tests</b> · ✅ 1 passed · ➖ 1 not run" in body
+
+
+def test_a_status_line_and_a_check_run_line_of_one_suite_show_the_newer() -> None:
+    fake = Fake([passed("E2E / VMaaS Full Install")])  # an older line, a check run (started 2026-10-10T10:00:00Z)
+    fake.statuses = [{**status_line("E2E / VMaaS Full Install", "failure"), "created_at": "2026-10-10T11:00:00Z"}]
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert "VMaaS Full Install** · ❌ failed" in fake.comments[0]["body"]
+
+
+def test_a_status_of_someone_else_is_not_a_suite_line_in_the_comment() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.statuses = [status_line("E2E / VMaaS Full Install", "success", creator="mallory")]
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert "VMaaS Full Install** · ➖ not run on this commit" in fake.comments[0]["body"]
+
+
+def test_a_token_that_cannot_read_statuses_leaves_the_comment_written_from_the_check_runs() -> None:
+    fake = Fake([passed("E2E / VMaaS Full Install")])
+    fake.statuses_status = 403
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
+    assert "VMaaS Full Install** · ✅ passed" in fake.comments[0]["body"]

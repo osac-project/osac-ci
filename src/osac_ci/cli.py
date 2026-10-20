@@ -44,6 +44,7 @@ TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
 APPROVE_TOKEN_ENV = "OSAC_CI_APPROVE_TOKEN"  # the bot's own credential, used only to submit an approval
 ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
+STATUSES_TOKEN_ENV = "OSAC_CI_STATUSES_TOKEN"  # optional: a token that can read commit statuses (the suite lines)
 
 
 def snapshot_from_dict(data: dict[str, Any]) -> Snapshot:
@@ -85,6 +86,13 @@ def _non_negative(text: str) -> int:
     if value < 0:
         raise argparse.ArgumentTypeError(f"must not be negative, got {value}")
     return value
+
+
+def build_statuses_client() -> GitHubClient | None:
+    """A client that reads commit statuses, when ``OSAC_CI_STATUSES_TOKEN`` is set (the decision reads the pull request
+    with the workflow's own token, which may not read statuses); None otherwise."""
+    token = os.environ.get(STATUSES_TOKEN_ENV)
+    return HttpClient(token) if token else None
 
 
 def build_org_client(*, required: bool = False) -> GitHubClient | None:
@@ -379,6 +387,12 @@ def _parser() -> argparse.ArgumentParser:
     erep.add_argument(
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
+    erep.add_argument(
+        "--lines-kind",
+        choices=e2e_check.KINDS,
+        default=None,
+        help="where the lines of the suites are written (default: as --kind); a status links its row to the job",
+    )
 
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
@@ -506,7 +520,9 @@ def _e2e_report(args: argparse.Namespace) -> int:
         entries = json.loads(args.decision_file.read_text(encoding="utf-8"))
         if not isinstance(entries, list):
             raise ValueError("the decision file must hold a list")
-        found = e2e_check.report(build_client(), args.repo, entries, args.run_id, args.run_url, args.kind)
+        found = e2e_check.report(
+            build_client(), args.repo, entries, args.run_id, args.run_url, args.kind, lines_kind=args.lines_kind
+        )
     except (OSError, GitHubError, KeyError, ValueError) as exc:
         print(f"error: e2e-report failed: {exc}", file=sys.stderr)
         return 3
@@ -898,6 +914,7 @@ def main(argv: list[str] | None = None) -> int:
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
+                statuses_client=build_statuses_client(),
             )  # fmt: skip
 
         return _decide_command(

@@ -35,6 +35,7 @@ from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
+from osac_ci.suite_lines import suite_line_runs, suite_line_runs_if_readable
 
 # The rules below are read from policy/flow.yml (see osac_ci.flow), where each one is explained and pinned by a test:
 # TRUSTED_BOTS  bots whose approval counts on a branch of the repository itself, never on a fork (the author of a fork
@@ -442,6 +443,7 @@ def fetch_inputs(
     request_refused: str = "",
     request_sha: str = "",
     comment_given: bool = False,
+    statuses_client: GitHubClient | None = None,
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -467,6 +469,18 @@ def fetch_inputs(
             app_id=_app_id(raw),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
+    )
+    # The line of a suite may be a commit status instead of a check run (see ``suite_lines``), read as the same thing.
+    # With a client given for it the statuses must be readable (a suite whose line cannot be seen could be started
+    # twice); without one, a token that cannot read statuses sees check runs only, as before.
+    lines = (
+        suite_line_runs(statuses_client, repo, head_sha, gates, CHECK_APP)
+        if statuses_client is not None
+        else suite_line_runs_if_readable(client, repo, head_sha, gates, CHECK_APP)
+    )
+    runs += tuple(
+        CheckRun(r["name"], r["status"], r.get("conclusion"), r.get("started_at"), app=CHECK_APP, app_id=0)
+        for r in lines
     )
     files: list[str] = []
     listed = 0
