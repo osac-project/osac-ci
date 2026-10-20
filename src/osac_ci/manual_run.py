@@ -26,7 +26,19 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from osac_ci.e2e_start import CHECK_APP, NEEDED, Suite, line_state, suites_of
+from osac_ci.e2e_start import (
+    CHECK_APP,
+    NEEDED,
+    Review,
+    Suite,
+    approvals_of,
+    approvals_seen,
+    line_state,
+    reviews_with_roles,
+    reviews_with_roles_unread,
+    suites_of,
+    unqualified_approvers,
+)
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
@@ -99,11 +111,14 @@ class CheckView:
 
 @dataclass(frozen=True)
 class PrStatus:
-    """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting, with the
-    logins behind it; ``auto_merge`` is the merge method when auto-merge is on, empty when it is off."""
+    """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
+    unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
+    ``ignored`` the people whose approval does not count; ``auto_merge`` is the merge method when auto-merge is on,
+    empty when it is off."""
 
     approval: str
     approvers: tuple[str, ...] = ()
+    ignored: tuple[str, ...] = ()
     ci: CheckView | None = None
     jira: CheckView | None = None
     e2e: CheckView | None = None
@@ -137,7 +152,13 @@ def _approval_row(status: PrStatus, sha: str) -> str:
         return f"- 🔄 **Approval:** approved by {who} on an older commit; needs a new approval on `{sha[:7]}`"
     if status.approval == "changes":
         return f"- ❌ **Approval:** changes requested by {who}"
-    return "- ⏳ **Approval:** waiting for an approval"
+    if status.approval == "unchecked" and status.approvers:
+        return f"- ❔ **Approval:** the reviews show an approval by {who}; who may approve could not be checked"
+    row = "- ⏳ **Approval:** waiting for an approval"
+    if status.ignored:
+        names = ", ".join(f"`{login}`" for login in status.ignored)
+        row += f" (an approval by {names} does not count: not from someone who may approve here)"
+    return row
 
 
 def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
@@ -410,49 +431,47 @@ def check_view(
     return CheckView(state, url, title if keep_other else "", failed)
 
 
-def approval_of(reviews: Sequence[Mapping[str, object]], head: str) -> tuple[str, tuple[str, ...]]:
-    """Where the approval of the pull request stands on ``head``, from its reviews: changes (someone's newest review
-    asks for changes) | approved (an approval on this commit) | older (an approval, but of an older commit) | waiting.
-    The newest review of each person counts; a comment or a pending review changes nothing, and a dismissed one is no
-    approval."""
-    latest: dict[str, Mapping[str, object]] = {}
-    for r in sorted(reviews, key=lambda r: str(r.get("submitted_at") or "")):
-        user = r.get("user")
-        login = user.get("login") if isinstance(user, Mapping) else None
-        if isinstance(login, str) and str(r.get("state", "")).upper() not in ("COMMENTED", "PENDING"):
-            latest[login] = r
-
-    def who(state: str, *, on_head: bool | None = None) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                login
-                for login, r in latest.items()
-                if str(r.get("state", "")).upper() == state
-                and (on_head is None or (r.get("commit_id") == head) == on_head)
-            )
-        )
-
-    for kind, found in (
-        ("changes", who("CHANGES_REQUESTED")),
-        ("approved", who("APPROVED", on_head=True)),
-        ("older", who("APPROVED", on_head=False)),
-    ):
+def approval_of(
+    reviews: Sequence[Review], head: str, author: str, fork: bool
+) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Where the approval of the pull request stands on ``head``, by the rule of the decision: who may approve,
+    CodeRabbit never on a fork and never blocking, the author never. Returns the kind (changes: someone who may
+    approve asks for changes; approved: an approval on this commit; older: an approval of an older commit; waiting),
+    the logins the kind is about, and the people whose approval does not count."""
+    approvers, stale, blocking = approvals_of(reviews, head, author, fork)
+    ignored = unqualified_approvers(reviews, author, fork)
+    for kind, found in (("changes", blocking), ("approved", approvers), ("older", stale)):
         if found:
-            return kind, found
-    return "waiting", ()
+            return kind, found, ignored
+    return "waiting", (), ignored
 
 
 def pr_status(
-    pr: Mapping[str, object], reviews: Sequence[Mapping[str, object]], runs: Sequence[Mapping[str, object]]
+    pr: Mapping[str, object],
+    reviews: Sequence[Review],
+    runs: Sequence[Mapping[str, object]],
+    *,
+    repo: str,
+    roles_known: bool = True,
 ) -> PrStatus:
-    """The status of the pull request from its own data, its reviews and the check runs of the head commit."""
+    """The status of the pull request from its own data, its reviews (with the reviewers' roles, read the way the
+    decision reads them) and the check runs of the head commit. ``roles_known`` False when the roles could not be read:
+    the approval row then says what the reviews show and that it was not checked, never "approved"."""
     head = pr.get("head")
     sha = str(head.get("sha", "")) if isinstance(head, Mapping) else ""
-    approval, approvers = approval_of(reviews, sha)
+    user = pr.get("user")
+    author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
+    source = head.get("repo") if isinstance(head, Mapping) else None
+    fork = str(source.get("full_name", "") if isinstance(source, Mapping) else "").lower() != repo.lower()
+    if roles_known:
+        approval, approvers, ignored = approval_of(reviews, sha, author, fork)
+    else:
+        approval, approvers, ignored = "unchecked", approvals_seen(reviews, sha), ()
     auto = pr.get("auto_merge")
     return PrStatus(
         approval=approval,
         approvers=approvers,
+        ignored=ignored,
         ci=check_view(runs, CI_CHECK, ACTIONS_APP, with_failed=True),
         jira=check_view(runs, JIRA_CHECK, ACTIONS_APP),
         e2e=check_view(runs, E2E_CHECK, CHECK_APP, keep_other=True),
@@ -460,6 +479,20 @@ def pr_status(
         draft=bool(pr.get("draft")),
         conflict=pr.get("mergeable_state") == "dirty",
     )
+
+
+def status_of(
+    client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
+) -> PrStatus:
+    """The status of a pull request, reading its reviews and the role of each reviewer as the decision does. When the
+    roles cannot be read (no right to), the approval row says so instead of guessing from the raw reviews."""
+    raw = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
+    user = pr.get("user")
+    author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
+    try:
+        return pr_status(pr, reviews_with_roles(client, repo, raw, author), runs, repo=repo)
+    except GitHubError:
+        return pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
 
 
 def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
@@ -482,8 +515,7 @@ def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = B
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
-    reviews = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
-    block = "\n".join(status_block(sha, pr_status(pr, reviews, runs)))
+    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs)))
     new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
     if new == body:
         return "unchanged"
@@ -525,9 +557,8 @@ def refresh(
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
-    reviews = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
     kept = notes if notes is not None else (notes_of(str(existing.get("body", ""))) if existing else "")
-    body = render_comment(sha, views_for(suites, runs), kept, pr_status(pr, reviews, runs))
+    body = render_comment(sha, views_for(suites, runs), kept, status_of(client, repo, number, pr, runs))
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:
