@@ -434,3 +434,52 @@ def test_the_command_ignores_a_comment_that_only_starts_like_the_command(
     assert cli_run(monkeypatch, fake, "--number", "7", "--manual-comment-id", "9", "--manual-by", "eve") == 0
     out = capsys.readouterr().out
     assert "**skip-not-a-request**" in out and "**start**" not in out
+
+
+# suite lines that are commit statuses ---------------------------------------------------------------------------------
+
+
+def status_line(context: str, state: str, creator: str = "osac-ci[bot]") -> dict[str, Any]:
+    return {
+        "context": context, "state": state, "description": "", "target_url": "",
+        "creator": {"login": creator}, "created_at": "2026-10-20T10:00:00Z",
+    }  # fmt: skip
+
+
+def test_a_suite_line_that_is_a_status_is_read_like_a_check_run_of_the_app() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "success")])
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    d = decide(inputs)
+    assert d.action is Action.START and d.suites == ("caas", "bmaas/sanity"), "the suite that passed is not run again"
+
+
+def test_a_pending_status_line_is_a_suite_that_is_running() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "pending")])
+    latest = {r.name: r for r in fetch_inputs(fake, POLICY, REPO, 7).check_runs}
+    assert latest["e2e-vmaas-gate"].status == "in_progress" and latest["e2e-vmaas-gate"].app == "osac-ci"
+
+
+def test_a_status_of_someone_else_with_a_suite_s_name_is_not_a_line() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "success", creator="mallory")])
+    assert decide(fetch_inputs(fake, POLICY, REPO, 7)).suites == ("vmaas", "caas", "bmaas/sanity")
+
+
+def test_a_token_that_cannot_read_statuses_sees_the_check_runs_only_as_before() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fake.add("GET", f"{BASE}/commits/{SHA}/statuses", {"message": "no"}, status=403)
+    assert decide(fetch_inputs(fake, POLICY, REPO, 7)).action is Action.START
+
+
+def test_with_a_client_for_the_statuses_they_must_be_readable() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    lines = FakeGitHub()
+    lines.add("GET", f"{BASE}/commits/{SHA}/statuses", {"message": "no"}, status=403)
+    with pytest.raises(GitHubError):
+        fetch_inputs(fake, POLICY, REPO, 7, statuses_client=lines)
+    good = FakeGitHub()
+    good.add("GET", f"{BASE}/commits/{SHA}/statuses", [status_line("e2e-vmaas-gate", "success")])
+    assert decide(fetch_inputs(fake, POLICY, REPO, 7, statuses_client=good)).suites == ("caas", "bmaas/sanity")
+    assert not [c for c in fake.calls if c[1].endswith("/statuses") and "commits" in c[1]], "read with the given client"

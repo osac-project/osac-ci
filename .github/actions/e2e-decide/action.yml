@@ -44,6 +44,11 @@ inputs:
   org-token:
     description: Token that can read the members of the organization (members read); used for a request by hand
     default: ""
+  statuses-token:
+    description: >-
+      Token that can read commit statuses (the suite lines, when they are statuses). The workflow's own token may not;
+      when it is given the statuses must be readable, when it is empty a token that cannot read them sees check runs only
+    default: ""
 
 outputs:
   json-file:
@@ -85,12 +90,14 @@ runs:
         MANUAL_COMMENT_ID: ${{ inputs.manual-comment-id }}
         MANUAL_BY: ${{ inputs.manual-by }}
         OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
+        OSAC_CI_STATUSES_TOKEN: ${{ inputs.statuses-token }}
         ACTION_PATH: ${{ github.action_path }}
         OUT_DIR: ${{ runner.temp }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
         if [ -z "${OSAC_CI_ORG_TOKEN:-}" ]; then unset OSAC_CI_ORG_TOKEN; fi
+        if [ -z "${OSAC_CI_STATUSES_TOKEN:-}" ]; then unset OSAC_CI_STATUSES_TOKEN; fi
         if [ -n "$NUMBER" ]; then
           case "$NUMBER" in
             *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;

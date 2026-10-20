@@ -37,9 +37,10 @@ from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
+from osac_ci.suite_lines import STATUS_CREATORS, suite_line_runs_if_readable
 
 CONTEXT = "E2E"
-CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as
+CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as (see STATUS_CREATORS)
 KINDS = ("statuses", "checks")  # where the E2E lines are written: commit statuses, or check runs of the app
 DESCRIPTION_MAX = 140  # what GitHub keeps of a status description
 WAITING_ID = "waiting"  # external id of a status that waits
@@ -272,9 +273,9 @@ def newest_status(
     client: GitHubClient, repo: str, sha: str, context: str, kind: str = "statuses"
 ) -> Mapping[str, Any] | None:
     """The newest line of this name that this workflow side wrote on the commit, as a status-shaped mapping (``state``,
-    ``description``, ``target_url``). Statuses: those of the GitHub Actions bot (GitHub lists them newest first). Check
-    runs: those of the OSAC CI app, the newest by id; an in-progress run is ``pending``, a finished one ``success``,
-    ``failure`` or ``error`` (a cancelled one)."""
+    ``description``, ``target_url``). Statuses: those of the OSAC CI app or the GitHub Actions bot (GitHub lists them
+    newest first). Check runs: those of the OSAC CI app, the newest by id; an in-progress run is ``pending``, a
+    finished one ``success``, ``failure`` or ``error`` (a cancelled one)."""
     if kind == "checks":
         runs = paginate(
             client,
@@ -297,7 +298,7 @@ def newest_status(
         }
     statuses = paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/statuses")
     for status in statuses:
-        if status.get("context") == context and (status.get("creator") or {}).get("login") == CREATOR:
+        if status.get("context") == context and (status.get("creator") or {}).get("login") in STATUS_CREATORS:
             return status  # type: ignore[no-any-return]
     return None
 
@@ -389,9 +390,11 @@ def report(
     run_id: int,
     run_url: str,
     kind: str = "statuses",
+    lines_kind: str | None = None,
 ) -> Report:
     """Show the answer of ``e2e-decide`` on the pull request and, for ``start``, claim the E2E for this run. Nothing
-    is done unless exactly one pull request was decided."""
+    is done unless exactly one pull request was decided. ``kind`` is where the E2E line is written; the lines of the
+    suites are written as ``lines_kind`` (the same by default): commit statuses link their row straight to the job."""
     if not all(isinstance(e, Mapping) for e in entries):
         raise ValueError("every decision must be an object")
     if len(entries) != 1:
@@ -406,6 +409,8 @@ def report(
         if unnamed:
             raise ValueError(f"the decision gives no line name for: {', '.join(unnamed)}")
     lines = tuple((suite, wanted[suite]) for suite in _suites(entry) if suite in wanted)
+    if lines_kind is not None and lines_kind not in KINDS:
+        raise ValueError(f"lines kind must be one of {', '.join(KINDS)}, not {lines_kind!r}")
     existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     for write in outcome.writes:
@@ -414,7 +419,7 @@ def report(
     by_hand = bool(entry.get("manual"))
     if outcome.start and by_hand:
         for _suite, line in lines:
-            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, kind)
+            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, lines_kind or kind)
     elif outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
@@ -426,7 +431,7 @@ def report(
         # The suite lines appear together with E2E, not a job start later (and replace a result left by an earlier
         # attempt of this run). The tracking job keeps them current from here on.
         for _suite, line in lines:
-            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, kind)
+            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, lines_kind or kind)
     return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines)
 
 
@@ -442,12 +447,15 @@ def finish(
 
 
 def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
-    """For each suite (id -> line name), what its line says on the commit: none, active, passed or failed."""
-    runs = tuple(
-        CheckRun(raw["name"], raw["status"], raw.get("conclusion"), raw.get("started_at"), app=CHECK_APP)
-        for raw in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
-        if (raw.get("app") or {}).get("slug") == CHECK_APP
-    )
+    """For each suite (id -> line name), what its line says on the commit: none, active, passed or failed. A line is a
+    check run of the app or a commit status (see ``suite_lines``); the newest of a name counts."""
+    raw = [
+        r
+        for r in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
+        if (r.get("app") or {}).get("slug") == CHECK_APP
+    ]
+    raw += suite_line_runs_if_readable(client, repo, sha, lines.values(), CHECK_APP)
+    runs = tuple(CheckRun(r["name"], r["status"], r.get("conclusion"), r.get("started_at"), app=CHECK_APP) for r in raw)
     latest = latest_checks(runs)
     return {suite: line_state(latest, line) for suite, line in lines.items()}
 

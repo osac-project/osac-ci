@@ -43,6 +43,7 @@ from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, pagin
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
+from osac_ci.suite_lines import suite_line_runs_if_readable
 
 MARKER = "<!-- osac-ci:manual-run -->"
 BOT_LOGIN = "osac-ci[bot]"  # who writes the control comment: the OSAC CI app
@@ -558,7 +559,8 @@ def refresh(
         if isinstance(r, Mapping)
     ]
     kept = notes if notes is not None else (notes_of(str(existing.get("body", ""))) if existing else "")
-    body = render_comment(sha, views_for(suites, runs), kept, status_of(client, repo, number, pr, runs))
+    lines = suite_line_runs_if_readable(client, repo, sha, [s.check for s in suites], CHECK_APP)
+    body = render_comment(sha, views_for(suites, [*runs, *lines]), kept, status_of(client, repo, number, pr, runs))
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:

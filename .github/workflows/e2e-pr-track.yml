@@ -28,6 +28,13 @@ on:
         description: Id of the OSAC CI app
         type: string
         default: "4966101"
+      lines-kind:
+        description: >-
+          Where the lines of the suites (`E2E / VMaaS Full Install`) are written: `checks` (check runs of the app, with a
+          spinner while a suite runs; the row opens the Checks tab first) or `statuses` (commit statuses, a dot instead of
+          a spinner; the row links straight to the job). Give every workflow of the flow the same value.
+        type: string
+        default: checks
     secrets:
       OSAC_CI_APP_PRIVATE_KEY:
         description: Private key of the OSAC CI app (an organization secret)
@@ -56,11 +63,12 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
       - name: Follow the suites (round 1)
         uses: $/.github/actions/e2e-suites-track
         with:
           github-token: ${{ steps.app-token-1.outputs.token }}
-          kind: checks
+          kind: ${{ inputs.lines-kind }}
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
@@ -74,11 +82,12 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
       - name: Follow the suites (round 2)
         uses: $/.github/actions/e2e-suites-track
         with:
           github-token: ${{ steps.app-token-2.outputs.token }}
-          kind: checks
+          kind: ${{ inputs.lines-kind }}
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
@@ -92,11 +101,12 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
       - name: Follow the suites (round 3)
         uses: $/.github/actions/e2e-suites-track
         with:
           github-token: ${{ steps.app-token-3.outputs.token }}
-          kind: checks
+          kind: ${{ inputs.lines-kind }}
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
