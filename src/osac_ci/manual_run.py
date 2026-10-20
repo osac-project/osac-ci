@@ -10,7 +10,9 @@ can be asked in a comment of one line, ``/test`` (the suites the change needs) o
 * ``parse_command`` reads a ``/test`` comment; ``read_request`` checks that an edited comment is the control comment of
   this pull request (or that a command is the person's own), that the person is a member of the organization, and gives
   the suites asked for;
-* ``refresh`` writes (creates or updates) the comment from the state of the head commit.
+* ``refresh`` writes (creates or updates) the comment from the state of the head commit;
+* the first line of the comment is the status of the head commit: the ``CI`` check (with the checks that failed) and
+  what the E2E suites say. It is read from the check runs ``refresh`` already lists, so it costs no request.
 
 Only the OSAC CI app writes the comment, so a comment of anyone else with the same marker is never read as a request.
 The first line of defense is that a person needs write access to edit a comment of the app at all; the code does not
@@ -48,6 +50,13 @@ STATE_TEXT = {
     "failed": "❌ failed",
 }
 RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
+# The CI check: the one aggregate job of the repository's own CI workflow (GitHub Actions), whose name every repository
+# of the flow shares because it is the required check.
+CI_CHECK = "CI"
+CI_APP = "github-actions"
+CI_TEXT = {"active": "⏳ running", "passed": "✅ passed", "failed": "❌ failed", "cancelled": "🚫 cancelled"}
+CI_FAILED = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
+FAILED_SHOWN = 5  # how many failed checks the status line names
 
 
 @dataclass(frozen=True)
@@ -64,18 +73,58 @@ class SuiteView:
         return self.check[len(LINE_PREFIX) :] if self.check.startswith(LINE_PREFIX) else self.check
 
 
+@dataclass(frozen=True)
+class CiView:
+    """The ``CI`` check of the head commit as the comment shows it: active | passed | failed | cancelled, the link of
+    its run, and the names of the other checks that failed on the commit (the E2E lines are not among them)."""
+
+    state: str
+    url: str = ""
+    failed: tuple[str, ...] = ()
+
+
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
     """A GitHub alert block (a note, a tip): a quote whose first line names the kind."""
     return [f"> [!{kind}]", *(f"> {line}".rstrip() for line in lines)]
 
 
-def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str:
-    """The comment: an alert that says what it is for, the suites with a checkbox each in a collapsed section, and the
-    answer to the last request. Every box is unchecked: a box that was checked is cleared when the request has been
-    answered."""
+def status_lines(views: Sequence[SuiteView], ci: CiView | None = None) -> list[str]:
+    """The status of the head commit in one line: the CI check (a link to its run), then what the E2E suites say as
+    counts (passed, failed, running, not run). A failed CI names the checks that failed in a second line."""
+    counts = {state: sum(v.state == state for v in views) for state in ("failed", "active", "passed", "none")}
+    e2e = " · ".join(
+        f"{icon} {counts[state]} {word}"
+        for state, icon, word in (
+            ("failed", "❌", "failed"),
+            ("active", "⏳", "running"),
+            ("passed", "✅", "passed"),
+            ("none", "➖", "not run"),
+        )
+        if counts[state]
+    )
+    parts = []
+    if ci is not None:
+        text = CI_TEXT.get(ci.state, ci.state)
+        icon, _, word = text.partition(" ")
+        parts.append(f"**CI** {icon} [{word}]({ci.url})" if ci.url else f"**CI** {text}")
+    if e2e:
+        parts.append(f"**E2E** {e2e}")
+    lines = [" · ".join(parts), ""] if parts else []
+    if ci is not None and ci.failed:
+        names = ", ".join(f"`{n}`" for n in ci.failed[:FAILED_SHOWN])
+        more = len(ci.failed) - FAILED_SHOWN
+        lines += [f"Failed checks: {names}" + (f" and {more} more" if more > 0 else ""), ""]
+    return lines
+
+
+def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", ci: CiView | None = None) -> str:
+    """The comment: the status of the head commit, an alert that says what it is for, the suites with a checkbox each
+    in a collapsed section, and the answer to the last request. Every box is unchecked: a box that was checked is
+    cleared when the request has been answered."""
     lines = [
         MARKER,
         f"<!-- head:{sha} -->",
+        *status_lines(views, ci),
         *_alert(
             "TIP",
             [
@@ -251,6 +300,46 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
     return tuple(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, "")) for s in suites)
 
 
+def ci_view(runs: Sequence[Mapping[str, object]]) -> CiView | None:
+    """The ``CI`` check of the head commit, from its raw check runs; None when the commit has none (or it was skipped,
+    which says nothing). Only the GitHub Actions check of that name counts: another app can create one too. The newest
+    run of a check wins, as everywhere else. The failed checks are those, of any app but this one, whose newest run
+    failed; the E2E lines are left out because the comment shows them below."""
+
+    def started(r: Mapping[str, object]) -> str:
+        return str(r.get("started_at") or "")
+
+    def slug(r: Mapping[str, object]) -> object:
+        app = r.get("app")
+        return app.get("slug") if isinstance(app, Mapping) else None
+
+    ci = [r for r in runs if r.get("name") == CI_CHECK and slug(r) == CI_APP]
+    if not ci:
+        return None
+    run = max(ci, key=started)
+    conclusion = _conclusion(run)
+    if run.get("status") != "completed":
+        state = "active"
+    elif conclusion == "success":
+        state = "passed"
+    elif conclusion in CI_FAILED:
+        state = "failed"
+    elif conclusion == "cancelled":
+        state = "cancelled"
+    else:
+        return None
+    newest: dict[str, Mapping[str, object]] = {}
+    for r in sorted(runs, key=started):
+        if slug(r) != CHECK_APP and r.get("name") != CI_CHECK:
+            newest[str(r.get("name"))] = r
+    failed = tuple(
+        sorted(
+            n for n, r in newest.items() if n != CI_CHECK and not n.startswith("E2E") and _conclusion(r) in CI_FAILED
+        )
+    )
+    return CiView(state, str(run.get("details_url") or run.get("html_url") or ""), failed if state == "failed" else ())
+
+
 def refresh(
     client: GitHubClient,
     policy: Policy,
@@ -284,7 +373,7 @@ def refresh(
         if isinstance(r, Mapping)
     ]
     kept = notes if notes is not None else (notes_of(str(existing.get("body", ""))) if existing else "")
-    body = render_comment(sha, views_for(suites, runs), kept)
+    body = render_comment(sha, views_for(suites, runs), kept, ci_view(runs))
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:

@@ -146,6 +146,10 @@ with a checkbox per suite; the caller above only needs the `issue_comment` trigg
 extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.yml`; a job with `manual_only: true` is
 listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
 for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
+The first line of the comment is the status of the head commit, so the pull request says where it stands without a
+look at the checks: `**CI** ✅ passed · **E2E** ✅ 2 passed · ➖ 1 not run`. The CI part is the `CI` check of the
+repository's own workflow (a link to its run; when it failed, the names of the checks that failed follow), and it is
+left out for a repository whose commits have no such check. The line is refreshed when CI starts and when it ends.
 The rules are in [`RULES.md`](RULES.md).
 
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)

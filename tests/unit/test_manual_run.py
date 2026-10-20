@@ -686,3 +686,128 @@ def test_a_command_inside_the_control_comment_text_of_someone_else_is_not_read_a
     # A person who copies the control comment (marker and checked box) is neither the app nor a command.
     api = command_api(checked("caas"), author="bob")
     assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "", "")  # type: ignore[arg-type]
+
+
+# the status line ----------------------------------------------------------------------------------------------------
+
+
+def actions_check(
+    name: str, conclusion: str | None = "success", started: str = "2026-10-10T10:00:00Z"
+) -> dict[str, Any]:
+    return {
+        "name": name, "status": "completed" if conclusion else "in_progress", "conclusion": conclusion,
+        "started_at": started, "app": {"slug": "github-actions"}, "details_url": f"https://x/{name.replace(' ', '-')}",
+    }  # fmt: skip
+
+
+def status_of(body: str) -> str:
+    return body.split("<!-- head:")[1].split("-->", 1)[1].split("> [!TIP]")[0].strip()
+
+
+@pytest.mark.parametrize(
+    ("runs", "state"),
+    [
+        ([actions_check("CI")], "passed"),
+        ([actions_check("CI", None)], "active"),
+        ([actions_check("CI", "failure")], "failed"),
+        ([actions_check("CI", "timed_out")], "failed"),
+        ([actions_check("CI", "cancelled")], "cancelled"),
+    ],
+)
+def test_the_ci_check_state_is_read_from_its_newest_run(runs: list[dict[str, Any]], state: str) -> None:
+    view = manual_run.ci_view(runs)
+    assert view is not None and view.state == state and view.url == "https://x/CI"
+
+
+def test_the_newest_run_of_the_ci_check_wins() -> None:
+    runs = [
+        actions_check("CI", "failure", "2026-10-10T10:00:00Z"),
+        actions_check("CI", "success", "2026-10-10T11:00:00Z"),
+    ]
+    view = manual_run.ci_view(runs)
+    assert view is not None and view.state == "passed"
+
+
+@pytest.mark.parametrize(
+    "runs",
+    [
+        [],
+        [actions_check("lint")],
+        [actions_check("CI", "skipped")],
+        [actions_check("CI", "neutral")],
+        [{**actions_check("CI"), "app": {"slug": "someone-else"}}],  # another app's check of that name says nothing
+        [{**actions_check("CI"), "app": None}],
+    ],
+)
+def test_a_commit_with_no_usable_ci_check_has_no_ci_status(runs: list[dict[str, Any]]) -> None:
+    assert manual_run.ci_view(runs) is None
+
+
+def test_a_failed_ci_names_the_checks_that_failed_but_not_the_e2e_lines_or_a_check_that_passed_since() -> None:
+    runs = [
+        actions_check("CI", "failure"),
+        actions_check("Unit tests", "failure"),
+        actions_check("Lint", "failure", "2026-10-10T09:00:00Z"),
+        actions_check("Lint", "success", "2026-10-10T10:30:00Z"),  # failed first, passed on the newest run
+        actions_check("Integration test", "timed_out"),
+        actions_check("Docs", "skipped"),
+        passed("E2E / VMaaS Full Install") | {"conclusion": "failure"},
+        actions_check("E2E", "failure"),
+        {**actions_check("Snyk", "failure"), "app": {"slug": "snyk"}},
+    ]
+    view = manual_run.ci_view(runs)
+    assert view is not None
+    assert view.failed == ("Integration test", "Snyk", "Unit tests")
+
+
+def test_a_suite_line_of_the_app_is_not_a_failed_check_whatever_its_name() -> None:
+    runs = [actions_check("CI", "failure"), {**actions_check("Netris suite", "failure"), "app": {"slug": "osac-ci"}}]
+    view = manual_run.ci_view(runs)
+    assert view is not None and view.failed == ()
+
+
+def test_a_passing_ci_names_no_failed_checks() -> None:
+    view = manual_run.ci_view([actions_check("CI"), actions_check("Optional", "failure")])
+    assert view is not None and view.failed == ()
+
+
+def test_the_comment_starts_with_the_status_of_the_head_commit() -> None:
+    ci = manual_run.CiView("passed", "https://x/CI")
+    body = manual_run.render_comment(HEAD, views(), "", ci)
+    assert status_of(body) == "**CI** ✅ [passed](https://x/CI) · **E2E** ✅ 1 passed · ➖ 1 not run"
+    assert body.index("**CI**") < body.index("> [!TIP]")
+    assert manual_run.requested_suites(body) == () and manual_run.head_of(body) == HEAD
+
+
+def test_the_status_counts_every_state_of_the_suites_in_a_fixed_order() -> None:
+    many = tuple(
+        manual_run.SuiteView(f"s{i}", f"E2E / S{i}", st)
+        for i, st in enumerate(["none", "passed", "active", "failed", "failed"])
+    )
+    line = status_of(manual_run.render_comment(HEAD, many))
+    assert line == "**E2E** ❌ 2 failed · ⏳ 1 running · ✅ 1 passed · ➖ 1 not run"
+
+
+def test_a_failed_ci_lists_the_failed_checks_and_says_how_many_more_there_are() -> None:
+    names = tuple(f"check {i}" for i in range(8))
+    body = manual_run.render_comment(HEAD, views(), "", manual_run.CiView("failed", "https://x/CI", names))
+    status = status_of(body)
+    assert status.splitlines()[0].startswith("**CI** ❌ [failed](https://x/CI)")
+    assert "Failed checks: `check 0`, `check 1`, `check 2`, `check 3`, `check 4` and 3 more" in status
+    short = manual_run.render_comment(HEAD, views(), "", manual_run.CiView("failed", "", ("a", "b")))
+    assert "Failed checks: `a`, `b`" in short and "more" not in status_of(short).split("Failed checks:")[1]
+    assert "**CI** ❌ failed" in short  # no link when the check has no address
+
+
+def test_the_status_without_a_ci_check_is_the_e2e_part_only() -> None:
+    assert status_of(manual_run.render_comment(HEAD, views())).startswith("**E2E**")
+
+
+def test_the_status_line_is_the_part_of_the_comment_a_refresh_changes_when_ci_ends() -> None:
+    fake = Fake([actions_check("CI", None)])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert "**CI** ⏳ [running]" in fake.comments[0]["body"]
+    fake.runs[0] = actions_check("CI", "success")
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
+    assert "**CI** ✅ [passed]" in fake.comments[0]["body"]
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "unchanged"  # type: ignore[arg-type]
