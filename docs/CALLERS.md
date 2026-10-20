@@ -112,7 +112,9 @@ jobs:
 ```
 
 The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay` that does nothing on
-`pull_request_review` and on `pull_request` `ready_for_review`/`converted_to_draft`; finishing wakes `e2e-pr.yml`.
+`pull_request_review` and on `pull_request` `ready_for_review`, `converted_to_draft`, `enqueued`, `dequeued`,
+`auto_merge_enabled` and `auto_merge_disabled`; finishing wakes `e2e-pr.yml`, which refreshes the control comment (the
+last four are what keep its merge queue and auto-merge rows current).
 
 ## The caller of the early comment (`.github/workflows/e2e-comment.yml`)
 
@@ -169,12 +171,14 @@ extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.ym
 listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
 for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
 The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
-on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, and whether auto-merge is on; a draft and a
-merge conflict get a row of their own. The E2E suites and the ways to start them are below it, in a collapsed section. Rows
-that do not apply (a check the commit does not have) are left out. The block is refreshed when CI starts or ends, a review
-is submitted or dismissed, or someone comments, and right after the app turns on auto-merge (the `manual-status` action, in
-the auto-merge job). What happens with no event - a person turning auto-merge on or off by hand, a pull request entering the
-merge queue - shows at the next refresh; the merge queue has no row for that reason.
+on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
+request is in the merge queue (in it, with its place; taken out, with why; or not queued); a draft and a merge conflict get
+a row of their own. The E2E suites and the ways to start them are below it, in a collapsed section. Rows that do not apply
+(a check the commit does not have) are left out. The block is refreshed when CI starts or ends, a review is submitted or
+dismissed, the pull request is queued or taken out of the merge queue, auto-merge is turned on or off, or someone
+comments, and right after the app turns on auto-merge (the `manual-status` action, in the auto-merge job). The queue and
+auto-merge events reach the decision through the review relay (see below), which the repository's relay workflow must
+list.
 The rules are in [`RULES.md`](RULES.md).
 
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)

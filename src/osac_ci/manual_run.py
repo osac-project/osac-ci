@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from osac_ci.e2e_start import (
     CHECK_APP,
@@ -83,6 +83,30 @@ CHECK_WORD = {
 }
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 FAILED_SHOWN = 5  # how many failed checks the CI row names
+# The merge queue of a pull request: its entry (where it is in the queue) and its last events (added, removed and why).
+QUEUE_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) {
+    mergeQueueEntry { state position }
+    timelineItems(last: 30, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+      nodes { __typename
+        ... on AddedToMergeQueueEvent { createdAt }
+        ... on RemovedFromMergeQueueEvent { createdAt reason } } } } } }
+"""
+QUEUE_ENTRY_WORDS = {
+    "QUEUED": "waiting its turn",
+    "AWAITING_CHECKS": "checks are running",
+    "MERGEABLE": "ready to merge",
+    "LOCKED": "locked, a pull request before it is failing",
+    "UNMERGEABLE": "cannot be merged",
+}
+# Why GitHub took a pull request out of the queue, in words. Anything else is shown as GitHub wrote it.
+QUEUE_REMOVAL_WORDS = {
+    "failed_checks": "checks failed",
+    "checks_timed_out": "checks timed out",
+    "merge_conflict": "merge conflict",
+    "manual": "taken out by a person",
+}
 
 
 @dataclass(frozen=True)
@@ -111,11 +135,21 @@ class CheckView:
 
 
 @dataclass(frozen=True)
+class QueueView:
+    """Where a pull request is in the merge queue: queued (``detail`` says where) | removed (``detail`` says why;
+    ``by_person`` when a person took it out) | none (not queued)."""
+
+    state: str
+    detail: str = ""
+    by_person: bool = False
+
+
+@dataclass(frozen=True)
 class PrStatus:
     """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
     unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
     ``ignored`` the people whose approval does not count; ``auto_merge`` is the merge method when auto-merge is on,
-    empty when it is off."""
+    empty when it is off; ``queue`` the merge queue (None when it could not be read: the row is then left out)."""
 
     approval: str
     approvers: tuple[str, ...] = ()
@@ -126,6 +160,7 @@ class PrStatus:
     auto_merge: str = ""
     draft: bool = False
     conflict: bool = False
+    queue: QueueView | None = None
 
 
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
@@ -162,6 +197,16 @@ def _approval_row(status: PrStatus, sha: str) -> str:
     return row
 
 
+def _queue_row(queue: QueueView) -> str:
+    if queue.state == "queued":
+        return f"- ⏳ **Merge queue:** in the queue ({queue.detail})"
+    if queue.state == "removed":
+        if queue.by_person:
+            return f"- ➖ **Merge queue:** {queue.detail}"
+        return f"- ❌ **Merge queue:** removed from the queue: {queue.detail}"
+    return "- ➖ **Merge queue:** not queued"
+
+
 def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
     """The status of the pull request in one alert, between two markers so that it can be refreshed on its own. Rows
     that do not apply are left out (a check the commit does not have, a draft that is not one)."""
@@ -181,6 +226,8 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
             rows.append(f"- ✅ **Auto-merge:** on ({status.auto_merge})")
         else:
             rows.append("- ➖ **Auto-merge:** off")
+        if status.queue is not None:
+            rows.append(_queue_row(status.queue))
     return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
 
 
@@ -233,8 +280,8 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status
     lines += [
         NOTES_END,
         "",
-        f"<sub>[How suites are started by hand]({RULES_URL}) · The status is refreshed when CI starts or ends, "
-        "a review changes, or someone comments · osac-ci</sub>",
+        f"<sub>[How suites are started by hand]({RULES_URL}) · The status is refreshed when CI starts or ends, a "
+        "review, auto-merge or the merge queue changes, or someone comments · osac-ci</sub>",
         "",
     ]
     return "\n".join(lines)
@@ -482,6 +529,43 @@ def pr_status(
     )
 
 
+def queue_view(client: GitHubClient, repo: str, number: int) -> QueueView | None:
+    """Where the pull request is in the merge queue, from GitHub's GraphQL: queued with its place, removed (the latest
+    thing that happened to it in the queue, and why) or not queued. None when the answer cannot be had (the token may
+    not read the queue, or GitHub says no): the status then has no queue row rather than a wrong one."""
+    owner, _, name = check_repo(repo).partition("/")
+    try:
+        response = client.request(
+            "POST",
+            "/graphql",
+            body={"query": QUEUE_QUERY, "variables": {"owner": owner, "name": name, "number": int(number)}},
+        )
+    except GitHubError:
+        return None
+    data = response.data
+    if response.status != 200 or not isinstance(data, Mapping) or data.get("errors"):
+        return None
+    repository = (data.get("data") or {}).get("repository") or {}
+    pr = repository.get("pullRequest") if isinstance(repository, Mapping) else None
+    if not isinstance(pr, Mapping):
+        return None
+    entry = pr.get("mergeQueueEntry")
+    if isinstance(entry, Mapping):
+        word = QUEUE_ENTRY_WORDS.get(str(entry.get("state")), "in the queue")
+        place = entry.get("position")
+        return QueueView("queued", f"position {place}, {word}" if isinstance(place, int) else word)
+    items = (pr.get("timelineItems") or {}).get("nodes") or []
+    events = sorted((e for e in items if isinstance(e, Mapping)), key=lambda e: str(e.get("createdAt") or ""))
+    last = events[-1] if events else None
+    if last is None or last.get("__typename") != "RemovedFromMergeQueueEvent" or last.get("reason") == "merged":
+        return QueueView("none")
+    reason = str(last.get("reason") or "")
+    by_person = reason == "manual"
+    return QueueView(
+        "removed", QUEUE_REMOVAL_WORDS.get(reason, reason.replace("_", " ")) or "no reason given", by_person
+    )
+
+
 def status_of(
     client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
 ) -> PrStatus:
@@ -490,10 +574,12 @@ def status_of(
     raw = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
     user = pr.get("user")
     author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
+    queue = queue_view(client, repo, number)
     try:
-        return pr_status(pr, reviews_with_roles(client, repo, raw, author), runs, repo=repo)
+        status = pr_status(pr, reviews_with_roles(client, repo, raw, author), runs, repo=repo)
     except GitHubError:
-        return pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
+        status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
+    return replace(status, queue=queue)
 
 
 def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
