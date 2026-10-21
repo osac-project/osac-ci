@@ -180,6 +180,17 @@ def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[s
     return approvals_of(inputs.reviews, inputs.head_sha, inputs.author, inputs.fork)
 
 
+def bot_blockers(reviews: Iterable[Review]) -> tuple[str, ...]:
+    """The trusted bots (CodeRabbit) whose latest review requests changes. They never block the E2E decision, but
+    GitHub's own merge rules still count a request for changes until the bot approves or the review is dismissed, so the
+    status of the control comment names them."""
+    return tuple(
+        user
+        for user, review in sorted(_latest_reviews(reviews).items())
+        if review.state == "CHANGES_REQUESTED" and user in TRUSTED_BOTS
+    )
+
+
 def approvals_of(
     reviews: Iterable[Review], head_sha: str, author: str, fork: bool
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:

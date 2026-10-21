@@ -33,6 +33,7 @@ from osac_ci.e2e_start import (
     Suite,
     approvals_of,
     approvals_seen,
+    bot_blockers,
     line_state,
     reviews_with_roles,
     reviews_with_roles_unread,
@@ -55,12 +56,32 @@ BOX = re.compile(rf"^- \[(?P<mark>[ xX])\] <!-- suite:(?P<suite>{SUITE_ID}) -->"
 # The command: "/test" alone, or "/test" and suite ids, alone on the first line of a comment. Anything else is not one.
 COMMAND = re.compile(rf"/test(?:[ \t]+(?P<names>{SUITE_ID}(?:[ \t]+{SUITE_ID}){{0,9}}))?[ \t]*")
 LINE_PREFIX = "E2E / "
+# The icons of the comment: small images kept in docs/icons of this repository (GitHub shows no custom emoji), like the
+# ones CodeRabbit uses. The alt text is what shows when an image cannot load.
+ICON_BASE = "https://raw.githubusercontent.com/osac-project/osac-ci/main/docs/icons"
+ICON_ALT = {
+    "passed": "Passed",
+    "error": "Error",
+    "warning": "Warning",
+    "pending": "Pending",
+    "neutral": "Not applicable",
+    "closed": "Closed",
+    "merged": "Merged",
+}
+
+
+def icon(name: str) -> str:
+    """The image of an icon, inline with the text that follows it."""
+    alt = ICON_ALT[name]
+    return f'<img src="{ICON_BASE}/{name}.svg" width="14" height="14" align="middle" alt="{alt}" title="{alt}">'
+
+
 # What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
 STATE_TEXT = {
-    "none": "➖ not run on this commit",
-    "active": "⏳ running",
-    "passed": "✅ passed",
-    "failed": "❌ failed",
+    "none": f"{icon('neutral')} not run on this commit",
+    "active": f"{icon('pending')} running",
+    "passed": f"{icon('passed')} passed",
+    "failed": f"{icon('error')} failed",
 }
 RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
 # The checks the status block shows. CI and the Jira reference are jobs of the repository's own workflows (GitHub
@@ -73,7 +94,13 @@ ACTIONS_APP = "github-actions"
 STATUS_START = "<!-- status:start -->"
 STATUS_END = "<!-- status:end -->"
 STATUS_BLOCK = re.compile(rf"{re.escape(STATUS_START)}.*?{re.escape(STATUS_END)}", re.DOTALL)
-CHECK_ICON = {"active": "⏳", "passed": "✅", "failed": "❌", "cancelled": "🚫", "other": "➖"}
+CHECK_ICON = {
+    "active": icon("pending"),
+    "passed": icon("passed"),
+    "failed": icon("error"),
+    "cancelled": icon("closed"),
+    "other": icon("neutral"),
+}
 CHECK_WORD = {
     "active": "running",
     "passed": "passed",
@@ -148,10 +175,11 @@ class QueueView:
 class PrStatus:
     """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
     unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
-    ``ignored`` the people whose approval does not count; ``auto_merge`` is the merge method when auto-merge is on,
-    empty when it is off; ``queue`` the merge queue (None when it could not be read: the row is then left out);
-    ``closed`` merged | closed once the pull request is over: the block then says so, and says nothing of auto-merge and
-    the queue, which are no more."""
+    ``ignored`` the people whose approval does not count; ``blocked_by`` the bots (CodeRabbit) whose request for changes
+    GitHub still holds against the merge, though the decision to start the E2E ignores it; ``auto_merge`` is the merge
+    method when auto-merge is on, empty when it is off; ``queue`` the merge queue (None when it could not be read: the
+    row is then left out); ``closed`` merged | closed once the pull request is over: the block then says so, and says
+    nothing of auto-merge and the queue, which are no more."""
 
     approval: str
     approvers: tuple[str, ...] = ()
@@ -165,6 +193,7 @@ class PrStatus:
     queue: QueueView | None = None
     closed: str = ""  # "" while open | merged | closed (without merging)
     base: str = ""  # the branch it was or would be merged into
+    blocked_by: tuple[str, ...] = ()
 
 
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
@@ -173,10 +202,10 @@ def _alert(kind: str, lines: Sequence[str]) -> list[str]:
 
 
 def _check_row(name: str, view: CheckView) -> str:
-    icon = CHECK_ICON.get(view.state, "➖")
+    mark = CHECK_ICON.get(view.state, icon("neutral"))
     text = view.title or CHECK_WORD.get(view.state, view.state)
     text = f"[{text}]({view.url})" if view.url else text
-    row = f"- {icon} **{name}:** {text}"
+    row = f"- {mark} **{name}:** {text}"
     if view.failed:
         names = ", ".join(f"`{n}`" for n in view.failed[:FAILED_SHOWN])
         more = len(view.failed) - FAILED_SHOWN
@@ -187,14 +216,20 @@ def _check_row(name: str, view: CheckView) -> str:
 def _approval_row(status: PrStatus, sha: str) -> str:
     who = ", ".join(f"`{login}`" for login in status.approvers)
     if status.approval == "approved":
-        return f"- ✅ **Approval:** approved by {who} on `{sha[:7]}`"
+        return f"- {icon('passed')} **Approval:** approved by {who} on `{sha[:7]}`"
     if status.approval == "older":
-        return f"- 🔄 **Approval:** approved by {who} on an older commit; needs a new approval on `{sha[:7]}`"
+        return (
+            f"- {icon('warning')} **Approval:** approved by {who} on an older commit; "
+            f"needs a new approval on `{sha[:7]}`"
+        )
     if status.approval == "changes":
-        return f"- ❌ **Approval:** changes requested by {who}"
+        return f"- {icon('error')} **Approval:** changes requested by {who}"
     if status.approval == "unchecked" and status.approvers:
-        return f"- ❔ **Approval:** the reviews show an approval by {who}; who may approve could not be checked"
-    row = "- ⏳ **Approval:** waiting for an approval"
+        return (
+            f"- {icon('warning')} **Approval:** the reviews show an approval by {who}; "
+            "who may approve could not be checked"
+        )
+    row = f"- {icon('pending')} **Approval:** waiting for an approval"
     if status.ignored:
         names = ", ".join(f"`{login}`" for login in status.ignored)
         row += f" (an approval by {names} does not count: not from someone who may approve here)"
@@ -203,12 +238,12 @@ def _approval_row(status: PrStatus, sha: str) -> str:
 
 def _queue_row(queue: QueueView) -> str:
     if queue.state == "queued":
-        return f"- ⏳ **Merge queue:** in the queue ({queue.detail})"
+        return f"- {icon('pending')} **Merge queue:** in the queue ({queue.detail})"
     if queue.state == "removed":
         if queue.by_person:
-            return f"- ➖ **Merge queue:** {queue.detail}"
-        return f"- ❌ **Merge queue:** removed from the queue: {queue.detail}"
-    return "- ➖ **Merge queue:** not queued"
+            return f"- {icon('neutral')} **Merge queue:** {queue.detail}"
+        return f"- {icon('error')} **Merge queue:** removed from the queue: {queue.detail}"
+    return f"- {icon('neutral')} **Merge queue:** not queued"
 
 
 def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
@@ -220,43 +255,56 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
     else:
         over = status.closed in ("merged", "closed")
         if status.closed == "merged":
-            rows.append(f"- 🟣 **Merged** into `{status.base}`" if status.base else "- 🟣 **Merged**")
+            rows.append(
+                f"- {icon('merged')} **Merged** into `{status.base}`"
+                if status.base
+                else f"- {icon('merged')} **Merged**"
+            )
         elif over:
-            rows.append("- ⚫ **Closed** without merging")
+            rows.append(f"- {icon('closed')} **Closed** without merging")
         if status.draft and not over:
             rows.append("- ✏️ **Draft:** mark it ready for review")
         if status.conflict and not over:
-            rows.append("- ❌ **Merge conflict:** rebase on the target branch")
+            rows.append(f"- {icon('error')} **Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))
+        if status.blocked_by and not over:
+            who = ", ".join(f"`{login}`" for login in status.blocked_by)
+            rows.append(
+                f"- {icon('error')} **Review:** {who} requested changes; GitHub will not merge until "
+                "it approves or the review is dismissed"
+            )
         for name, view in (("CI", status.ci), ("Jira reference", status.jira), ("E2E", status.e2e)):
             if view is not None:
                 rows.append(_check_row(name, view))
         if not over:
             queued = status.queue is not None and status.queue.state == "queued"
             if status.auto_merge:
-                rows.append(f"- ✅ **Auto-merge:** on ({status.auto_merge})")
+                rows.append(f"- {icon('passed')} **Auto-merge:** on ({status.auto_merge})")
             elif queued:
                 # GitHub clears the auto-merge of a pull request the moment the queue takes it: it merges by itself
-                rows.append("- ✅ **Auto-merge:** on (the pull request is in the merge queue)")
+                rows.append(f"- {icon('passed')} **Auto-merge:** on (the pull request is in the merge queue)")
             else:
-                rows.append("- ➖ **Auto-merge:** off")
+                rows.append(f"- {icon('neutral')} **Auto-merge:** off")
             if status.queue is not None:
-                rows.append(_queue_row(status.queue))
+                row = _queue_row(status.queue)
+                if status.blocked_by and status.queue.state == "none":
+                    row += " (blocked by the review above)"
+                rows.append(row)
     return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
 
 
 def suites_summary(views: Sequence[SuiteView]) -> str:
     """What the suites say, as counts in the fixed order failed, running, passed, not run: the E2E section's title."""
     counts = [
-        (state, icon, word, sum(v.state == state for v in views))
-        for state, icon, word in (
-            ("failed", "❌", "failed"),
-            ("active", "⏳", "running"),
-            ("passed", "✅", "passed"),
-            ("none", "➖", "not run"),
+        (state, mark, word, sum(v.state == state for v in views))
+        for state, mark, word in (
+            ("failed", icon("error"), "failed"),
+            ("active", icon("pending"), "running"),
+            ("passed", icon("passed"), "passed"),
+            ("none", icon("neutral"), "not run"),
         )
     ]
-    return " · ".join(f"{icon} {n} {word}" for _, icon, word, n in counts if n)
+    return " · ".join(f"{mark} {n} {word}" for _, mark, word, n in counts if n)
 
 
 def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status: PrStatus | None = None) -> str:
@@ -545,6 +593,7 @@ def pr_status(
         approval=approval,
         approvers=approvers,
         ignored=ignored,
+        blocked_by=bot_blockers(reviews),
         ci=check_view(runs, CI_CHECK, ACTIONS_APP, with_failed=True),
         jira=check_view(runs, JIRA_CHECK, ACTIONS_APP),
         e2e=check_view(runs, E2E_CHECK, CHECK_APP, keep_other=True),
