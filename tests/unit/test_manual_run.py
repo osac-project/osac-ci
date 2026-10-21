@@ -1077,7 +1077,6 @@ def test_the_status_block_alone_is_rewritten_and_the_rest_of_the_comment_is_kept
 @pytest.mark.parametrize(
     ("setup", "why"),
     [
-        ("closed", "not open"),
         ("none", "no control comment"),
         ("old", "no status block"),
         ("other-head", "no status block"),
@@ -1087,8 +1086,6 @@ def test_the_status_block_is_left_alone_when_it_cannot_be_trusted(setup: str, wh
     fake = Fake([actions_check("CI")])
     if setup != "none":
         commented(fake)
-    if setup == "closed":
-        fake.pr = {**fake.pr, "state": "closed"}
     if setup == "old":  # a comment written before the status block existed
         fake.comments[0]["body"] = manual_run.STATUS_BLOCK.sub("", fake.comments[0]["body"])
     if setup == "other-head":
@@ -1329,3 +1326,96 @@ def test_the_status_block_on_its_own_follows_the_queue_too() -> None:
     fake.queue = queue_answer(None, (ADDED, "2026-10-20T10:00:00Z", ""), (REMOVED, "2026-10-20T11:00:00Z", "manual"))
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
     assert "**Merge queue:** taken out by a person" in fake.comments[0]["body"]
+
+
+# the pull request is over --------------------------------------------------------------------------------------------
+
+
+def over(state: str = "closed", **changes: Any) -> dict[str, Any]:
+    return {"state": state, "base": {"ref": "main"}, **changes}
+
+
+def test_a_merged_pull_request_says_so_and_drops_what_is_over() -> None:
+    status = manual_run.pr_status(
+        {
+            "head": {"sha": HEAD, "repo": {"full_name": REPO}},
+            **over(merged=True),
+            "draft": True,
+            "mergeable_state": "dirty",
+        },
+        [rv("alice", "APPROVED")],
+        [actions_check("CI")],
+        repo=REPO,
+    )
+    assert (status.closed, status.base) == ("merged", "main")
+    block = block_of(
+        manual_run.render_comment(
+            HEAD, views(), "", replace(status, auto_merge="squash", queue=manual_run.QueueView("queued", "x"))
+        )
+    )
+    rows = [r for r in block.splitlines() if r.startswith("> - ")]
+    assert rows[0] == "> - 🟣 **Merged** into `main`"
+    assert any("**Approval:** approved by `alice`" in r for r in rows) and any("**CI:**" in r for r in rows)
+    assert not [r for r in rows if any(w in r for w in ("Auto-merge", "Merge queue", "Draft", "Merge conflict"))]
+
+
+def test_a_pull_request_closed_without_merging_says_so() -> None:
+    status = manual_run.pr_status({"head": {"sha": HEAD}, **over()}, [], [], repo=REPO)
+    assert status.closed == "closed"
+    block = block_of(manual_run.render_comment(HEAD, views(), "", status))
+    assert "> - ⚫ **Closed** without merging" in block and "Merged" not in block and "Auto-merge" not in block
+
+
+@pytest.mark.parametrize("pr", [over(merged_at="2026-10-21T10:00:00Z"), over(merged=True)])
+def test_a_pull_request_with_a_merge_time_or_flag_is_merged(pr: dict[str, Any]) -> None:
+    assert manual_run.pr_status({"head": {"sha": HEAD}, **pr}, [], [], repo=REPO).closed == "merged"
+
+
+def test_a_pull_request_with_no_state_is_taken_for_open() -> None:
+    assert manual_run.pr_status({"head": {"sha": HEAD}}, [], [], repo=REPO).closed == ""
+
+
+def test_a_merged_pull_request_with_no_base_still_says_merged() -> None:
+    block = block_of(manual_run.render_comment(HEAD, views(), "", manual_run.PrStatus("waiting", closed="merged")))
+    assert "> - 🟣 **Merged**" in block and "into" not in block.split("Merged")[1].splitlines()[0]
+
+
+def test_the_comment_of_a_merged_pull_request_is_rewritten_and_the_queue_is_not_asked_about() -> None:
+    fake = Fake([actions_check("CI")])
+    fake.queue = queue_answer({"state": "AWAITING_CHECKS", "position": 1}, (ADDED, "2026-10-20T10:00:00Z", ""))
+    fake.pr = {**fake.pr, "auto_merge": None}
+    commented(fake)
+    assert "in the queue" in fake.comments[0]["body"]
+    asked = len([p for p in fake.posted if p[1] == "/graphql"])
+    fake.pr = {**fake.pr, **over(merged=True)}
+    assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
+    body = fake.comments[0]["body"]
+    assert "🟣 **Merged** into `main`" in body and "Merge queue" not in body and "Auto-merge" not in body
+    assert len([p for p in fake.posted if p[1] == "/graphql"]) == asked, (
+        "no question about the queue of a closed pull request"
+    )
+    assert manual_run.refresh_status(fake, REPO, 7) == "unchanged"  # type: ignore[arg-type]
+
+
+def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_creates_nothing() -> None:
+    fake = Fake([actions_check("CI")])
+    commented(fake)
+    suites_part = fake.comments[0]["body"].split("<details>")[1]
+    fake.pr = {**fake.pr, **over(merged=True)}
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
+    assert "🟣 **Merged**" in fake.comments[0]["body"] and fake.comments[0]["body"].split("<details>")[1] == suites_part
+    none = Fake([actions_check("CI")])
+    none.pr = {**none.pr, **over()}
+    assert manual_run.refresh(none, POLICY, REPO, 7).startswith("skipped") and none.comments == []  # type: ignore[arg-type]
+
+
+def test_a_pull_request_in_the_queue_has_auto_merge_on_even_though_github_clears_it_while_queued() -> None:
+    queued = manual_run.QueueView("queued", "position 1, waiting its turn")
+    rows = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queued)))
+    assert "- ✅ **Auto-merge:** on (the pull request is in the merge queue)" in rows
+    assert "Auto-merge:** off" not in rows
+    for queue in (None, manual_run.QueueView("none"), manual_run.QueueView("removed", "checks failed")):
+        off = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queue)))
+        assert "- ➖ **Auto-merge:** off" in off, queue
+    on = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="squash", queue=queued)))
+    assert "**Auto-merge:** on (squash)" in on, "the method is shown when GitHub still has the request"

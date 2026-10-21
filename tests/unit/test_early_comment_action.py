@@ -163,19 +163,29 @@ def test_the_workflow_for_a_new_pull_request_posts_fast_with_the_event_data() ->
     assert wf["permissions"] == {}
     job = wf["jobs"]["comment"]
     assert job["permissions"] == {} and job["if"] == "github.event_name == 'pull_request_target'"
-    token, post = job["steps"]
+    token, post, closing = job["steps"]
     assert token["with"]["permission-pull-requests"] == "write" and token["with"]["permission-members"] == "read"
-    assert [k for k in token["with"] if k.startswith("permission-")] == [
-        "permission-pull-requests",
-        "permission-members",
-    ]
-    assert post["uses"] == "$/.github/actions/early-comment"
+    assert post["uses"] == "$/.github/actions/early-comment" and post["if"] == "github.event.action != 'closed'"
     given = post["with"]
     assert given["number"] == "${{ github.event.pull_request.number }}"
     assert given["author"] == "${{ github.event.pull_request.user.login }}"
     assert given["head-sha"] == "${{ github.event.pull_request.head.sha }}"
     assert given["fresh"] == "${{ github.event.action == 'opened' }}"
     assert "uses: actions/checkout" not in COMMENT.read_text(encoding="utf-8")
+
+
+def test_on_closed_the_workflow_rewrites_the_status_block_with_the_extra_permissions_only_then() -> None:
+    token, _, closing = load(COMMENT)["jobs"]["comment"]["steps"]
+    assert closing["uses"] == "$/.github/actions/manual-status" and closing["if"] == "github.event.action == 'closed'"
+    assert closing["with"] == {
+        "github-token": "${{ steps.app-token.outputs.token }}",
+        "repo": "${{ github.repository }}",
+        "number": "${{ github.event.pull_request.number }}",
+    }
+    wanted = {k: v for k, v in token["with"].items() if k.startswith("permission-")}
+    assert wanted["permission-checks"] == "${{ github.event.action == 'closed' && 'read' || '' }}"
+    assert wanted["permission-issues"] == "${{ github.event.action == 'closed' && 'write' || '' }}"
+    assert set(wanted) == {"permission-pull-requests", "permission-members", "permission-checks", "permission-issues"}
 
 
 def test_the_decision_keeps_its_own_early_comment_as_the_second_chance_with_the_same_action() -> None:
