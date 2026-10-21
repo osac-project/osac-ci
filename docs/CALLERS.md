@@ -46,6 +46,7 @@ on:
   workflow_run:
     workflows: ["CI", "E2E review relay", "E2E comment"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name, comment-workflow-name)
     types: [requested, completed]
+    branches-ignore: ["gh-readonly-queue/**"]  # the CI run of a merge queue entry is no pull request: no run for it
   issue_comment:
     types: [edited]                          # the boxes of the control comment (suites started by hand)
   workflow_dispatch:
@@ -116,6 +117,12 @@ The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay`
 `pull_request_review` and on `pull_request` `ready_for_review`, `converted_to_draft`, `enqueued`, `dequeued`,
 `auto_merge_enabled` and `auto_merge_disabled`; finishing wakes `e2e-pr.yml`, which refreshes the control comment (the
 last four are what keep its merge queue and auto-merge rows current).
+
+### Merge queue entries start no run
+
+The CI run of a merge queue entry is on a branch GitHub names `gh-readonly-queue/...`. It is no pull request, the decision
+ignores it, and it used to start a near-empty `E2E for pull requests` run for every entry. The `branches-ignore` line of the
+`workflow_run` trigger in the caller above stops that. GitHub reserves the prefix, so no pull request is lost by it.
 
 ### The run title
 
