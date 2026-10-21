@@ -15,6 +15,9 @@ from osac_ci.github.api import GitHubError, Response
 from osac_ci.model import CheckRun
 
 pytestmark = pytest.mark.unit
+PASSED, ERROR, WARNING, PENDING, NEUTRAL, CLOSED, MERGED = (
+    manual_run.icon(n) for n in ("passed", "error", "warning", "pending", "neutral", "closed", "merged")
+)
 HEAD = "a" * 40
 APP = 15368
 REPO = "o/r"
@@ -272,7 +275,7 @@ def views() -> tuple[manual_run.SuiteView, ...]:
 def test_the_comment_lists_every_suite_with_an_unchecked_box() -> None:
     body = manual_run.render_comment(HEAD, views())
     assert body.startswith(manual_run.MARKER) and "<details>" in body and "> [!TIP]" in body
-    assert "- [ ] <!-- suite:vmaas --> **VMaaS Full Install** · ✅ passed ([run](https://x/run/1))" in body
+    assert f"- [ ] <!-- suite:vmaas --> **VMaaS Full Install** · {PASSED} passed ([run](https://x/run/1))" in body
     assert manual_run.requested_suites(body) == ()
 
 
@@ -282,7 +285,10 @@ def test_the_e2e_section_names_both_ways_to_start_and_the_status_comes_first() -
     assert "## 🚦 CI status" in status and "## 🧪" not in status
     for part in ("**Who:**", "**How to start a suite:**", "**Good to know:**", "`/test`", "`/test <suite>`", HEAD[:7]):
         assert part in section
-    assert "<summary><b>🧪 E2E tests</b> · ✅ 1 passed · ➖ 1 not run · run them now (2 available)</summary>" in section
+    assert (
+        f"<summary><b>🧪 E2E tests</b> · {PASSED} 1 passed · {NEUTRAL} 1 not run · run them now (2 available)</summary>"
+        in section
+    )
     assert max(len(line) for line in body.splitlines() if line.startswith("> ")) < 200  # no wall of text
 
 
@@ -399,7 +405,7 @@ def test_the_comment_is_created_for_a_member_s_pull_request_and_lists_every_suit
     fake = Fake([passed("E2E / VMaaS Full Install")])
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "suite:vmaas" in body and "suite:netris" in body and "VMaaS Full Install** · ✅ passed" in body
+    assert "suite:vmaas" in body and "suite:netris" in body and f"VMaaS Full Install** · {PASSED} passed" in body
 
 
 def test_a_second_refresh_with_nothing_new_writes_nothing() -> None:
@@ -416,7 +422,7 @@ def test_a_changed_line_updates_the_comment_and_keeps_the_last_answer() -> None:
     fake.runs.append(passed("E2E / VMaaS Full Install"))
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "VMaaS Full Install** · ✅ passed" in body and "started by bob" in body
+    assert f"VMaaS Full Install** · {PASSED} passed" in body and "started by bob" in body
 
 
 def test_an_answer_replaces_the_old_one() -> None:
@@ -562,7 +568,7 @@ def test_two_comments_created_at_once_leave_the_oldest_filled_in() -> None:
     fake.early = placeholder  # the early job posts its placeholder between our look and our POST
     assert manual_run.refresh(fake, POLICY, REPO, 7).startswith("created (kept the older")  # type: ignore[arg-type]
     assert [c["id"] for c in fake.comments] == [3]  # ours was deleted, the older one has the place
-    assert "VMaaS Full Install** · ✅ passed" in fake.comments[0]["body"]  # and it was filled in
+    assert f"VMaaS Full Install** · {PASSED} passed" in fake.comments[0]["body"]  # and it was filled in
 
 
 def test_a_comment_created_alone_is_kept() -> None:
@@ -914,11 +920,11 @@ def test_the_status_block_is_a_list_of_what_the_pull_request_waits_for() -> None
         "> [!TIP]",
         "> ## 🚦 CI status",
         ">",
-        "> - ✅ **Approval:** approved by `alice` on `aaaaaaa`",
-        "> - ✅ **CI:** [passed](https://x/CI)",
-        "> - ✅ **Jira reference:** [passed](https://x/J)",
-        "> - ✅ **E2E:** [Passed: all suites](https://x/e2e)",
-        "> - ✅ **Auto-merge:** on (squash)",
+        f"> - {PASSED} **Approval:** approved by `alice` on `aaaaaaa`",
+        f"> - {PASSED} **CI:** [passed](https://x/CI)",
+        f"> - {PASSED} **Jira reference:** [passed](https://x/J)",
+        f"> - {PASSED} **E2E:** [Passed: all suites](https://x/e2e)",
+        f"> - {PASSED} **Auto-merge:** on (squash)",
     ]
 
 
@@ -926,25 +932,26 @@ def test_each_state_of_the_pull_request_has_its_own_row() -> None:
     def rows(**changes: Any) -> str:
         return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
 
-    assert "- ➖ **Auto-merge:** off" in rows(auto_merge="")
+    assert f"- {NEUTRAL} **Auto-merge:** off" in rows(auto_merge="")
     assert "- ✏️ **Draft:** mark it ready for review" in rows(draft=True)
-    assert "- ❌ **Merge conflict:** rebase on the target branch" in rows(conflict=True)
-    assert "- ⏳ **Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
-    assert "- 🔄 **Approval:** approved by `a` on an older commit; needs a new approval on `aaaaaaa`" in rows(
+    assert f"- {ERROR} **Merge conflict:** rebase on the target branch" in rows(conflict=True)
+    assert f"- {PENDING} **Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
+    assert f"- {WARNING} **Approval:** approved by `a` on an older commit; needs a new approval on `aaaaaaa`" in rows(
         approval="older", approvers=("a",)
     )
-    assert "- ❌ **Approval:** changes requested by `a`, `b`" in rows(approval="changes", approvers=("a", "b"))
+    assert f"- {ERROR} **Approval:** changes requested by `a`, `b`" in rows(approval="changes", approvers=("a", "b"))
     assert (
         "waiting for an approval (an approval by `x`, `y` does not count: not from someone who may approve here)"
         in rows(approval="waiting", approvers=(), ignored=("x", "y"))
     )
-    assert "- ❔ **Approval:** the reviews show an approval by `a`; who may approve could not be checked" in rows(
-        approval="unchecked", approvers=("a",)
+    assert (
+        f"- {WARNING} **Approval:** the reviews show an approval by `a`; who may approve could not be checked"
+        in rows(approval="unchecked", approvers=("a",))
     )
-    assert "- ⏳ **Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
-    assert "- ❌ **CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
-    assert "- ⏳ **CI:** running" in rows(ci=manual_run.CheckView("active"))
-    assert "- 🚫 **CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
+    assert f"- {PENDING} **Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
+    assert f"- {ERROR} **CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
+    assert f"- {PENDING} **CI:** running" in rows(ci=manual_run.CheckView("active"))
+    assert f"- {CLOSED} **CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
     assert "Jira" not in rows(jira=None) and "**CI:**" not in rows(ci=None) and "**E2E:**" not in rows(e2e=None)
     assert "Draft" not in rows() and "Merge conflict" not in rows()
 
@@ -963,7 +970,10 @@ def test_the_suites_summary_counts_every_state_in_a_fixed_order() -> None:
         manual_run.SuiteView(f"s{i}", f"E2E / S{i}", st)
         for i, st in enumerate(["none", "passed", "active", "failed", "failed"])
     )
-    assert manual_run.suites_summary(many) == "❌ 2 failed · ⏳ 1 running · ✅ 1 passed · ➖ 1 not run"
+    assert (
+        manual_run.suites_summary(many)
+        == f"{ERROR} 2 failed · {PENDING} 1 running · {PASSED} 1 passed · {NEUTRAL} 1 not run"
+    )
     assert manual_run.suites_summary(()) == ""
 
 
@@ -1068,7 +1078,7 @@ def test_the_status_block_alone_is_rewritten_and_the_rest_of_the_comment_is_kept
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
     assert "**Auto-merge:** on (squash)" in body and "**Auto-merge:** off" not in body
-    assert body.replace("➖ **Auto-merge:** off", "").split("<details>")[1] == kept.split("<details>")[1], (
+    assert body.replace(f"{NEUTRAL} **Auto-merge:** off", "").split("<details>")[1] == kept.split("<details>")[1], (
         "only the block changed"
     )
     assert manual_run.refresh_status(fake, REPO, 7) == "unchanged"  # type: ignore[arg-type]
@@ -1146,15 +1156,15 @@ def test_a_suite_line_that_is_a_status_shows_its_state_and_links_the_job_in_the_
     fake.statuses = [status_line("E2E / VMaaS Full Install", "success", "https://x/o/r/actions/runs/5/job/9")]
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "**VMaaS Full Install** · ✅ passed ([run](https://x/o/r/actions/runs/5/job/9))" in body
-    assert "<summary><b>🧪 E2E tests</b> · ✅ 1 passed · ➖ 1 not run" in body
+    assert f"**VMaaS Full Install** · {PASSED} passed ([run](https://x/o/r/actions/runs/5/job/9))" in body
+    assert f"<summary><b>🧪 E2E tests</b> · {PASSED} 1 passed · {NEUTRAL} 1 not run" in body
 
 
 def test_a_status_line_and_a_check_run_line_of_one_suite_show_the_newer() -> None:
     fake = Fake([passed("E2E / VMaaS Full Install")])  # an older line, a check run (started 2026-10-10T10:00:00Z)
     fake.statuses = [{**status_line("E2E / VMaaS Full Install", "failure"), "created_at": "2026-10-10T11:00:00Z"}]
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
-    assert "VMaaS Full Install** · ❌ failed" in fake.comments[0]["body"]
+    assert f"VMaaS Full Install** · {ERROR} failed" in fake.comments[0]["body"]
 
 
 @pytest.mark.parametrize("creator", ["mallory", "github-actions[bot]"])
@@ -1162,14 +1172,14 @@ def test_a_status_of_someone_else_or_of_the_actions_bot_is_not_a_suite_line_in_t
     fake = Fake([actions_check("CI")])
     fake.statuses = [status_line("E2E / VMaaS Full Install", "success", creator=creator)]
     manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
-    assert "VMaaS Full Install** · ➖ not run on this commit" in fake.comments[0]["body"]
+    assert f"VMaaS Full Install** · {NEUTRAL} not run on this commit" in fake.comments[0]["body"]
 
 
 def test_a_token_that_cannot_read_statuses_leaves_the_comment_written_from_the_check_runs() -> None:
     fake = Fake([passed("E2E / VMaaS Full Install")])
     fake.statuses_status = 403
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
-    assert "VMaaS Full Install** · ✅ passed" in fake.comments[0]["body"]
+    assert f"VMaaS Full Install** · {PASSED} passed" in fake.comments[0]["body"]
 
 
 # the merge queue ---------------------------------------------------------------------------------------------------
@@ -1297,13 +1307,13 @@ def rows_of(**changes: Any) -> str:
 
 def test_each_state_of_the_queue_has_its_row_after_auto_merge() -> None:
     queued = rows_of(queue=manual_run.QueueView("queued", "position 3, checks are running"))
-    assert "- ⏳ **Merge queue:** in the queue (position 3, checks are running)" in queued
+    assert f"- {PENDING} **Merge queue:** in the queue (position 3, checks are running)" in queued
     assert queued.index("Auto-merge") < queued.index("Merge queue")
     failed = rows_of(queue=manual_run.QueueView("removed", "checks failed"))
-    assert "- ❌ **Merge queue:** removed from the queue: checks failed" in failed
+    assert f"- {ERROR} **Merge queue:** removed from the queue: checks failed" in failed
     person = rows_of(queue=manual_run.QueueView("removed", "taken out by a person", True))
-    assert "- ➖ **Merge queue:** taken out by a person" in person and "removed from the queue" not in person
-    assert "- ➖ **Merge queue:** not queued" in rows_of(queue=manual_run.QueueView("none"))
+    assert f"- {NEUTRAL} **Merge queue:** taken out by a person" in person and "removed from the queue" not in person
+    assert f"- {NEUTRAL} **Merge queue:** not queued" in rows_of(queue=manual_run.QueueView("none"))
     assert "Merge queue" not in rows_of(queue=None), "a queue that could not be read has no row"
 
 
@@ -1354,7 +1364,7 @@ def test_a_merged_pull_request_says_so_and_drops_what_is_over() -> None:
         )
     )
     rows = [r for r in block.splitlines() if r.startswith("> - ")]
-    assert rows[0] == "> - 🟣 **Merged** into `main`"
+    assert rows[0] == f"> - {MERGED} **Merged** into `main`"
     assert any("**Approval:** approved by `alice`" in r for r in rows) and any("**CI:**" in r for r in rows)
     assert not [r for r in rows if any(w in r for w in ("Auto-merge", "Merge queue", "Draft", "Merge conflict"))]
 
@@ -1363,7 +1373,7 @@ def test_a_pull_request_closed_without_merging_says_so() -> None:
     status = manual_run.pr_status({"head": {"sha": HEAD}, **over()}, [], [], repo=REPO)
     assert status.closed == "closed"
     block = block_of(manual_run.render_comment(HEAD, views(), "", status))
-    assert "> - ⚫ **Closed** without merging" in block and "Merged" not in block and "Auto-merge" not in block
+    assert f"> - {CLOSED} **Closed** without merging" in block and "Merged" not in block and "Auto-merge" not in block
 
 
 @pytest.mark.parametrize("pr", [over(merged_at="2026-10-21T10:00:00Z"), over(merged=True)])
@@ -1377,7 +1387,7 @@ def test_a_pull_request_with_no_state_is_taken_for_open() -> None:
 
 def test_a_merged_pull_request_with_no_base_still_says_merged() -> None:
     block = block_of(manual_run.render_comment(HEAD, views(), "", manual_run.PrStatus("waiting", closed="merged")))
-    assert "> - 🟣 **Merged**" in block and "into" not in block.split("Merged")[1].splitlines()[0]
+    assert f"> - {MERGED} **Merged**" in block and "into" not in block.split("Merged")[1].splitlines()[0]
 
 
 def test_the_comment_of_a_merged_pull_request_is_rewritten_and_the_queue_is_not_asked_about() -> None:
@@ -1390,7 +1400,7 @@ def test_the_comment_of_a_merged_pull_request_is_rewritten_and_the_queue_is_not_
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "🟣 **Merged** into `main`" in body and "Merge queue" not in body and "Auto-merge" not in body
+    assert f"{MERGED} **Merged** into `main`" in body and "Merge queue" not in body and "Auto-merge" not in body
     assert len([p for p in fake.posted if p[1] == "/graphql"]) == asked, (
         "no question about the queue of a closed pull request"
     )
@@ -1403,7 +1413,10 @@ def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_cr
     suites_part = fake.comments[0]["body"].split("<details>")[1]
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
-    assert "🟣 **Merged**" in fake.comments[0]["body"] and fake.comments[0]["body"].split("<details>")[1] == suites_part
+    assert (
+        f"{MERGED} **Merged**" in fake.comments[0]["body"]
+        and fake.comments[0]["body"].split("<details>")[1] == suites_part
+    )
     none = Fake([actions_check("CI")])
     none.pr = {**none.pr, **over()}
     assert manual_run.refresh(none, POLICY, REPO, 7).startswith("skipped") and none.comments == []  # type: ignore[arg-type]
@@ -1412,11 +1425,11 @@ def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_cr
 def test_a_pull_request_in_the_queue_has_auto_merge_on_even_though_github_clears_it_while_queued() -> None:
     queued = manual_run.QueueView("queued", "position 1, waiting its turn")
     rows = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queued)))
-    assert "- ✅ **Auto-merge:** on (the pull request is in the merge queue)" in rows
+    assert f"- {PASSED} **Auto-merge:** on (the pull request is in the merge queue)" in rows
     assert "Auto-merge:** off" not in rows
     for queue in (None, manual_run.QueueView("none"), manual_run.QueueView("removed", "checks failed")):
         off = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queue)))
-        assert "- ➖ **Auto-merge:** off" in off, queue
+        assert f"- {NEUTRAL} **Auto-merge:** off" in off, queue
     on = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="squash", queue=queued)))
     assert "**Auto-merge:** on (squash)" in on, "the method is shown when GitHub still has the request"
 
@@ -1431,7 +1444,7 @@ def test_a_pull_request_that_ended_before_the_comment_caught_up_with_its_last_co
     assert manual_run.refresh_status(fake, REPO, 7).startswith("skipped"), "open: the new commit brings a full refresh"
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
-    assert "🟣 **Merged** into `main`" in fake.comments[0]["body"]
+    assert f"{MERGED} **Merged** into `main`" in fake.comments[0]["body"]
     assert manual_run.head_of(fake.comments[0]["body"]) == HEAD, "only the block is rewritten"
 
 
@@ -1443,3 +1456,63 @@ def test_a_closed_pull_request_whose_comment_has_no_status_block_is_still_left_a
     before = fake.comments[0]["body"]
     assert "no status block" in manual_run.refresh_status(fake, REPO, 7)  # type: ignore[arg-type]
     assert fake.comments[0]["body"] == before
+
+
+CODERABBIT = "coderabbitai[bot]"
+
+
+def rabbit(state: str, at: str = "2026-10-10T10:00:00Z") -> Review:
+    return rv(CODERABBIT, state, at=at, permission="", kind="Bot")
+
+
+@pytest.mark.parametrize(
+    ("reviews", "blocked"),
+    [
+        ([rabbit("CHANGES_REQUESTED")], (CODERABBIT,)),
+        ([rabbit("CHANGES_REQUESTED"), rabbit("APPROVED", LATER)], ()),
+        ([rabbit("CHANGES_REQUESTED"), rabbit("DISMISSED", LATER)], ()),
+        ([rabbit("CHANGES_REQUESTED"), rabbit("COMMENTED", LATER)], (CODERABBIT,)),
+        ([rv("a", "CHANGES_REQUESTED")], ()),  # a person's request is the approval row's, not this one
+        ([], ()),
+    ],
+)
+def test_a_trusted_bot_that_still_asks_for_changes_is_named_as_the_block_of_the_review(
+    reviews: list[Review], blocked: tuple[str, ...]
+) -> None:
+    pr = {"head": {"sha": HEAD, "repo": {"full_name": REPO}}, "user": {"login": "author"}}
+    assert manual_run.pr_status(pr, reviews, [], repo=REPO).blocked_by == blocked
+
+
+def test_the_block_of_a_bot_has_its_own_row_after_the_approval_and_explains_the_queue_row() -> None:
+    rows = rows_of(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))
+    lines = [line.removeprefix("> ") for line in rows.splitlines()]
+    review = (
+        f"- {ERROR} **Review:** `{CODERABBIT}` requested changes; "
+        "GitHub will not merge until it approves or the review is dismissed"
+    )
+    assert review in lines
+    assert lines.index(review) == next(i for i, line in enumerate(lines) if "**Approval:**" in line) + 1
+    assert f"- {NEUTRAL} **Merge queue:** not queued (blocked by the review above)" in lines
+    assert "**Review:**" not in rows_of(queue=manual_run.QueueView("none"))
+    assert "blocked by" not in rows_of(queue=manual_run.QueueView("none"))
+    queued = rows_of(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("queued", "position 1, waiting its turn"))
+    assert "blocked by" not in queued
+    assert "**Review:**" not in rows_of(blocked_by=(CODERABBIT,), closed="merged", base="main")
+
+
+def test_every_icon_of_the_comment_is_an_image_that_exists_and_no_emoji_is_left_in_the_rows() -> None:
+    from pathlib import Path
+
+    folder = Path(__file__).resolve().parents[2] / "docs" / "icons"
+    assert {p.stem for p in folder.glob("*.svg")} == set(manual_run.ICON_ALT)
+    for name, alt in manual_run.ICON_ALT.items():
+        svg = (folder / f"{name}.svg").read_text(encoding="utf-8")
+        assert svg.startswith("<svg ") and f'aria-label="{alt}"' in svg and "<script" not in svg
+        src = f"{manual_run.ICON_BASE}/{name}.svg"
+        assert manual_run.icon(name) == (
+            f'<img src="{src}" width="14" height="14" align="middle" alt="{alt}" title="{alt}">'
+        )
+    body = manual_run.render_comment(
+        HEAD, views(), "", full_status(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))
+    )
+    assert not any(e in body for e in "✅❌⏳➖🔄❔🟣⚫🚫"), "the status and the suite lines use the images, not emoji"
