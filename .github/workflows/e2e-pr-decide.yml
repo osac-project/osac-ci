@@ -34,10 +34,9 @@
 #     types requested, completed), on
 #     `workflow_dispatch` with a `number` input, and on `issue_comment` (types edited, for the boxes of the comment, and
 #     created, for a `/test` comment);
-#   * set `run-name` so that the title of a run for a `workflow_run` ENDS with ` @ <head sha>` (the cancel step reads the
-#     commit from the end of the title, because a run of a workflow_run belongs to the default branch, not to the pull
-#     request commit, and finds the runs of older commits of the pull request by it). The rest of the title is free: the
-#     number and the title of the pull request make it easy to find (see docs/CALLERS.md);
+#   * set `run-name` to something short a person can look for, such as `E2E #<pull request number> · <branch>` (see
+#     docs/CALLERS.md): the decision does not read it (the run of an older commit is found by the E2E line of that
+#     commit);
 #   * give the calling job at least these permissions: contents read, pull-requests read, checks read, actions write;
 #   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`).
 name: E2E pull request decision
@@ -323,7 +322,7 @@ jobs:
           fi
       # The E2E of an older commit of this pull request is of no use any more, and it holds a runner. Only a decision
       # that found the pull request still at this commit gets here, so a late event for an old commit cancels nothing.
-      # The caller's workflow file is found from `github.workflow_ref` (in a called workflow it names the caller).
+      # The run is found by the E2E line of the older commit, which links the run that started it.
       - uses: $/.github/actions/cancel-older
         if: steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'
         with:
@@ -331,7 +330,6 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ steps.report.outputs.number }}
           head-sha: ${{ steps.report.outputs.sha }}
-          workflow-ref: ${{ github.workflow_ref }}
 
   # The review relay only wakes the caller. Once it has, its run is of no use and its row on the pull request is noise,
   # so delete it (a deleted run takes its check rows with it). Only a relay that succeeded: a failed one stays, to be

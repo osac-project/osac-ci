@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci import bot_approve, e2e_check, e2e_start, e2e_suites_check, lockfacts, manual_run
+from osac_ci import bot_approve, cancel_older, e2e_check, e2e_start, e2e_suites_check, lockfacts, manual_run
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
@@ -425,6 +425,14 @@ def _parser() -> argparse.ArgumentParser:
     mcom.add_argument("--by", default="", help="who asked, for the answer")
     mcom.add_argument("--run-url", default="", help="link of the workflow run, shown with the answer")
 
+    cold = sub.add_parser(
+        "cancel-older",
+        help="cancel the E2E run of an older commit of a pull request (found by the E2E line of that commit)",
+    )
+    cold.add_argument("--repo", required=True, help="owner/name")
+    cold.add_argument("--number", type=int, required=True, help="the pull request")
+    cold.add_argument("--head-sha", required=True, help="the head commit that was decided on: its run is left alone")
+
     mstat = sub.add_parser(
         "manual-status",
         help="rewrite only the status block of the control comment (for what changed after the comment was written)",
@@ -658,6 +666,18 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in ("e2e-suites-track", "e2e-suites-settle"):
         return _e2e_suites(args)
+
+    if args.command == "cancel-older":
+        try:
+            done = cancel_older.cancel_older(build_client(), args.repo, args.number, args.head_sha)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: cancel-older failed: {exc}", file=sys.stderr)
+            return 3
+        for sha, run in done:
+            print(f"Cancelling run {run}, which is running the E2E of the older commit {sha[:7]}")
+        if not done:
+            print("No older commit has an E2E running.")
+        return 0
 
     if args.command == "manual-status":
         try:
