@@ -15,6 +15,7 @@ from osac_ci.github.api import GitHubError, Response
 from osac_ci.model import CheckRun
 
 pytestmark = pytest.mark.unit
+lead = manual_run.lead
 PASSED, ERROR, WARNING, PENDING, NEUTRAL, CLOSED, MERGED = (
     manual_run.icon(n) for n in ("passed", "error", "warning", "pending", "neutral", "closed", "merged")
 )
@@ -920,11 +921,11 @@ def test_the_status_block_is_a_list_of_what_the_pull_request_waits_for() -> None
         "> [!TIP]",
         "> ## 🚦 CI status",
         ">",
-        f"> - {PASSED} **Approval:** approved by `alice` on `aaaaaaa`",
-        f"> - {PASSED} **CI:** [passed](https://x/CI)",
-        f"> - {PASSED} **Jira reference:** [passed](https://x/J)",
-        f"> - {PASSED} **E2E:** [Passed: all suites](https://x/e2e)",
-        f"> - {PASSED} **Auto-merge:** on (squash)",
+        f"> {lead('passed')}**Approval:** approved by `alice` on `aaaaaaa`",
+        f"> {lead('passed')}**CI:** [passed](https://x/CI)",
+        f"> {lead('passed')}**Jira reference:** [passed](https://x/J)",
+        f"> {lead('passed')}**E2E:** [Passed: all suites](https://x/e2e)",
+        f"> {lead('passed')}**Auto-merge:** on (squash)",
     ]
 
 
@@ -932,26 +933,29 @@ def test_each_state_of_the_pull_request_has_its_own_row() -> None:
     def rows(**changes: Any) -> str:
         return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
 
-    assert f"- {NEUTRAL} **Auto-merge:** off" in rows(auto_merge="")
-    assert "- ✏️ **Draft:** mark it ready for review" in rows(draft=True)
-    assert f"- {ERROR} **Merge conflict:** rebase on the target branch" in rows(conflict=True)
-    assert f"- {PENDING} **Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
-    assert f"- {WARNING} **Approval:** approved by `a` on an older commit; needs a new approval on `aaaaaaa`" in rows(
-        approval="older", approvers=("a",)
+    assert f"{lead('neutral')}**Auto-merge:** off" in rows(auto_merge="")
+    assert f"{lead('warning')}**Draft:** mark it ready for review" in rows(draft=True)
+    assert f"{lead('error')}**Merge conflict:** rebase on the target branch" in rows(conflict=True)
+    assert f"{lead('pending')}**Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
+    assert (
+        f"{lead('warning')}**Approval:** approved by `a` on an older commit; needs a new approval on `aaaaaaa`"
+        in rows(approval="older", approvers=("a",))
     )
-    assert f"- {ERROR} **Approval:** changes requested by `a`, `b`" in rows(approval="changes", approvers=("a", "b"))
+    assert f"{lead('error')}**Approval:** changes requested by `a`, `b`" in rows(
+        approval="changes", approvers=("a", "b")
+    )
     assert (
         "waiting for an approval (an approval by `x`, `y` does not count: not from someone who may approve here)"
         in rows(approval="waiting", approvers=(), ignored=("x", "y"))
     )
     assert (
-        f"- {WARNING} **Approval:** the reviews show an approval by `a`; who may approve could not be checked"
+        f"{lead('warning')}**Approval:** the reviews show an approval by `a`; who may approve could not be checked"
         in rows(approval="unchecked", approvers=("a",))
     )
-    assert f"- {PENDING} **Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
-    assert f"- {ERROR} **CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
-    assert f"- {PENDING} **CI:** running" in rows(ci=manual_run.CheckView("active"))
-    assert f"- {CLOSED} **CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
+    assert f"{lead('pending')}**Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
+    assert f"{lead('error')}**CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
+    assert f"{lead('pending')}**CI:** running" in rows(ci=manual_run.CheckView("active"))
+    assert f"{lead('closed')}**CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
     assert "Jira" not in rows(jira=None) and "**CI:**" not in rows(ci=None) and "**E2E:**" not in rows(e2e=None)
     assert "Draft" not in rows() and "Merge conflict" not in rows()
 
@@ -1078,9 +1082,9 @@ def test_the_status_block_alone_is_rewritten_and_the_rest_of_the_comment_is_kept
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
     assert "**Auto-merge:** on (squash)" in body and "**Auto-merge:** off" not in body
-    assert body.replace(f"{NEUTRAL} **Auto-merge:** off", "").split("<details>")[1] == kept.split("<details>")[1], (
-        "only the block changed"
-    )
+    assert (
+        body.replace(f"{lead('neutral')}**Auto-merge:** off", "").split("<details>")[1] == kept.split("<details>")[1]
+    ), "only the block changed"
     assert manual_run.refresh_status(fake, REPO, 7) == "unchanged"  # type: ignore[arg-type]
 
 
@@ -1307,13 +1311,15 @@ def rows_of(**changes: Any) -> str:
 
 def test_each_state_of_the_queue_has_its_row_after_auto_merge() -> None:
     queued = rows_of(queue=manual_run.QueueView("queued", "position 3, checks are running"))
-    assert f"- {PENDING} **Merge queue:** in the queue (position 3, checks are running)" in queued
+    assert f"{lead('pending')}**Merge queue:** in the queue (position 3, checks are running)" in queued
     assert queued.index("Auto-merge") < queued.index("Merge queue")
     failed = rows_of(queue=manual_run.QueueView("removed", "checks failed"))
-    assert f"- {ERROR} **Merge queue:** removed from the queue: checks failed" in failed
+    assert f"{lead('error')}**Merge queue:** removed from the queue: checks failed" in failed
     person = rows_of(queue=manual_run.QueueView("removed", "taken out by a person", True))
-    assert f"- {NEUTRAL} **Merge queue:** taken out by a person" in person and "removed from the queue" not in person
-    assert f"- {NEUTRAL} **Merge queue:** not queued" in rows_of(queue=manual_run.QueueView("none"))
+    assert (
+        f"{lead('neutral')}**Merge queue:** taken out by a person" in person and "removed from the queue" not in person
+    )
+    assert f"{lead('neutral')}**Merge queue:** not queued" in rows_of(queue=manual_run.QueueView("none"))
     assert "Merge queue" not in rows_of(queue=None), "a queue that could not be read has no row"
 
 
@@ -1363,8 +1369,8 @@ def test_a_merged_pull_request_says_so_and_drops_what_is_over() -> None:
             HEAD, views(), "", replace(status, auto_merge="squash", queue=manual_run.QueueView("queued", "x"))
         )
     )
-    rows = [r for r in block.splitlines() if r.startswith("> - ")]
-    assert rows[0] == f"> - {MERGED} **Merged** into `main`"
+    rows = [r for r in block.splitlines() if r.startswith("> <img ")]
+    assert rows[0] == f"> {lead('merged')}**Merged** into `main`"
     assert any("**Approval:** approved by `alice`" in r for r in rows) and any("**CI:**" in r for r in rows)
     assert not [r for r in rows if any(w in r for w in ("Auto-merge", "Merge queue", "Draft", "Merge conflict"))]
 
@@ -1373,7 +1379,9 @@ def test_a_pull_request_closed_without_merging_says_so() -> None:
     status = manual_run.pr_status({"head": {"sha": HEAD}, **over()}, [], [], repo=REPO)
     assert status.closed == "closed"
     block = block_of(manual_run.render_comment(HEAD, views(), "", status))
-    assert f"> - {CLOSED} **Closed** without merging" in block and "Merged" not in block and "Auto-merge" not in block
+    assert (
+        f"> {lead('closed')}**Closed** without merging" in block and "Merged" not in block and "Auto-merge" not in block
+    )
 
 
 @pytest.mark.parametrize("pr", [over(merged_at="2026-10-21T10:00:00Z"), over(merged=True)])
@@ -1387,7 +1395,7 @@ def test_a_pull_request_with_no_state_is_taken_for_open() -> None:
 
 def test_a_merged_pull_request_with_no_base_still_says_merged() -> None:
     block = block_of(manual_run.render_comment(HEAD, views(), "", manual_run.PrStatus("waiting", closed="merged")))
-    assert f"> - {MERGED} **Merged**" in block and "into" not in block.split("Merged")[1].splitlines()[0]
+    assert f"> {lead('merged')}**Merged**" in block and "into" not in block.split("Merged")[1].splitlines()[0]
 
 
 def test_the_comment_of_a_merged_pull_request_is_rewritten_and_the_queue_is_not_asked_about() -> None:
@@ -1400,7 +1408,7 @@ def test_the_comment_of_a_merged_pull_request_is_rewritten_and_the_queue_is_not_
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert f"{MERGED} **Merged** into `main`" in body and "Merge queue" not in body and "Auto-merge" not in body
+    assert f"{lead('merged')}**Merged** into `main`" in body and "Merge queue" not in body and "Auto-merge" not in body
     assert len([p for p in fake.posted if p[1] == "/graphql"]) == asked, (
         "no question about the queue of a closed pull request"
     )
@@ -1414,7 +1422,7 @@ def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_cr
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
     assert (
-        f"{MERGED} **Merged**" in fake.comments[0]["body"]
+        f"{lead('merged')}**Merged**" in fake.comments[0]["body"]
         and fake.comments[0]["body"].split("<details>")[1] == suites_part
     )
     none = Fake([actions_check("CI")])
@@ -1425,11 +1433,11 @@ def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_cr
 def test_a_pull_request_in_the_queue_has_auto_merge_on_even_though_github_clears_it_while_queued() -> None:
     queued = manual_run.QueueView("queued", "position 1, waiting its turn")
     rows = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queued)))
-    assert f"- {PASSED} **Auto-merge:** on (the pull request is in the merge queue)" in rows
+    assert f"{lead('passed')}**Auto-merge:** on (the pull request is in the merge queue)" in rows
     assert "Auto-merge:** off" not in rows
     for queue in (None, manual_run.QueueView("none"), manual_run.QueueView("removed", "checks failed")):
         off = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queue)))
-        assert f"- {NEUTRAL} **Auto-merge:** off" in off, queue
+        assert f"{lead('neutral')}**Auto-merge:** off" in off, queue
     on = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="squash", queue=queued)))
     assert "**Auto-merge:** on (squash)" in on, "the method is shown when GitHub still has the request"
 
@@ -1444,7 +1452,7 @@ def test_a_pull_request_that_ended_before_the_comment_caught_up_with_its_last_co
     assert manual_run.refresh_status(fake, REPO, 7).startswith("skipped"), "open: the new commit brings a full refresh"
     fake.pr = {**fake.pr, **over(merged=True)}
     assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
-    assert f"{MERGED} **Merged** into `main`" in fake.comments[0]["body"]
+    assert f"{lead('merged')}**Merged** into `main`" in fake.comments[0]["body"]
     assert manual_run.head_of(fake.comments[0]["body"]) == HEAD, "only the block is rewritten"
 
 
@@ -1487,12 +1495,12 @@ def test_the_block_of_a_bot_has_its_own_row_after_the_approval_and_explains_the_
     rows = rows_of(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))
     lines = [line.removeprefix("> ") for line in rows.splitlines()]
     review = (
-        f"- {ERROR} **Review:** `{CODERABBIT}` requested changes; "
+        f"{lead('error')}**Review:** `{CODERABBIT}` requested changes; "
         "GitHub will not merge until it approves or the review is dismissed"
     )
     assert review in lines
     assert lines.index(review) == next(i for i, line in enumerate(lines) if "**Approval:**" in line) + 1
-    assert f"- {NEUTRAL} **Merge queue:** not queued (blocked by the review above)" in lines
+    assert f"{lead('neutral')}**Merge queue:** not queued (blocked by the review above)" in lines
     assert "**Review:**" not in rows_of(queue=manual_run.QueueView("none"))
     assert "blocked by" not in rows_of(queue=manual_run.QueueView("none"))
     queued = rows_of(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("queued", "position 1, waiting its turn"))
@@ -1510,7 +1518,10 @@ def test_every_icon_of_the_comment_is_an_image_that_exists_and_no_emoji_is_left_
         assert svg.startswith("<svg ") and f'aria-label="{alt}"' in svg and "<script" not in svg
         src = f"{manual_run.ICON_BASE}/{name}.svg"
         assert manual_run.icon(name) == (
-            f'<img src="{src}" width="14" height="14" align="middle" alt="{alt}" title="{alt}">'
+            f'<img src="{src}" width="16" height="16" align="absmiddle" alt="{alt}" title="{alt}">'
+        )
+        assert manual_run.lead(name) == (
+            f'<img src="{src}" width="16" height="32" align="absmiddle" alt="{alt}" title="{alt}">&nbsp;&nbsp;&nbsp;'
         )
     body = manual_run.render_comment(
         HEAD, views(), "", full_status(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))

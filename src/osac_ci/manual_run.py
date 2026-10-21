@@ -70,10 +70,19 @@ ICON_ALT = {
 }
 
 
-def icon(name: str) -> str:
-    """The image of an icon, inline with the text that follows it."""
+def icon(name: str, *, tall: bool = False) -> str:
+    """The image of an icon, inline with the text that follows it. ``tall`` makes the box of the image taller than the
+    icon (which stays 16 pixels, centred), so the rows of the status block have some air between them."""
     alt = ICON_ALT[name]
-    return f'<img src="{ICON_BASE}/{name}.svg" width="14" height="14" align="middle" alt="{alt}" title="{alt}">'
+    height = 32 if tall else 16
+    return (
+        f'<img src="{ICON_BASE}/{name}.svg" width="16" height="{height}" align="absmiddle" alt="{alt}" title="{alt}">'
+    )
+
+
+def lead(name: str) -> str:
+    """What a row of the status block starts with: the icon, then some space (no bullet)."""
+    return f"{icon(name, tall=True)}&nbsp;&nbsp;&nbsp;"
 
 
 # What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
@@ -94,13 +103,7 @@ ACTIONS_APP = "github-actions"
 STATUS_START = "<!-- status:start -->"
 STATUS_END = "<!-- status:end -->"
 STATUS_BLOCK = re.compile(rf"{re.escape(STATUS_START)}.*?{re.escape(STATUS_END)}", re.DOTALL)
-CHECK_ICON = {
-    "active": icon("pending"),
-    "passed": icon("passed"),
-    "failed": icon("error"),
-    "cancelled": icon("closed"),
-    "other": icon("neutral"),
-}
+CHECK_ICON = {"active": "pending", "passed": "passed", "failed": "error", "cancelled": "closed", "other": "neutral"}
 CHECK_WORD = {
     "active": "running",
     "passed": "passed",
@@ -202,10 +205,10 @@ def _alert(kind: str, lines: Sequence[str]) -> list[str]:
 
 
 def _check_row(name: str, view: CheckView) -> str:
-    mark = CHECK_ICON.get(view.state, icon("neutral"))
+    mark = lead(CHECK_ICON.get(view.state, "neutral"))
     text = view.title or CHECK_WORD.get(view.state, view.state)
     text = f"[{text}]({view.url})" if view.url else text
-    row = f"- {mark} **{name}:** {text}"
+    row = f"{mark}**{name}:** {text}"
     if view.failed:
         names = ", ".join(f"`{n}`" for n in view.failed[:FAILED_SHOWN])
         more = len(view.failed) - FAILED_SHOWN
@@ -216,20 +219,19 @@ def _check_row(name: str, view: CheckView) -> str:
 def _approval_row(status: PrStatus, sha: str) -> str:
     who = ", ".join(f"`{login}`" for login in status.approvers)
     if status.approval == "approved":
-        return f"- {icon('passed')} **Approval:** approved by {who} on `{sha[:7]}`"
+        return f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
     if status.approval == "older":
         return (
-            f"- {icon('warning')} **Approval:** approved by {who} on an older commit; "
-            f"needs a new approval on `{sha[:7]}`"
+            f"{lead('warning')}**Approval:** approved by {who} on an older commit; needs a new approval on `{sha[:7]}`"
         )
     if status.approval == "changes":
-        return f"- {icon('error')} **Approval:** changes requested by {who}"
+        return f"{lead('error')}**Approval:** changes requested by {who}"
     if status.approval == "unchecked" and status.approvers:
         return (
-            f"- {icon('warning')} **Approval:** the reviews show an approval by {who}; "
+            f"{lead('warning')}**Approval:** the reviews show an approval by {who}; "
             "who may approve could not be checked"
         )
-    row = f"- {icon('pending')} **Approval:** waiting for an approval"
+    row = f"{lead('pending')}**Approval:** waiting for an approval"
     if status.ignored:
         names = ", ".join(f"`{login}`" for login in status.ignored)
         row += f" (an approval by {names} does not count: not from someone who may approve here)"
@@ -238,12 +240,12 @@ def _approval_row(status: PrStatus, sha: str) -> str:
 
 def _queue_row(queue: QueueView) -> str:
     if queue.state == "queued":
-        return f"- {icon('pending')} **Merge queue:** in the queue ({queue.detail})"
+        return f"{lead('pending')}**Merge queue:** in the queue ({queue.detail})"
     if queue.state == "removed":
         if queue.by_person:
-            return f"- {icon('neutral')} **Merge queue:** {queue.detail}"
-        return f"- {icon('error')} **Merge queue:** removed from the queue: {queue.detail}"
-    return f"- {icon('neutral')} **Merge queue:** not queued"
+            return f"{lead('neutral')}**Merge queue:** {queue.detail}"
+        return f"{lead('error')}**Merge queue:** removed from the queue: {queue.detail}"
+    return f"{lead('neutral')}**Merge queue:** not queued"
 
 
 def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
@@ -256,21 +258,19 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
         over = status.closed in ("merged", "closed")
         if status.closed == "merged":
             rows.append(
-                f"- {icon('merged')} **Merged** into `{status.base}`"
-                if status.base
-                else f"- {icon('merged')} **Merged**"
+                f"{lead('merged')}**Merged** into `{status.base}`" if status.base else f"{lead('merged')}**Merged**"
             )
         elif over:
-            rows.append(f"- {icon('closed')} **Closed** without merging")
+            rows.append(f"{lead('closed')}**Closed** without merging")
         if status.draft and not over:
-            rows.append("- ✏️ **Draft:** mark it ready for review")
+            rows.append(f"{lead('warning')}**Draft:** mark it ready for review")
         if status.conflict and not over:
-            rows.append(f"- {icon('error')} **Merge conflict:** rebase on the target branch")
+            rows.append(f"{lead('error')}**Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))
         if status.blocked_by and not over:
             who = ", ".join(f"`{login}`" for login in status.blocked_by)
             rows.append(
-                f"- {icon('error')} **Review:** {who} requested changes; GitHub will not merge until "
+                f"{lead('error')}**Review:** {who} requested changes; GitHub will not merge until "
                 "it approves or the review is dismissed"
             )
         for name, view in (("CI", status.ci), ("Jira reference", status.jira), ("E2E", status.e2e)):
@@ -279,12 +279,12 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
         if not over:
             queued = status.queue is not None and status.queue.state == "queued"
             if status.auto_merge:
-                rows.append(f"- {icon('passed')} **Auto-merge:** on ({status.auto_merge})")
+                rows.append(f"{lead('passed')}**Auto-merge:** on ({status.auto_merge})")
             elif queued:
                 # GitHub clears the auto-merge of a pull request the moment the queue takes it: it merges by itself
-                rows.append(f"- {icon('passed')} **Auto-merge:** on (the pull request is in the merge queue)")
+                rows.append(f"{lead('passed')}**Auto-merge:** on (the pull request is in the merge queue)")
             else:
-                rows.append(f"- {icon('neutral')} **Auto-merge:** off")
+                rows.append(f"{lead('neutral')}**Auto-merge:** off")
             if status.queue is not None:
                 row = _queue_row(status.queue)
                 if status.blocked_by and status.queue.state == "none":
