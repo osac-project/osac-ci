@@ -222,3 +222,17 @@ def test_the_decision_calls_it_with_the_head_commit_it_decided_on() -> None:
         "number": "${{ steps.report.outputs.number }}",
         "head-sha": "${{ steps.report.outputs.sha }}",
     }
+
+
+def test_a_commit_pushed_while_the_decision_ran_is_a_newer_head_and_its_run_is_not_cancelled() -> None:
+    hub = Hub([C1, HEAD, C3])  # C3 landed after this decision looked at the pull request
+    hub.line(C1, 11)
+    hub.line(C3, 13)  # the decision of C3 has already started its E2E
+    assert go(hub) == [(C1, 11)] and hub.cancelled == ["11"]
+
+
+def test_a_head_that_is_no_longer_a_commit_of_the_pull_request_cancels_nothing() -> None:
+    hub = Hub([C1, C2, C3])  # a force push replaced the history
+    hub.line(C1, 11)
+    hub.line(C3, 13)
+    assert go(hub) == [] and hub.cancelled == []

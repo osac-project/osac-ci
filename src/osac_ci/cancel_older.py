@@ -5,8 +5,9 @@ runner. The run is found by what the older commit's own ``E2E`` line says: the d
 ``Running: ...`` on the commit, with a link to its workflow run. That is the one place that ties a run to a commit, so a
 run needs no commit in its title, and a title can be as short as it likes.
 
-Only the last few older commits are looked at (a pull request does not have a long tail of running E2Es), and never a
-commit that belongs to another open pull request too.
+Only the last few older commits are looked at (a pull request does not have a long tail of running E2Es), only those
+that come before the head commit in the pull request (a newer one is a newer head), and never a commit that belongs to
+another open pull request too.
 """
 
 from __future__ import annotations
@@ -32,7 +33,11 @@ def cancel_older(client: GitHubClient, repo: str, number: int, head_sha: str) ->
     commits = [
         str(c["sha"]) for c in paginate(client, f"/repos/{repo}/pulls/{int(number)}/commits") if isinstance(c, Mapping)
     ]
-    older = [sha for sha in commits if sha != head_sha][-MAX_OLDER:]
+    if head_sha not in commits:
+        return []  # the pull request no longer has this commit (a force push): nothing is "older" for certain
+    # Only the commits before the head: a push may land while this decision runs, and the newer commit is the new head,
+    # whose own decision may already be running its E2E.
+    older = commits[: commits.index(head_sha)][-MAX_OLDER:]
     cancelled: list[tuple[str, int]] = []
     for sha in reversed(older):
         line = newest_status(client, repo, check_sha(sha), CONTEXT, "checks")
