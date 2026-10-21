@@ -1419,3 +1419,27 @@ def test_a_pull_request_in_the_queue_has_auto_merge_on_even_though_github_clears
         assert "- ➖ **Auto-merge:** off" in off, queue
     on = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="squash", queue=queued)))
     assert "**Auto-merge:** on (squash)" in on, "the method is shown when GitHub still has the request"
+
+
+def test_a_pull_request_that_ended_before_the_comment_caught_up_with_its_last_commit_still_gets_the_final_block() -> (
+    None
+):
+    fake = Fake([actions_check("CI")])
+    commented(fake)  # written for HEAD
+    newer = "c" * 40
+    fake.pr = {**fake.pr, "head": {"sha": newer}}
+    assert manual_run.refresh_status(fake, REPO, 7).startswith("skipped"), "open: the new commit brings a full refresh"
+    fake.pr = {**fake.pr, **over(merged=True)}
+    assert manual_run.refresh_status(fake, REPO, 7) == "updated"  # type: ignore[arg-type]
+    assert "🟣 **Merged** into `main`" in fake.comments[0]["body"]
+    assert manual_run.head_of(fake.comments[0]["body"]) == HEAD, "only the block is rewritten"
+
+
+def test_a_closed_pull_request_whose_comment_has_no_status_block_is_still_left_alone() -> None:
+    fake = Fake([actions_check("CI")])
+    commented(fake)
+    fake.comments[0]["body"] = manual_run.STATUS_BLOCK.sub("", fake.comments[0]["body"])
+    fake.pr = {**fake.pr, **over(merged=True), "head": {"sha": "c" * 40}}
+    before = fake.comments[0]["body"]
+    assert "no status block" in manual_run.refresh_status(fake, REPO, 7)  # type: ignore[arg-type]
+    assert fake.comments[0]["body"] == before

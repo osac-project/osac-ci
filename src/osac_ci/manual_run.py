@@ -612,8 +612,10 @@ def status_of(
 def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
     the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
-    block then says so). It needs no policy, creates nothing and leaves the suites and the last answer alone; a comment
-    written for another head commit is left to the full refresh."""
+    block then says so). It needs no policy, creates nothing and leaves the suites and the last answer alone. On an open
+    pull request a comment written for another head commit is left to the full refresh, which the new commit brings; a
+    pull request that is over gets no full refresh any more, so its block is written whatever commit the comment was
+    written for."""
     repo = check_repo(repo)
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     existing = find_control_comment(client, repo, number, bot)
@@ -621,7 +623,7 @@ def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = B
         return "skipped: the pull request has no control comment"
     body = str(existing.get("body", ""))
     sha = str(pr["head"]["sha"])
-    if not STATUS_BLOCK.search(body) or head_of(body) != sha:
+    if not STATUS_BLOCK.search(body) or (_closed_of(pr) == "" and head_of(body) != sha):
         return "skipped: the comment has no status block for this commit"
     runs = [
         r
