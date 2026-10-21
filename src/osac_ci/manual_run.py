@@ -74,7 +74,7 @@ def icon(name: str, *, tall: bool = False) -> str:
     """The image of an icon, inline with the text that follows it. ``tall`` makes the box of the image taller than the
     icon (which stays 16 pixels, centred), so the rows of the status block have some air between them."""
     alt = ICON_ALT[name]
-    height = 32 if tall else 16
+    height = 28 if tall else 16
     return (
         f'<img src="{ICON_BASE}/{name}.svg" width="16" height="{height}" align="absmiddle" alt="{alt}" title="{alt}">'
     )
