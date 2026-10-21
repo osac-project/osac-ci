@@ -58,7 +58,7 @@ COMMAND = re.compile(rf"/test(?:[ \t]+(?P<names>{SUITE_ID}(?:[ \t]+{SUITE_ID}){{
 LINE_PREFIX = "E2E / "
 # The icons of the comment: small images kept in docs/icons of this repository (GitHub shows no custom emoji), like the
 # ones CodeRabbit uses. The alt text is what shows when an image cannot load.
-ICON_BASE = "https://raw.githubusercontent.com/osac-project/osac-ci/status-icons/docs/icons"
+ICON_BASE = "https://raw.githubusercontent.com/osac-project/osac-ci/main/docs/icons"
 ICON_ALT = {
     "passed": "Passed",
     "error": "Error",
