@@ -1521,7 +1521,7 @@ def test_every_icon_of_the_comment_is_an_image_that_exists_and_no_emoji_is_left_
             f'<img src="{src}" width="16" height="16" align="absmiddle" alt="{alt}" title="{alt}">'
         )
         assert manual_run.lead(name) == (
-            f'<img src="{src}" width="16" height="32" align="absmiddle" alt="{alt}" title="{alt}">&nbsp;&nbsp;&nbsp;'
+            f'<img src="{src}" width="16" height="28" align="absmiddle" alt="{alt}" title="{alt}">&nbsp;&nbsp;&nbsp;'
         )
     body = manual_run.render_comment(
         HEAD, views(), "", full_status(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))
