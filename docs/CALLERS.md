@@ -34,14 +34,13 @@ Call each one by a full commit SHA of an osac-ci release, with the tag in a comm
 
 ```yaml
 name: E2E for pull requests
-# The decision cancels the E2E of older commits by the commit a run title ENDS with (` @ <head sha>`); the rest is free.
+# The title is for people: the decision does not read it (it finds the run of an older commit by that commit's E2E line).
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch' && format('E2E #{0} (started by hand)', inputs.number) ||
   github.event_name == 'issue_comment' && format('E2E #{0} (suites checked in the comment)', github.event.issue.number) ||
-  github.event.workflow_run.pull_requests[0].number && format('E2E #{0} · {1} @ {2}',
-  github.event.workflow_run.pull_requests[0].number, github.event.workflow_run.display_title,
-  github.event.workflow_run.head_sha) ||
-  format('E2E · {0} @ {1}', github.event.workflow_run.display_title, github.event.workflow_run.head_sha) }}
+  github.event.workflow_run.pull_requests[0].number && format('E2E #{0} · {1}',
+  github.event.workflow_run.pull_requests[0].number, github.event.workflow_run.head_branch) ||
+  format('E2E · {0}:{1}', github.event.workflow_run.head_repository.owner.login, github.event.workflow_run.head_branch) }}
 
 on:
   workflow_run:
@@ -120,12 +119,12 @@ last four are what keep its merge queue and auto-merge rows current).
 
 ### The run title
 
-The title of a run of `e2e-pr.yml` is what you scan in the Actions tab, so it starts with what you look for: `E2E #1703 ·
-OSAC-6228: constrain catalog architecture @ <sha>` (the number of the pull request, when GitHub gives it for the run, which
-it does not for a pull request from a fork, then the title of the pull request: `E2E · <title> @ <sha>`). The commit has to
-stay at the end, as ` @ <40 hex digits>`: the decision cancels the runs of older commits of a pull request by it, and an
-expression cannot shorten it. Before the title was `E2E <repository>:<branch> @ <sha>`; runs with that title are still
-found.
+The title of a run of `e2e-pr.yml` is what you scan in the Actions tab, so it is short and starts with what you look for:
+`E2E #1703 · OSAC-6228-catalog-migration` (the number of the pull request, when GitHub gives it for the run, which it
+does not for a pull request from a fork, and its branch; without a number: `E2E · eliorerz:my-branch`). The decision does
+not read it: a run of an older commit of the pull request is found by the `E2E` line of that commit, which says
+`Running: ...` and links the run that started it. Before, the title had to end with the commit, which an expression cannot
+shorten: `E2E <repository>:<branch> @ <40 hex digits>`.
 
 ## The caller of the early comment (`.github/workflows/e2e-comment.yml`)
 
