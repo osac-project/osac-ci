@@ -114,9 +114,7 @@ jobs:
 ```
 
 The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay` that does nothing on
-`pull_request_review` and on `pull_request` `ready_for_review`, `converted_to_draft`, `enqueued`, `dequeued`,
-`auto_merge_enabled` and `auto_merge_disabled`; finishing wakes `e2e-pr.yml`, which refreshes the control comment (the
-last four are what keep its merge queue and auto-merge rows current).
+`pull_request_review` and on `pull_request` `ready_for_review`/`converted_to_draft`; finishing wakes `e2e-pr.yml`.
 
 ### Merge queue entries start no run
 
@@ -140,7 +138,7 @@ name: E2E comment
 
 on:
   pull_request_target:        # runs from the default branch with the secret, and checks out nothing of the pull request
-    types: [opened, reopened, closed]
+    types: [opened, reopened, closed, enqueued, dequeued, auto_merge_enabled, auto_merge_disabled]
 
 permissions: {}
 
@@ -154,7 +152,10 @@ jobs:
 
 On `closed` (merged or not) the same workflow rewrites the status block of the comment: nothing else wakes the decision for a
 pull request that is over, so without it the comment would keep saying "in the merge queue" after the merge. The block
-then says "Merged into `main`" (or "Closed without merging") and drops the auto-merge and merge queue rows.
+then says "Merged into `main`" (or "Closed without merging") and drops the auto-merge and merge queue rows. On `enqueued`,
+`dequeued`, `auto_merge_enabled` and `auto_merge_disabled` it does the same from the live state, so the merge queue and
+auto-merge rows follow the pull request. It is `pull_request_target`, so a pull request with a merge conflict is heard too
+(it is taken out of the queue for one, and GitHub starts no `pull_request` workflow for it).
 
 A comment cannot be moved, and CodeRabbit posts about nine seconds after a pull request opens. The decision's own early
 job starts only when CI is requested (about seven seconds in) and then needs a few more, so this workflow, which starts
@@ -198,8 +199,8 @@ a row of their own. The E2E suites and the ways to start them are below it, in a
 (a check the commit does not have) are left out. The block is refreshed when CI starts or ends, a review is submitted or
 dismissed, the pull request is queued or taken out of the merge queue, auto-merge is turned on or off, or someone
 comments, and right after the app turns on auto-merge (the `manual-status` action, in the auto-merge job). The queue and
-auto-merge events reach the decision through the review relay (see below), which the repository's relay workflow must
-list.
+auto-merge events are heard by the `E2E comment` workflow (above), which rewrites only the block from the live state of the
+pull request, for a pull request with a merge conflict too (GitHub starts no `pull_request` workflow for one).
 The rules are in [`RULES.md`](RULES.md).
 
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)

@@ -163,9 +163,9 @@ def test_the_workflow_for_a_new_pull_request_posts_fast_with_the_event_data() ->
     assert wf["permissions"] == {}
     job = wf["jobs"]["comment"]
     assert job["permissions"] == {} and job["if"] == "github.event_name == 'pull_request_target'"
-    token, post, closing = job["steps"]
+    token, post, _ = job["steps"]
     assert token["with"]["permission-pull-requests"] == "write" and token["with"]["permission-members"] == "read"
-    assert post["uses"] == "$/.github/actions/early-comment" and post["if"] == "github.event.action != 'closed'"
+    assert post["uses"] == "$/.github/actions/early-comment"
     given = post["with"]
     assert given["number"] == "${{ github.event.pull_request.number }}"
     assert given["author"] == "${{ github.event.pull_request.user.login }}"
@@ -174,17 +174,20 @@ def test_the_workflow_for_a_new_pull_request_posts_fast_with_the_event_data() ->
     assert "uses: actions/checkout" not in COMMENT.read_text(encoding="utf-8")
 
 
-def test_on_closed_the_workflow_rewrites_the_status_block_with_the_extra_permissions_only_then() -> None:
-    token, _, closing = load(COMMENT)["jobs"]["comment"]["steps"]
-    assert closing["uses"] == "$/.github/actions/manual-status" and closing["if"] == "github.event.action == 'closed'"
-    assert closing["with"] == {
+def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_extra_permissions_only_then() -> None:
+    token, early, status = load(COMMENT)["jobs"]["comment"]["steps"]
+    assert early["if"] == "github.event.action == 'opened' || github.event.action == 'reopened'"
+    assert status["uses"] == "$/.github/actions/manual-status"
+    assert status["if"] == "github.event.action != 'opened' && github.event.action != 'reopened'"
+    assert status["with"] == {
         "github-token": "${{ steps.app-token.outputs.token }}",
         "repo": "${{ github.repository }}",
         "number": "${{ github.event.pull_request.number }}",
     }
     wanted = {k: v for k, v in token["with"].items() if k.startswith("permission-")}
-    assert wanted["permission-checks"] == "${{ github.event.action == 'closed' && 'read' || '' }}"
-    assert wanted["permission-issues"] == "${{ github.event.action == 'closed' && 'write' || '' }}"
+    other = "github.event.action != 'opened' && github.event.action != 'reopened'"
+    assert wanted["permission-checks"] == "${{ " + other + " && 'read' || '' }}"
+    assert wanted["permission-issues"] == "${{ " + other + " && 'write' || '' }}"
     assert set(wanted) == {"permission-pull-requests", "permission-members", "permission-checks", "permission-issues"}
 
 
