@@ -123,7 +123,7 @@ name: E2E comment
 
 on:
   pull_request_target:        # runs from the default branch with the secret, and checks out nothing of the pull request
-    types: [opened, reopened]
+    types: [opened, reopened, closed]
 
 permissions: {}
 
@@ -134,6 +134,10 @@ jobs:
     secrets:
       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
 ```
+
+On `closed` (merged or not) the same workflow rewrites the status block of the comment: nothing else wakes the decision for a
+pull request that is over, so without it the comment would keep saying "in the merge queue" after the merge. The block
+then says "Merged into `main`" (or "Closed without merging") and drops the auto-merge and merge queue rows.
 
 A comment cannot be moved, and CodeRabbit posts about nine seconds after a pull request opens. The decision's own early
 job starts only when CI is requested (about seven seconds in) and then needs a few more, so this workflow, which starts

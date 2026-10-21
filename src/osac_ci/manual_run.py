@@ -149,7 +149,9 @@ class PrStatus:
     """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
     unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
     ``ignored`` the people whose approval does not count; ``auto_merge`` is the merge method when auto-merge is on,
-    empty when it is off; ``queue`` the merge queue (None when it could not be read: the row is then left out)."""
+    empty when it is off; ``queue`` the merge queue (None when it could not be read: the row is then left out);
+    ``closed`` merged | closed once the pull request is over: the block then says so, and says nothing of auto-merge and
+    the queue, which are no more."""
 
     approval: str
     approvers: tuple[str, ...] = ()
@@ -161,6 +163,8 @@ class PrStatus:
     draft: bool = False
     conflict: bool = False
     queue: QueueView | None = None
+    closed: str = ""  # "" while open | merged | closed (without merging)
+    base: str = ""  # the branch it was or would be merged into
 
 
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
@@ -214,20 +218,30 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
     if status is None:
         rows = [f"Loading the status of the head commit `{sha[:7]}`..."]
     else:
-        if status.draft:
+        over = status.closed in ("merged", "closed")
+        if status.closed == "merged":
+            rows.append(f"- 🟣 **Merged** into `{status.base}`" if status.base else "- 🟣 **Merged**")
+        elif over:
+            rows.append("- ⚫ **Closed** without merging")
+        if status.draft and not over:
             rows.append("- ✏️ **Draft:** mark it ready for review")
-        if status.conflict:
+        if status.conflict and not over:
             rows.append("- ❌ **Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))
         for name, view in (("CI", status.ci), ("Jira reference", status.jira), ("E2E", status.e2e)):
             if view is not None:
                 rows.append(_check_row(name, view))
-        if status.auto_merge:
-            rows.append(f"- ✅ **Auto-merge:** on ({status.auto_merge})")
-        else:
-            rows.append("- ➖ **Auto-merge:** off")
-        if status.queue is not None:
-            rows.append(_queue_row(status.queue))
+        if not over:
+            queued = status.queue is not None and status.queue.state == "queued"
+            if status.auto_merge:
+                rows.append(f"- ✅ **Auto-merge:** on ({status.auto_merge})")
+            elif queued:
+                # GitHub clears the auto-merge of a pull request the moment the queue takes it: it merges by itself
+                rows.append("- ✅ **Auto-merge:** on (the pull request is in the merge queue)")
+            else:
+                rows.append("- ➖ **Auto-merge:** off")
+            if status.queue is not None:
+                rows.append(_queue_row(status.queue))
     return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
 
 
@@ -494,6 +508,17 @@ def approval_of(
     return "waiting", (), ignored
 
 
+def _closed_of(pr: Mapping[str, object]) -> str:
+    if str(pr.get("state", "open")) != "closed":
+        return ""
+    return "merged" if pr.get("merged") or pr.get("merged_at") else "closed"
+
+
+def _base_of(pr: Mapping[str, object]) -> str:
+    base = pr.get("base")
+    return str(base.get("ref", "")) if isinstance(base, Mapping) else ""
+
+
 def pr_status(
     pr: Mapping[str, object],
     reviews: Sequence[Review],
@@ -526,6 +551,8 @@ def pr_status(
         auto_merge=str(auto.get("merge_method") or "on") if isinstance(auto, Mapping) else "",
         draft=bool(pr.get("draft")),
         conflict=pr.get("mergeable_state") == "dirty",
+        closed=_closed_of(pr),
+        base=_base_of(pr),
     )
 
 
@@ -574,7 +601,7 @@ def status_of(
     raw = [r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)]
     user = pr.get("user")
     author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
-    queue = queue_view(client, repo, number)
+    queue = queue_view(client, repo, number) if _closed_of(pr) == "" else None
     try:
         status = pr_status(pr, reviews_with_roles(client, repo, raw, author), runs, repo=repo)
     except GitHubError:
@@ -584,12 +611,11 @@ def status_of(
 
 def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
-    the comment was written, such as the app turning on auto-merge. It needs no policy, creates nothing and leaves the
-    suites and the last answer alone; a comment written for another head commit is left to the full refresh."""
+    the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
+    block then says so). It needs no policy, creates nothing and leaves the suites and the last answer alone; a comment
+    written for another head commit is left to the full refresh."""
     repo = check_repo(repo)
     pr = get(client, f"/repos/{repo}/pulls/{number}")
-    if str(pr.get("state")) != "open":
-        return "skipped: the pull request is not open"
     existing = find_control_comment(client, repo, number, bot)
     if existing is None:
         return "skipped: the pull request has no control comment"
@@ -629,7 +655,8 @@ def refresh(
     repo = check_repo(repo)
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     if str(pr.get("state")) != "open":
-        return "skipped: the pull request is not open"
+        # Nothing to list or start any more; a comment that is there still shows where the pull request ended.
+        return refresh_status(client, repo, number, bot=bot)
     suites = suites_of(policy)
     if not suites:
         return "skipped: the policy has no E2E suite"

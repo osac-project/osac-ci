@@ -3,9 +3,14 @@
 # cannot be moved and CodeRabbit posts about nine seconds after the pull request opens. The other way to be early, a job
 # of the decision that starts when CI is requested, lands a few seconds later (the event waits for CI to be created).
 #
+# It also has the last word: when the pull request is closed or merged, nothing else wakes the decision (the decision
+# only looks at open pull requests), so the comment would keep saying "in the merge queue". On `closed` this workflow
+# rewrites the status block of the comment, which then says that the pull request was merged (or closed) and drops what
+# is over, auto-merge and the merge queue.
+#
 # A repository calls it from a small workflow of its own, `e2e-comment.yml`, named `E2E comment` (see docs/CALLERS.md):
-#   * trigger on `pull_request_target` (types opened, reopened). It runs from the default branch, so it has the secret
-#     for any pull request, a fork's included, and it checks out nothing of the pull request;
+#   * trigger on `pull_request_target` (types opened, reopened, closed). It runs from the default branch, so it has the
+#     secret for any pull request, a fork's included, and it checks out nothing of the pull request;
 #   * give the calling job no permissions at all (`permissions: {}`): the comment is written with the app token;
 #   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`);
 #   * list `E2E comment` in the `workflow_run` trigger of `e2e-pr.yml`: its decision then deletes the finished run, whose
@@ -43,8 +48,11 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-pull-requests: write  # a comment on a pull request needs this one
           permission-members: read
+          permission-checks: ${{ github.event.action == 'closed' && 'read' || '' }}  # the status block reads the checks
+          permission-issues: ${{ github.event.action == 'closed' && 'write' || '' }}  # and edits the comment
       # `$/` is this workflow's own repository at the exact commit the caller pinned (see e2e-pr-decide.yml).
       - uses: $/.github/actions/early-comment
+        if: github.event.action != 'closed'
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           repo: ${{ github.repository }}
@@ -52,3 +60,9 @@ jobs:
           number: ${{ github.event.pull_request.number }}
           author: ${{ github.event.pull_request.user.login }}
           fresh: ${{ github.event.action == 'opened' }}
+      - uses: $/.github/actions/manual-status
+        if: github.event.action == 'closed'
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ github.event.pull_request.number }}
