@@ -406,7 +406,9 @@ def test_one_job_watches_then_always_tells_the_check_and_stops_what_runs_after_t
     assert watch_step["if"] == "inputs.plan-result == 'success' && inputs.suites != '[]'"
     assert watch_step["with"]["phase"] == "watch" and watch_step["id"] == "watch"
     assert verdict_step["if"] == "always()" and verdict_step["with"]["phase"] == "verdict"
-    assert verdict_step["with"]["watch-outcome"] == "${{ steps.watch.outcome }}"
+    assert "steps.watch.outputs.outcome" in verdict_step["with"]["watch-outcome"], (
+        "what the watch returned, not only its step"
+    )
     assert token["if"] == "always()" and "create-github-app-token" in token["uses"]
     assert finish["if"] == "always()" and finish["uses"] == "$/.github/actions/e2e-finish"
     assert finish["with"]["result"] == "${{ steps.verdict.outputs.result || 'cancelled' }}"
@@ -596,3 +598,95 @@ def test_the_detail_is_one_line_and_the_outputs_are_what_they_should_be(tmp_path
     assert done.returncode == 0, done.stderr
     lines = out.read_text().splitlines()
     assert lines == ["result=cancelled", "detail=a stop=true", "stop=false"], "one line each, nothing injected"
+
+
+# the second review ----------------------------------------------------------------------------------
+
+
+def evaluate(expression: str, **values: str) -> str:
+    """An expression of the workflow with the contexts given: string literals, == and the short-circuiting && and ||."""
+    import ast
+
+    code = expression.removeprefix("${{").removesuffix("}}").strip()
+    for name, value in values.items():
+        code = code.replace(name, repr(value))
+    code = " ".join(code.replace("&&", " and ").replace("||", " or ").split())
+
+    def walk(node: ast.AST) -> object:
+        if isinstance(node, ast.Expression):
+            return walk(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BoolOp):
+            stop_on = isinstance(node.op, ast.Or)
+            value: object = None
+            for operand in node.values:
+                value = walk(operand)
+                if bool(value) is stop_on:
+                    return value
+            return value
+        if isinstance(node, ast.Compare) and len(node.ops) == 1 and isinstance(node.ops[0], ast.Eq):
+            return walk(node.left) == walk(node.comparators[0])
+        raise ValueError(f"unsupported: {ast.dump(node)[:60]}")
+
+    return str(walk(ast.parse(code, mode="eval")))
+
+
+@pytest.mark.parametrize(
+    ("step", "returned", "expected"),
+    [
+        ("success", "timeout", "timeout"),
+        ("success", "failed", "failed"),
+        ("success", "done", "done"),
+        ("success", "", "success"),  # nothing returned: the step's own word
+        ("cancelled", "", "cancelled"),
+        ("cancelled", "done", "cancelled"),
+        ("failure", "", "failure"),
+        ("skipped", "", "skipped"),
+    ],
+)
+def test_the_verdict_gets_what_the_watch_returned_and_otherwise_how_its_step_ended(
+    step: str, returned: str, expected: str
+) -> None:
+    binding = steps_of_the_workflow()[1]["with"]["watch-outcome"]
+    got = evaluate(binding, **{"steps.watch.outputs.outcome": returned, "steps.watch.outcome": step})
+    assert got == expected
+
+
+def test_a_watch_that_timed_out_stops_the_suites_that_still_run_through_the_whole_binding() -> None:
+    binding = steps_of_the_workflow()[1]["with"]["watch-outcome"]
+    outcome = evaluate(binding, **{"steps.watch.outputs.outcome": "timeout", "steps.watch.outcome": "success"})
+    got = verdict_of({"vmaas": "passed", "caas": "running"}, "success", [], outcome)
+    assert (got.result, got.detail, got.stop) == ("failure", "a suite did not end in time", True)
+
+
+def test_the_required_checks_that_cannot_be_read_do_not_lose_the_verdict(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from osac_ci.github.api import GitHubError
+
+    gh = GitHub()
+    running(gh)
+    monkeypatch.setattr(cli, "build_client", lambda **_: gh)
+
+    def unreadable(*_: object) -> None:
+        raise GitHubError(502, "reading the rules")
+
+    monkeypatch.setattr(cli, "required_contexts", unreadable)
+    verdict_argv = ["e2e-queue-verdict", *common("--suites", '["vmaas"]', "--branch", "main")]
+    assert cli.main([*verdict_argv, "--plan-result", "success", "--watch-outcome", "failed"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {
+        "result": "cancelled",
+        "detail": "could not read the state of the entry",
+        "stop": True,
+    }
+    watch_argv = [
+        "e2e-queue-watch",
+        *common("--suites", '["vmaas"]', "--branch", "main"),
+        "--interval",
+        "0",
+        "--timeout",
+        "2",
+    ]
+    assert cli.main(watch_argv) == 3, "the watch has no fallback: its step fails and the verdict reads the state itself"

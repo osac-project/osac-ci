@@ -710,8 +710,9 @@ def main(argv: list[str] | None = None) -> int:
             wanted = json.loads(args.suites)
             if not isinstance(wanted, list) or not all(isinstance(x, str) for x in wanted):
                 raise ValueError("--suites must be a JSON list of suite ids")
-            required = {r.context for r in required_contexts(client, args.repo, queue_guard.branch_name(args.branch))}
+            branch = queue_guard.branch_name(args.branch)
             if args.command == "e2e-queue-watch":
+                required = {r.context for r in required_contexts(client, args.repo, branch)}
                 outcome = queue_guard.watch(
                     client, args.repo, args.sha, args.run_id, wanted, required,
                     timeout=args.timeout, interval=args.interval,
@@ -719,6 +720,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps({"outcome": outcome}))
             else:
                 try:
+                    # reading the required checks is part of what may fail: the fallback covers it
+                    required = {r.context for r in required_contexts(client, args.repo, branch)}
                     found = queue_guard.verdict(
                         client, args.repo, args.sha, args.run_id, wanted, required, args.plan_result, args.watch_outcome
                     )
