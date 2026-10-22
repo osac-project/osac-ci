@@ -141,15 +141,21 @@ QUEUE_REMOVAL_WORDS = {
 
 @dataclass(frozen=True)
 class SuiteView:
-    """One suite as the comment shows it: its id, its line name and what its line says on the head commit."""
+    """One box of the comment: a suite (its id, its line name and what its line says on the head commit), or a variant
+    of a suite (``variant``): a second box that starts the same suite, so it has no state of its own, and ``title`` is
+    what its box says."""
 
     suite: str
     check: str
     state: str  # none | active | passed | failed
     url: str = ""
+    variant: bool = False
+    title: str = ""
 
     @property
     def label(self) -> str:
+        if self.title:
+            return self.title
         return self.check[len(LINE_PREFIX) :] if self.check.startswith(LINE_PREFIX) else self.check
 
 
@@ -296,7 +302,7 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
 def suites_summary(views: Sequence[SuiteView]) -> str:
     """What the suites say, as counts in the fixed order failed, running, passed, not run: the E2E section's title."""
     counts = [
-        (state, mark, word, sum(v.state == state for v in views))
+        (state, mark, word, sum(v.state == state and not v.variant for v in views))
         for state, mark, word in (
             ("failed", icon("error"), "failed"),
             ("active", icon("pending"), "running"),
@@ -332,6 +338,9 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status
         "",
     ]
     for view in views:
+        if view.variant:  # the state and the run are those of the suite's own line
+            lines.append(f"- [ ] <!-- suite:{view.suite} --> **{view.label}**")
+            continue
         link = f" ([run]({view.url}))" if view.url else ""
         lines.append(
             f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{link}"
@@ -489,7 +498,10 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
     urls: dict[str, str] = {}
     for r in sorted(runs, key=lambda r: str(r.get("started_at") or "")):
         urls[str(r["name"])] = str(r.get("details_url") or r.get("html_url") or "")
-    return tuple(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, "")) for s in suites)
+    return tuple(
+        SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, ""), bool(s.variant_of), s.label)
+        for s in suites
+    )
 
 
 def _started(r: Mapping[str, object]) -> str:

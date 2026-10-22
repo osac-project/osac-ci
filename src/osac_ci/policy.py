@@ -19,6 +19,7 @@ from osac_ci.paths import any_match
 from osac_ci.rules.labels import QUEUE_BLOCKING_LABELS, REQUIRED_LABELS
 
 _JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+_TIER = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
 
 
 class PolicyError(ValueError):
@@ -98,6 +99,21 @@ class Job(_Strict):
         ),
     )
 
+    variant_of: str | None = Field(
+        default=None,
+        description=(
+            "The suite (its id) this job is a second way to start: it has its own box and `/test` name in the control "
+            "comment, but starts that suite, on the same line, with `tier` passed to it. For a suite that can run more "
+            "than its usual tests (CaaS with its regression tests), counted like the suite itself"
+        ),
+    )
+    tier: str | None = Field(
+        default=None, description="With variant_of: what the variant asks of the suite (a short lower-case word)"
+    )
+    label: str | None = Field(
+        default=None, description="With variant_of: the name of the variant's box in the control comment"
+    )
+
     @field_validator("required_at")
     @classmethod
     def _non_empty_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
@@ -113,6 +129,21 @@ class Job(_Strict):
             raise ValueError("needs_readiness is only valid for kind: e2e")
         if self.manual_only and self.kind != "e2e":
             raise ValueError("manual_only is only valid for kind: e2e")
+        return self
+
+    @model_validator(mode="after")
+    def _variant_is_complete(self) -> Job:
+        named = [k for k in ("variant_of", "tier", "label") if getattr(self, k) is not None]
+        if named and self.variant_of is None:
+            raise ValueError(f"{', '.join(named)} only make sense together with variant_of")
+        if self.variant_of is None:
+            return self
+        if self.kind != "e2e" or not self.manual_only:
+            raise ValueError("a variant is a kind: e2e job that is manual_only")
+        if self.tier is None or not _TIER.fullmatch(self.tier):
+            raise ValueError(f"a variant needs a tier that matches {_TIER.pattern}")
+        if not self.label or len(self.label) > 80 or not self.label.isprintable():
+            raise ValueError("a variant needs a label of one short line of printable text")
         return self
 
 
@@ -386,9 +417,22 @@ class Policy(_Strict):
         for job_id, job in jobs.items():
             if not _JOB_ID.match(job_id):
                 raise ValueError(f"job id {job_id!r} must match {_JOB_ID.pattern}")
+            if job.variant_of is not None:
+                continue  # it reports the line of the suite it is a variant of (checked below)
             if job.check in seen:
                 raise ValueError(f"jobs {seen[job.check]!r} and {job_id!r} report the same check {job.check!r}")
             seen[job.check] = job_id
+        suites = {job.suite or job_id: job for job_id, job in jobs.items()}
+        for job_id, job in jobs.items():
+            if job.variant_of is None:
+                continue
+            base = suites.get(job.variant_of)
+            if base is None or base.kind != "e2e" or base.manual_only or base.variant_of is not None:
+                raise ValueError(
+                    f"job {job_id!r} is a variant of {job.variant_of!r}, which is not a suite that the decision chooses"
+                )
+            if job.check != base.check:
+                raise ValueError(f"job {job_id!r} must report the line of its suite {job.variant_of!r}: {base.check!r}")
         return jobs
 
 

@@ -94,6 +94,11 @@ A run started by hand writes only the line of its suite (`E2E / <suite>`). The r
 until **every** suite the change needs has passed (by hand or by the approval); a suite that failed is shown on its own
 line and the `E2E` check stays as it was. An approval later runs only what has not passed yet.
 
+A suite can have a **variant**: a second box (and a second name for `/test`) that starts the same suite with more tests,
+for example CaaS with its regression tests. It runs the same job and writes the same line, so the required `E2E` check
+counts it exactly like the suite. It runs even when the suite has already passed on the commit, because it asks for more
+than that run did, and it does not run while the suite is running. The automatic start and the merge queue never use it.
+
 ## Checks that do not count as cheap
 
 The E2E starts when no other required check has failed on the commit. These checks say nothing about the quality of the

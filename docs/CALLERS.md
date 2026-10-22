@@ -192,6 +192,12 @@ with a checkbox per suite; the caller above only needs the `issue_comment` trigg
 extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.yml`; a job with `manual_only: true` is
 listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
 for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
+A suite can also have a **variant**: a second manual box and `/test` name that starts the same suite with more tests (CaaS
+with its regression tests). In the policy it is a `manual_only` job with `variant_of: <suite id>`, a `tier` (a short
+lower-case word) and a `label` (the text of its box), and the same `check` as its suite, so it writes the line of the suite
+and counts like it. It needs no job of its own: the decision starts the suite itself and gives the tier in its `tiers`
+output (`{"caas":"regression"}`, `{}` when nobody used a variant). The suite's job passes it on, for a suite that takes
+one: `tier: ${{ fromJSON(needs.decide.outputs.tiers).caas || '' }}`.
 The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
 on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
 request is in the merge queue (in it, with its place; taken out, with why; or not queued); a draft and a merge conflict get

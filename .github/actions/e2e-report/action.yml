@@ -61,6 +61,11 @@ outputs:
       JSON object, suite id -> line name on the pull request, of the suites the change affects (the "check" of each
       suite in the policy); pass it to e2e-suites-track and e2e-suites-settle
     value: ${{ steps.report.outputs.suite-checks }}
+  tiers:
+    description: >-
+      JSON object, suite id -> tier, of the suites a person started through a variant of the suite in the control comment
+      (for example {"caas":"regression"}); the job of that suite passes it on. Empty object when none
+    value: ${{ steps.report.outputs.tiers }}
   number:
     description: Number of the pull request (empty when nothing was reported)
     value: ${{ steps.report.outputs.number }}
@@ -106,6 +111,7 @@ runs:
             echo "state=ignored"
             echo "suites=[]"
             echo "suite-checks={}"
+            echo "tiers={}"
             echo "number="
           } >> "$GITHUB_OUTPUT"
           exit 0
@@ -121,5 +127,6 @@ runs:
           echo "state=$(jq -r '.state' "$json")"
           echo "suites=$(jq -c '.suites' "$json")"
           echo "suite-checks=$(jq -c '.suite_checks // {}' "$json")"
+          echo "tiers=$(jq -c '.tiers // {}' "$json")"
           echo "number=$(jq -r '.number // empty' "$json")"
         } >> "$GITHUB_OUTPUT"
