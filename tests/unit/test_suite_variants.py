@@ -444,8 +444,9 @@ def test_a_run_the_other_version_replaced_says_it_was_stopped_instead_of_running
         SUITES,
         [run_line("Waiting for a runner", None, "10:00", 1), run_line("Passed · regression", "success", "11:00", 2)],
     )
-    # only the other suite (vmaas, never run) is counted: a stopped run is neither running nor passed nor failed
-    assert manual_run.suites_summary(views) == f"{manual_run.icon('neutral')} 1 not run"
+    # the line shows the newest run, the full one (passed); the stopped plain run is not counted; vmaas never ran
+    passed, none = manual_run.icon("passed"), manual_run.icon("neutral")
+    assert manual_run.suites_summary(views) == f"{passed} 1 passed · {none} 1 not run"
 
 
 def test_the_suite_box_is_covered_by_the_variant_only_when_the_suite_itself_never_ran() -> None:
@@ -524,3 +525,60 @@ def test_the_comment_has_a_collapsed_history_inside_the_e2e_section_only_when_th
     assert "History · 1 run<" in manual_run.render_comment(
         HEAD, manual_run.views_for(SUITES, runs[:1]), "", None, manual_run.history_for(SUITES, runs[:1])
     )
+
+
+# what the review of the pull request found ----------------------------------------------------------------------------
+
+
+def test_a_replaced_run_that_ended_cancelled_is_stopped_not_failed_in_the_history_and_on_its_box() -> None:
+    runs = [
+        status_line(CAAS, "Cancelled", "cancelled", "10:00", 1),
+        status_line(CAAS, "Passed · regression", "success", "11:00", 2),
+    ]
+    assert [h.state for h in manual_run.history_for(SUITES, runs)] == ["passed", "stopped"]
+    assert "stopped, replaced by another run" in boxes(runs)["caas"]
+    alone = [status_line(CAAS, "Cancelled", "cancelled", "10:00", 1)]
+    assert [h.state for h in manual_run.history_for(SUITES, alone)] == ["failed"]  # nothing replaced it
+    assert "failed" in boxes(alone)["caas"]
+
+
+def test_the_summary_counts_the_version_the_shared_line_shows_now() -> None:
+    passed, running = manual_run.icon("passed"), manual_run.icon("pending")
+    none = manual_run.icon("neutral")
+    base_then_variant = [run_line("Passed", "success", "10:00", 1), run_line("Running · regression", None, "11:00", 2)]
+    assert (
+        manual_run.suites_summary(manual_run.views_for(SUITES, base_then_variant))
+        == f"{running} 1 running · {none} 1 not run"
+    )
+    variant_then_base = [run_line("Passed · regression", "success", "10:00", 1), run_line("Running", None, "11:00", 2)]
+    assert (
+        manual_run.suites_summary(manual_run.views_for(SUITES, variant_then_base))
+        == f"{running} 1 running · {none} 1 not run"
+    )
+    only_base = [run_line("Passed", "success", "10:00", 1)]
+    assert manual_run.suites_summary(manual_run.views_for(SUITES, only_base)) == f"{passed} 1 passed · {none} 1 not run"
+    nothing = manual_run.views_for(SUITES, [])
+    assert manual_run.suites_summary(nothing) == f"{none} 2 not run"
+
+
+def test_two_variants_of_a_suite_cannot_share_a_tier() -> None:
+    raw = yaml.safe_load(POLICY)
+    raw["jobs"]["e2e-caas-again"] = {**raw["jobs"]["e2e-caas-regression"], "suite": "caas-again", "label": "Again"}
+    with pytest.raises(PolicyError, match="same tier"):
+        parse_policy(yaml.safe_dump(raw))
+    raw["jobs"]["e2e-caas-again"]["tier"] = "other"
+    assert {s.name for s in suites_of(parse_policy(yaml.safe_dump(raw)))} == {
+        "vmaas",
+        "caas",
+        "caas-regression",
+        "caas-again",
+    }
+
+
+def test_the_stop_step_waits_a_bounded_time_for_the_run_to_end_and_then_goes_on() -> None:
+    wf = yaml.safe_load((ROOT / ".github/workflows/e2e-pr-decide.yml").read_text(encoding="utf-8"))
+    step = next(s for s in wf["jobs"]["decide"]["steps"] if s.get("name") == "Stop the run this request replaces")
+    run = step["run"]
+    assert "seq 1 24" in run and "sleep 5" in run and "--jq .status" in run, "at most two minutes"
+    assert '"completed"' in run and "::warning::" in run and "start anyway" in run
+    assert "exit 1" in run and run.count("exit 1") == 1, "only a bad run number stops the step"
