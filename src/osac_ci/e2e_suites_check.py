@@ -21,8 +21,9 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
 from osac_ci.e2e_check import (
     check_sha,
@@ -52,14 +53,11 @@ def parse_lines(text: str) -> dict[str, str]:
     return validate_lines(raw)
 
 
-def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, Job]:
-    """The job that does the work of each suite in the workflow run: of the jobs whose name is the suite's id or starts
-    with ``<id> / `` (the calling job and what it calls, one level per ``/``), the deepest one that did not get skipped.
-    A calling workflow can hold jobs for other suites that are skipped for this one; those do not count."""
+def deepest_jobs(jobs: Iterable[Mapping[str, Any]], suites: list[str]) -> dict[str, Job]:
+    """The job that does the work of each suite, from the jobs of a run: of the jobs whose name is the suite's id or
+    starts with ``<id> / `` (the calling job and what it calls, one level per ``/``), the deepest one that did not get
+    skipped. A calling workflow can hold jobs for other suites that are skipped for this one; those do not count."""
     best: dict[str, tuple[int, Job]] = {}
-    jobs = paginate(
-        client, f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
-    )
     for job in jobs:
         name = str(job.get("name", ""))
         if job.get("conclusion") == "skipped":
@@ -77,6 +75,14 @@ def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -
                         ),
                     )
     return {suite: job for suite, (_, job) in best.items()}
+
+
+def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, Job]:
+    """``deepest_jobs`` for the jobs of a workflow run, read from GitHub."""
+    jobs = paginate(
+        client, f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
+    )
+    return deepest_jobs(jobs, suites)
 
 
 def _state(job: Job | None, *, final: bool = False) -> tuple[str, str]:
@@ -185,12 +191,17 @@ PASSED_CONCLUSIONS = frozenset({"success", "neutral", "skipped", "cancelled"})  
 def suite_progress(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, str]:
     """Where each suite is in the run: ``waiting`` (no job of it yet), ``skipped`` (every job of it was skipped, so it
     is not run), ``running`` (a job has not ended), ``passed``, ``cancelled`` or ``failed`` (the deepest job that ran
-    ended in any other way: failure, timed out, startup failure, action required)."""
-    jobs = paginate(
-        client, f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
+    ended in any other way: failure, timed out, startup failure, action required). One read of the run's jobs."""
+    jobs = list(
+        paginate(
+            client,
+            f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs",
+            key="jobs",
+            params={"filter": "latest"},
+        )
     )
     names = [(str(j.get("name", "")), j) for j in jobs]
-    found = find_jobs(client, repo, run_id, suites)
+    found = deepest_jobs(jobs, suites)
     out: dict[str, str] = {}
     for suite in suites:
         mine = [j for n, j in names if n == suite or n.startswith(f"{suite} / ")]

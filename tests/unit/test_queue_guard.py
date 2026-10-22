@@ -39,6 +39,7 @@ class GitHub:
         self.cancelled: list[int] = []
         self.cancel_status = cancel_status
         self.looks = 0
+        self.requests: list[str] = []  # every GET, to count what a look costs
         self.later: list[
             dict[str, Any]
         ] = []  # changes applied one per look: {"run": id, "job": name, "status", "conclusion"}
@@ -53,6 +54,8 @@ class GitHub:
 
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
         params = params or {}
+        if method == "GET" and params.get("page", "1") == "1":
+            self.requests.append(path.removeprefix(BASE))
         if method == "GET" and path == f"{BASE}/actions/runs":
             assert params.get("head_sha") == SHA and params.get("event") == "merge_group"
             if params.get("page", "1") == "1":
@@ -421,3 +424,54 @@ def test_the_job_has_the_permissions_it_needs_the_secret_is_explicit_and_nothing
     for name in ("sha", "branch", "plan-result"):
         assert wf[True]["workflow_call"]["inputs"][name]["required"] is True
     assert "uses: actions/checkout" not in WORKFLOW.read_text(encoding="utf-8")
+
+
+# what the watch costs ---------------------------------------------------------------------------------
+
+
+def test_a_look_reads_the_runs_once_the_jobs_of_this_run_once_and_the_jobs_of_each_other_run_once() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.run(502, "jira-reference")
+    gh.job(502, "jira-reference", "in_progress")
+    watch(gh, ["vmaas", "caas"], timeout=0)
+    assert sorted(gh.requests) == sorted(
+        ["/actions/runs", f"/actions/runs/{THIS}/jobs", f"/actions/runs/{CI}/jobs", "/actions/runs/502/jobs"]
+    )
+
+
+def test_a_run_that_provides_no_required_check_or_has_ended_well_is_not_read_again() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.run(777, "CodeQL")
+    gh.job(777, "analyze", "in_progress")
+    gh.run(502, "jira-reference", "completed")
+    gh.runs[502]["conclusion"] = "success"
+    gh.job(502, "jira-reference", "completed", "success")
+    watch(gh, ["vmaas", "caas"], timeout=6)
+    reads = [r for r in gh.requests if r.endswith("/jobs")]
+    assert reads.count("/actions/runs/777/jobs") == 1, "no required check: read once and left alone"
+    assert reads.count("/actions/runs/502/jobs") == 1, "ended without failing: read once"
+    assert reads.count(f"/actions/runs/{CI}/jobs") > 1, (
+        "a run that provides a required check and runs is read each look"
+    )
+
+
+def test_the_looks_are_spaced_out_after_ten_minutes() -> None:
+    gh = GitHub()
+    running(gh)
+    waits: list[float] = []
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        waits.append(seconds)
+        now[0] += seconds
+
+    result = queue_guard.watch(  # type: ignore[arg-type]
+        gh, REPO, SHA, THIS, ["vmaas", "caas"], REQUIRED, timeout=1500, interval=30, sleep=sleep, clock=lambda: now[0]
+    )
+    assert result == "timeout"
+    assert waits[0] == 30 and waits[-1] == 60 and set(waits) == {30, 60}
+    assert waits.index(60) * 30 >= queue_guard.BACKOFF_AFTER - 30
+    slower = [w for w in waits if w == 60]
+    assert all(w == 60 for w in waits[waits.index(60) :]) and slower
