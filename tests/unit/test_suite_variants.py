@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -240,11 +241,12 @@ def test_the_report_carries_the_tiers_to_the_workflow() -> None:
 # the comment ----------------------------------------------------------------------------------------------------------
 
 
-def test_a_variant_has_a_box_of_its_own_without_a_state_and_is_not_counted_in_the_summary() -> None:
+def test_a_variant_has_a_box_of_its_own_and_is_not_counted_twice_in_the_summary() -> None:
     views = manual_run.views_for(SUITES, [])
     body = manual_run.render_comment(HEAD, views)
-    assert "- [ ] <!-- suite:caas-regression --> **CaaS Full Install · sanity + regression**\n" in body
-    assert "suite:caas --> **CaaS Full Install** · " in body
+    nothing = f"{manual_run.icon('neutral')} not run on this commit"
+    assert f"- [ ] <!-- suite:caas-regression --> **CaaS Full Install · sanity + regression** · {nothing}\n" in body
+    assert f"suite:caas --> **CaaS Full Install** · {nothing}" in body
     assert manual_run.suites_summary(views) == f"{manual_run.icon('neutral')} 2 not run"
     assert "(3 available)" in body
 
@@ -255,11 +257,34 @@ def test_a_checked_variant_box_is_a_request_for_its_id() -> None:
     assert manual_run.requested_suites(ticked) == ("caas-regression",)
 
 
-def test_the_variant_shows_the_line_of_its_suite_only_on_the_suite_s_box() -> None:
-    runs = [{"name": CAAS, "status": "completed", "conclusion": "success", "app": {"slug": "osac-ci"},
-             "details_url": "https://x/run/1", "started_at": "2026-10-10T10:00:00Z"}]  # fmt: skip
+def run_line(title: str, state: str = "success") -> dict:
+    return {"name": CAAS, "status": "completed" if state else "in_progress", "conclusion": state or None,
+            "app": {"slug": "osac-ci"}, "details_url": "https://x/run/1", "started_at": "2026-10-10T10:00:00Z",
+            "output": {"title": title}}  # fmt: skip
+
+
+def boxes(runs: list[dict]) -> dict[str, str]:
     body = manual_run.render_comment(HEAD, manual_run.views_for(SUITES, runs))
-    assert body.count("https://x/run/1") == 1
+    return {m.group(1): m.group(2) for m in re.finditer(r"suite:([a-z-]+) --> \*\*[^*]+\*\*(.*)", body)}
+
+
+def test_a_line_for_the_suite_shows_on_its_box_and_the_variant_box_says_nothing_ran() -> None:
+    got = boxes([run_line("Passed")])
+    passed = f" · {manual_run.icon('passed')} passed ([run](https://x/run/1))"
+    assert got["caas"] == passed
+    assert got["caas-regression"] == f" · {manual_run.icon('neutral')} not run on this commit"
+
+
+def test_a_line_for_the_variant_shows_on_the_variant_box_and_the_suite_box_says_it_is_covered() -> None:
+    got = boxes([run_line("Passed · regression")])
+    assert got["caas-regression"] == f" · {manual_run.icon('passed')} passed ([run](https://x/run/1))"
+    assert got["caas"] == f" · {manual_run.icon('passed')} passed (in the regression run) ([run](https://x/run/1))"
+
+
+def test_a_running_variant_is_running_on_both_boxes_and_the_summary_counts_the_suite_once() -> None:
+    views = manual_run.views_for(SUITES, [run_line("Running · regression", "")])
+    assert [(v.suite, v.state) for v in views] == [("vmaas", "none"), ("caas", "active"), ("caas-regression", "active")]
+    assert manual_run.suites_summary(views).count("1 running") == 1
 
 
 # the workflows --------------------------------------------------------------------------------------------------------

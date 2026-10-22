@@ -99,8 +99,9 @@ line and the `E2E` check stays as it was. An approval later runs only what has n
 
 A suite can have a **variant**: a second box (and a second name for `/test`) that starts the same suite with more tests,
 for example CaaS with its regression tests. It runs the same job and writes the same line, so the required `E2E` check
-counts it exactly like the suite, and its line says which one ran ("Running · regression"). The automatic start and the
-merge queue never use it.
+counts it exactly like the suite. The line says which version ran ("Running · regression"), and in the comment the box
+of that version shows the line while the suite's box says the variant's run covers it. The automatic start and the merge
+queue never use it.
 
 ## Checks that do not count as cheap
 
