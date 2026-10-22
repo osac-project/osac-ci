@@ -60,8 +60,9 @@ def _jobs_of(client: GitHubClient, repo: str, run_id: int) -> list[Mapping[str, 
 def required_failures(client: GitHubClient, repo: str, sha: str, this_run: int, required: Collection[str]) -> list[str]:
     """The failed jobs of the other runs on the commit that belong to a workflow providing a required check (a run with
     a job named like a required check: ``CI``, ``jira-reference``). A failed job of such a run settles the entry
-    whether or not the job is itself the required one, since the check is the sum of the run's jobs. Runs of workflows
-    that provide no required check (CodeQL, say) are left alone, so an optional failure does not stop the entry."""
+    whether or not the job is itself the required one, since the check is the sum of the run's jobs, and so does a
+    run that has ended without passing (GitHub's jobs list can lag behind it). Runs of workflows that provide no
+    required check (CodeQL, say) are left alone, so an optional failure does not stop the entry."""
     found: list[str] = []
     for run in _runs_of(client, repo, sha):
         if run.get("id") == this_run:
@@ -69,9 +70,16 @@ def required_failures(client: GitHubClient, repo: str, sha: str, this_run: int, 
         jobs = _jobs_of(client, repo, int(str(run.get("id"))))
         if not any(str(j.get("name")) in required for j in jobs):
             continue
-        for job in jobs:
-            if job.get("status") == "completed" and str(job.get("conclusion")) not in PASSED_CONCLUSIONS:
-                found.append(f"{run.get('name')} / {job.get('name')}")
+        named = [
+            f"{run.get('name')} / {job.get('name')}"
+            for job in jobs
+            if job.get("status") == "completed" and str(job.get("conclusion")) not in PASSED_CONCLUSIONS
+        ]
+        found += named
+        # The jobs API can lag behind the run (a failed job still listed as running while its run has ended failed):
+        # a run that has ended without passing settles the entry whatever its jobs say.
+        if not named and run.get("status") == "completed" and str(run.get("conclusion")) not in PASSED_CONCLUSIONS:
+            found.append(str(run.get("name")))
     return found
 
 

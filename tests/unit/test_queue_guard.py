@@ -97,6 +97,24 @@ def test_a_failed_job_of_a_workflow_that_provides_a_required_check_counts_not_on
     assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == ["CI / unit-tests"]  # type: ignore[arg-type]
 
 
+def test_a_run_that_ended_failed_settles_the_entry_even_when_the_jobs_list_still_shows_a_job_running() -> None:
+    gh = GitHub()
+    gh.runs[CI].update(status="completed", conclusion="failure")
+    gh.job(CI, "unit-tests", "in_progress")  # GitHub's jobs list lagging behind the run
+    gh.job(CI, "CI", "completed", "skipped")
+    assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == ["CI"]  # type: ignore[arg-type]
+    gh.job(CI, "unit-tests", "completed", "failure")  # once the list catches up the job is named instead
+    assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == ["CI / unit-tests"]  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("conclusion", ["success", "cancelled", "skipped", None])
+def test_a_run_that_ended_without_failing_or_has_not_ended_does_not_settle_it(conclusion: str | None) -> None:
+    gh = GitHub()
+    gh.runs[CI].update(status="completed" if conclusion else "in_progress", conclusion=conclusion)
+    gh.job(CI, "CI", "queued")
+    assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == []  # type: ignore[arg-type]
+
+
 def test_a_workflow_that_provides_no_required_check_is_left_alone_and_so_is_this_run() -> None:
     gh = GitHub()
     gh.run(777, "CodeQL")
