@@ -66,10 +66,10 @@ line and the `E2E` check stays as it was. An approval later runs only what has n
 
 A suite can have a **variant**: a second box (and a second name for `/test`) that starts the same suite with more tests,
 for example CaaS with its regression tests. It runs the same job and writes the same line, so the required `E2E` check
-counts it exactly like the suite. The line says which version ran ("Running · regression"), the newest run of any version
-is what the pull request shows, and each box of the comment keeps the last result of its own version (so a later plain
-run does not make the full run look as if it never happened; a run that the other version replaced says it was
-stopped). The automatic start and the merge queue never use a variant.
+counts it exactly like the suite. The line says which version ran ("Running · regression"), the newest run of any
+version is what the pull request shows, and each box of the comment keeps the last result of its own version (so a
+later plain run does not make the full run look as if it never happened; a run that the other version replaced says it
+was stopped). The automatic start and the merge queue never use a variant.
 
 ## Checks that do not count as cheap
 
