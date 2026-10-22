@@ -37,6 +37,7 @@ from osac_ci.e2e_start import (
     line_state,
     reviews_with_roles,
     reviews_with_roles_unread,
+    run_of_url,
     suites_of,
     tier_of,
     unqualified_approvers,
@@ -141,6 +142,11 @@ QUEUE_REMOVAL_WORDS = {
 }
 
 
+def _label_of(check: str) -> str:
+    """What a suite is called in the comment: the name of its line without the ``E2E / `` in front."""
+    return check[len(LINE_PREFIX) :] if check.startswith(LINE_PREFIX) else check
+
+
 @dataclass(frozen=True)
 class SuiteView:
     """One box of the comment: a suite (its id, its line name and what its line says on the head commit), or a variant
@@ -159,9 +165,7 @@ class SuiteView:
 
     @property
     def label(self) -> str:
-        if self.title:
-            return self.title
-        return self.check[len(LINE_PREFIX) :] if self.check.startswith(LINE_PREFIX) else self.check
+        return self.title or _label_of(self.check)
 
 
 @dataclass(frozen=True)
@@ -318,7 +322,75 @@ def suites_summary(views: Sequence[SuiteView]) -> str:
     return " · ".join(f"{mark} {n} {word}" for _, mark, word, n in counts if n)
 
 
-def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status: PrStatus | None = None) -> str:
+HISTORY_MAX = 20  # how many runs the history lists, newest first
+
+
+@dataclass(frozen=True)
+class HistoryRow:
+    """One run of a suite on the head commit, as the history of the comment lists it."""
+
+    at: str  # when its line first appeared (ISO time)
+    suite: str  # the label of the suite
+    version: str  # the tier it ran with, "" for the suite itself
+    state: str  # active | passed | failed | stopped
+    url: str = ""
+    versioned: bool = False  # the suite has variants, so the row says which version ran
+
+
+def history_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> tuple[HistoryRow, ...]:
+    """The runs of the suites on the commit, newest first, from the lines the commit kept: a run is the workflow run a
+    line links to, and says how it ended by its newest line. A run that was still waiting or running when a newer run of
+    the same suite began was stopped (it never got to say how it ended)."""
+    by_check = {s.check: s for s in suites if not s.variant_of}
+    versioned = {s.variant_of for s in suites if s.variant_of}
+    ordered = [r for _, r in sorted(enumerate(r for r in runs if _is_app(r)), key=lambda p: (_started(p[1]), p[0]))]
+    first: dict[tuple[str, object], str] = {}
+    last: dict[tuple[str, object], Mapping[str, object]] = {}
+    newest_start: dict[str, str] = {}
+    for n, r in enumerate(ordered):
+        check = str(r["name"])
+        if check not in by_check:
+            continue
+        link = str(r.get("details_url") or r.get("html_url") or "")
+        key = (check, run_of_url(link) or f"line-{n}")
+        first.setdefault(key, _started(r))
+        last[key] = r
+        newest_start[check] = max(newest_start.get(check, ""), first[key])
+    rows: list[HistoryRow] = []
+    for key, r in last.items():
+        suite = by_check[key[0]]
+        state = _line_state_of(r)
+        if state == "active" and first[key] < newest_start[key[0]]:
+            state = "stopped"
+        link = str(r.get("details_url") or r.get("html_url") or "")
+        rows.append(
+            HistoryRow(first[key], _label_of(suite.check), tier_of(_title(r)), state, link, suite.name in versioned)
+        )
+    rows.sort(key=lambda h: h.at, reverse=True)
+    return tuple(rows[:HISTORY_MAX])
+
+
+def history_lines(history: Sequence[HistoryRow]) -> list[str]:
+    """The collapsed history inside the E2E tests section: one line per run, newest first."""
+    if not history:
+        return []
+    lines = [f"<details><summary>History · {len(history)} run{'s' if len(history) != 1 else ''}</summary>", ""]
+    for h in history:
+        when = h.at.replace("T", " ")[:16] + " UTC" if h.at else "earlier"
+        version = f" · {h.version or 'default'}" if h.versioned else ""
+        link = f" ([run]({h.url}))" if h.url else ""
+        lines.append(f"- {when} · **{h.suite}**{version} · {STATE_TEXT.get(h.state, h.state)}{link}")
+    lines += ["", "</details>", ""]
+    return lines
+
+
+def render_comment(
+    sha: str,
+    views: Sequence[SuiteView],
+    notes: str = "",
+    status: PrStatus | None = None,
+    history: Sequence[HistoryRow] = (),
+) -> str:
     """The comment: the status of the pull request, then the E2E tests section (how to start a suite, and the suites
     with a checkbox each, collapsed) and the answer to the last request. Every box is unchecked: a box that was checked
     is cleared when the request has been answered."""
@@ -349,7 +421,7 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status
         lines.append(
             f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{via}{link}"
         )
-    lines += ["", "</details>", "", NOTES_START]
+    lines += ["", *history_lines(history), "</details>", "", NOTES_START]
     if notes.strip():
         lines += _alert("NOTE", notes.strip().splitlines())
     lines += [
@@ -799,7 +871,10 @@ def refresh(
     ]
     kept = notes if notes is not None else (notes_of(str(existing.get("body", ""))) if existing else "")
     lines = suite_line_runs_if_readable(client, repo, sha, [s.check for s in suites], CHECK_APP)
-    body = render_comment(sha, views_for(suites, [*runs, *lines]), kept, status_of(client, repo, number, pr, runs))
+    every = [*runs, *lines]
+    body = render_comment(
+        sha, views_for(suites, every), kept, status_of(client, repo, number, pr, runs), history_for(suites, every)
+    )
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:

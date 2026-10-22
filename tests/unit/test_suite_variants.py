@@ -458,3 +458,69 @@ def test_the_suite_box_is_covered_by_the_variant_only_when_the_suite_itself_neve
 def test_a_suite_without_a_variant_is_read_as_before() -> None:
     views = manual_run.views_for(SUITES, [run_line("Passed", "success", "10:00", 1)])
     assert next(v for v in views if v.suite == "vmaas").state == "none"
+
+
+# the history of the runs --------------------------------------------------------------------------------------------
+
+
+def status_line(check: str, title: str, state: str | None, at: str, run: int) -> dict:
+    return {"name": check, "status": "completed" if state else "in_progress", "conclusion": state or None,
+            "app": {"slug": "osac-ci"}, "details_url": f"https://github.com/o/r/actions/runs/{run}/job/9",
+            "started_at": f"2026-10-10T{at}:00Z", "output": {"title": title}}  # fmt: skip
+
+
+def test_the_history_lists_each_run_once_with_how_it_ended_newest_first() -> None:
+    runs = [
+        status_line(CAAS, "Waiting for a runner", None, "10:00", 1),
+        status_line(CAAS, "Running", None, "10:05", 1),
+        status_line(CAAS, "Passed", "success", "10:30", 1),
+        status_line(CAAS, "Waiting for a runner · regression", None, "11:00", 2),
+        status_line(CAAS, "Failed · regression", "failure", "11:40", 2),
+        status_line("E2E / VMaaS Full Install", "Passed", "success", "09:00", 3),
+    ]
+    rows = manual_run.history_for(SUITES, runs)
+    assert [(h.at[11:16], h.suite, h.version, h.state) for h in rows] == [
+        ("11:00", "CaaS Full Install", "regression", "failed"),
+        ("10:00", "CaaS Full Install", "", "passed"),
+        ("09:00", "VMaaS Full Install", "", "passed"),
+    ]
+    assert [h.versioned for h in rows] == [True, True, False]
+    assert rows[0].url.endswith("/runs/2/job/9")
+
+
+def test_a_run_that_was_waiting_when_a_newer_run_began_is_stopped_and_the_newest_run_is_not() -> None:
+    runs = [
+        status_line(CAAS, "Waiting for a runner", None, "10:00", 1),
+        status_line(CAAS, "Waiting for a runner · regression", None, "10:10", 2),
+    ]
+    assert [h.state for h in manual_run.history_for(SUITES, runs)] == ["active", "stopped"]
+
+
+def test_the_history_ignores_other_lines_other_apps_and_is_cut_at_twenty_runs() -> None:
+    runs = [
+        status_line("E2E", "Passed", "success", "10:00", 9),
+        {**status_line(CAAS, "Passed", "success", "10:00", 8), "app": {"slug": "other"}},
+    ]
+    assert manual_run.history_for(SUITES, runs) == ()
+    many = [status_line(CAAS, "Passed", "success", f"{h:02d}:00", h + 1) for h in range(24)]
+    assert len(manual_run.history_for(SUITES, many)) == manual_run.HISTORY_MAX
+
+
+def test_the_comment_has_a_collapsed_history_inside_the_e2e_section_only_when_there_are_runs() -> None:
+    runs = [
+        status_line(CAAS, "Passed", "success", "10:30", 1),
+        status_line(CAAS, "Failed · regression", "failure", "11:40", 2),
+    ]
+    body = manual_run.render_comment(
+        HEAD, manual_run.views_for(SUITES, runs), "", None, manual_run.history_for(SUITES, runs)
+    )
+    section = body.split("<details><summary><b>🧪 E2E tests</b>")[1].split("</details>\n\n<!-- notes:start")[0]
+    assert "<details><summary>History · 2 runs</summary>" in section
+    assert section.index("- [ ] <!-- suite:caas-regression") < section.index("History · 2 runs")
+    assert "- 2026-10-10 10:30 UTC · **CaaS Full Install** · default · " in section
+    assert "- 2026-10-10 11:40 UTC · **CaaS Full Install** · regression · " in section
+    assert "stopped" not in section
+    assert "History" not in manual_run.render_comment(HEAD, manual_run.views_for(SUITES, []))
+    assert "History · 1 run<" in manual_run.render_comment(
+        HEAD, manual_run.views_for(SUITES, runs[:1]), "", None, manual_run.history_for(SUITES, runs[:1])
+    )
