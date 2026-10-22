@@ -582,3 +582,20 @@ def test_the_stop_step_waits_a_bounded_time_for_the_run_to_end_and_then_goes_on(
     assert "seq 1 24" in run and "sleep 5" in run and "--jq .status" in run, "at most two minutes"
     assert '"completed"' in run and "::warning::" in run and "start anyway" in run
     assert "exit 1" in run and run.count("exit 1") == 1, "only a bad run number stops the step"
+
+
+# the tier in the texts a person reads -------------------------------------------------------------
+
+
+def test_the_run_summary_of_the_decision_and_of_the_report_name_the_tier_of_a_suite() -> None:
+    from osac_ci.e2e_start import render_markdown
+
+    d = decide(inputs(requested=("caas-regression", "vmaas"), requested_by="bob"))
+    assert "- suites to start: caas (regression), vmaas\n" in render_markdown(d)
+    plain = decide(inputs(requested=("caas",), requested_by="bob"))
+    assert "- suites to start: caas\n" in render_markdown(plain)
+    found = e2e_check.Report(HEAD, 7, "running", True, ("vmaas", "caas"), "", (), (("caas", "regression"),))
+    assert "- suites: vmaas, caas (regression)" in e2e_check.render(found)
+    assert "- suites: vmaas, caas\n" in e2e_check.render(
+        e2e_check.Report(HEAD, 7, "running", True, ("vmaas", "caas"), "")
+    )
