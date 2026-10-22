@@ -19,6 +19,7 @@ from helpers import ROOT
 
 from osac_ci import cli, queue_guard
 from osac_ci.compare import Requirement
+from osac_ci.e2e_suites_check import suite_progress
 from osac_ci.github.api import Response
 from osac_ci.queue_guard import verdict_of
 
@@ -40,6 +41,7 @@ class GitHub:
         self.cancel_status = cancel_status
         self.looks = 0
         self.requests: list[str] = []  # every GET, to count what a look costs
+        self.fail_reads = 0  # the next reads of the runs list that answer 502
         self.later: list[
             dict[str, Any]
         ] = []  # changes applied one per look: {"run": id, "job": name, "status", "conclusion"}
@@ -56,13 +58,19 @@ class GitHub:
         params = params or {}
         if method == "GET" and params.get("page", "1") == "1":
             self.requests.append(path.removeprefix(BASE))
+        if method == "GET" and path == f"{BASE}/actions/runs" and self.fail_reads > 0:
+            self.fail_reads -= 1
+            return Response(502, {})
         if method == "GET" and path == f"{BASE}/actions/runs":
             assert params.get("head_sha") == SHA and params.get("event") == "merge_group"
             if params.get("page", "1") == "1":
                 self.looks += 1
                 if self.looks > 1 and self.later:
                     change = self.later.pop(0)
-                    self.job(change["run"], change["job"], change["status"], change.get("conclusion"))
+                    if "fail" in change:
+                        self.fail_reads = change["fail"]
+                    else:
+                        self.job(change["run"], change["job"], change["status"], change.get("conclusion"))
             listed = [{k: v for k, v in r.items() if k != "jobs"} for r in self.runs.values()]
             return Response(200, {"workflow_runs": listed if params.get("page", "1") == "1" else []})
         if method == "GET" and (m := re.fullmatch(rf"{BASE}/actions/runs/(\d+)/jobs", path)):
@@ -451,7 +459,7 @@ def test_a_run_that_provides_no_required_check_or_has_ended_well_is_not_read_aga
     watch(gh, ["vmaas", "caas"], timeout=6)
     reads = [r for r in gh.requests if r.endswith("/jobs")]
     assert reads.count("/actions/runs/777/jobs") == 1, "no required check: read once and left alone"
-    assert reads.count("/actions/runs/502/jobs") == 1, "ended without failing: read once"
+    assert reads.count("/actions/runs/502/jobs") == 0, "ended without failing: never read"
     assert reads.count(f"/actions/runs/{CI}/jobs") > 1, (
         "a run that provides a required check and runs is read each look"
     )
@@ -475,3 +483,116 @@ def test_the_looks_are_spaced_out_after_ten_minutes() -> None:
     assert waits.index(60) * 30 >= queue_guard.BACKOFF_AFTER - 30
     slower = [w for w in waits if w == 60]
     assert all(w == 60 for w in waits[waits.index(60) :]) and slower
+
+
+# what the review of the pull request found ------------------------------------------------------------------
+
+
+def test_a_hiccup_of_github_does_not_end_the_watch_and_a_run_of_hiccups_does() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.fail_reads = 2
+    gh.job(THIS, "bmaas / e2e", "completed", "failure")
+    assert watch(gh, ["vmaas", "caas", "bmaas"]) == "failed", "two failed reads, then the failure is seen"
+    many = GitHub()
+    running(many)
+    many.fail_reads = 50
+    with pytest.raises(Exception, match="502"):
+        watch(many, ["vmaas", "caas"])
+    assert many.fail_reads == 50 - queue_guard.MAX_ERRORS
+
+
+def test_the_count_of_failed_reads_starts_again_after_a_good_one() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.fail_reads = queue_guard.MAX_ERRORS - 1
+    gh.later = [{"fail": queue_guard.MAX_ERRORS - 1}]  # after the first good look, the next reads fail again
+    assert watch(gh, ["vmaas", "caas"], timeout=40) == "timeout", "never MAX_ERRORS in a row, so the watch goes on"
+    assert gh.fail_reads == 0
+
+
+def test_the_verdict_tries_the_lookup_again_before_giving_up() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.job(THIS, "bmaas / e2e", "completed", "failure")
+    gh.fail_reads = 2
+    got = queue_guard.verdict(  # type: ignore[arg-type]
+        gh, REPO, SHA, THIS, ["vmaas", "caas", "bmaas"], REQUIRED, "success", "success", sleep=lambda _: None
+    )
+    assert (got.result, got.detail, got.stop) == ("failure", "bmaas", True)
+    hopeless = GitHub()
+    hopeless.fail_reads = 50
+    with pytest.raises(Exception, match="502"):
+        queue_guard.verdict(  # type: ignore[arg-type]
+            hopeless, REPO, SHA, THIS, ["vmaas"], REQUIRED, "success", "success", sleep=lambda _: None
+        )
+
+
+def test_a_verdict_that_cannot_be_read_closes_the_check_as_cancelled_and_stops_the_runs(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    gh = GitHub()
+    running(gh)
+    gh.fail_reads = 100
+    monkeypatch.setattr(cli, "build_client", lambda **_: gh)
+    monkeypatch.setattr(cli, "required_contexts", lambda *_: (Requirement("CI"),))
+    monkeypatch.setattr(queue_guard.time, "sleep", lambda _: None)
+    argv = ["e2e-queue-verdict", *common("--suites", '["vmaas"]', "--branch", "main")]
+    assert cli.main([*argv, "--plan-result", "success", "--watch-outcome", "success"]) == 0
+    out = capsys.readouterr()
+    assert json.loads(out.out) == {
+        "result": "cancelled",
+        "detail": "could not read the state of the entry",
+        "stop": True,
+    }
+    assert "::warning::" in out.err
+
+
+def test_a_run_that_ended_well_is_never_read_and_one_with_no_jobs_listed_yet_is_not_taken_for_unrelated() -> None:
+    gh = GitHub()
+    gh.runs[CI].update(status="completed", conclusion="success")
+    gh.job(CI, "CI", "completed", "success")
+    assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == []  # type: ignore[arg-type]
+    assert f"/actions/runs/{CI}/jobs" not in gh.requests
+    lagging = GitHub()
+    lagging.runs[CI].update(status="completed", conclusion="failure")  # its jobs are not listed yet
+    assert queue_guard.required_failures(lagging, REPO, SHA, THIS, REQUIRED) == ["CI"]  # type: ignore[arg-type]
+    other = GitHub()
+    other.run(777, "CodeQL")
+    other.runs[777].update(status="completed", conclusion="failure")
+    other.job(777, "analyze", "completed", "failure")  # jobs are listed, none is a required check: not ours
+    assert queue_guard.required_failures(other, REPO, SHA, THIS, REQUIRED) == []  # type: ignore[arg-type]
+
+
+def test_a_suite_has_not_passed_until_every_job_at_its_deepest_level_has() -> None:
+    gh = GitHub()
+    gh.job(THIS, "caas / e2e", "completed", "success")
+    gh.job(THIS, "caas / teardown", "completed", "failure")
+    assert suite_progress(gh, REPO, THIS, ["caas"]) == {"caas": "failed"}  # type: ignore[arg-type]
+    gh.job(THIS, "caas / teardown", "in_progress")
+    assert suite_progress(gh, REPO, THIS, ["caas"]) == {"caas": "running"}  # type: ignore[arg-type]
+    gh.job(THIS, "caas / teardown", "completed", "success")
+    assert suite_progress(gh, REPO, THIS, ["caas"]) == {"caas": "passed"}  # type: ignore[arg-type]
+    gh.job(THIS, "caas / deeper / x", "completed", "failure")  # a deeper job is what counts
+    assert suite_progress(gh, REPO, THIS, ["caas"]) == {"caas": "failed"}  # type: ignore[arg-type]
+    gh.job(THIS, "caas / e2e", "completed", "cancelled")
+    gh.job(THIS, "caas / deeper / x", "completed", "success")
+    assert suite_progress(gh, REPO, THIS, ["caas"]) == {"caas": "passed"}  # type: ignore[arg-type]
+
+
+def test_the_detail_is_one_line_and_the_outputs_are_what_they_should_be(tmp_path: Path) -> None:
+    hostile = '{"result":"failure\\nstop=true","detail":"a\\r\\nstop=true","stop":"yes"}'
+    uv = tmp_path / "bin"
+    uv.mkdir()
+    fake = uv / "uv"
+    fake.write_text(f"#!/bin/bash\necho '{hostile}'\n")
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    script = next(s["run"] for s in load(ACTION)["runs"]["steps"] if s.get("id") == "guard")
+    out = tmp_path / "out"
+    env = {"PATH": f"{uv}:{os.environ['PATH']}", "GH_TOKEN": "t", "PHASE": "verdict", "REPO": REPO, "SHA": SHA,
+           "RUN_ID": "7", "SUITES": "[]", "BRANCH": "main", "PLAN_RESULT": "success", "WATCH_OUTCOME": "success",
+           "TIMEOUT": "60", "INTERVAL": "5", "ACTION_PATH": "/a/b/c", "GITHUB_OUTPUT": str(out)}  # fmt: skip
+    done = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True, check=False)
+    assert done.returncode == 0, done.stderr
+    lines = out.read_text().splitlines()
+    assert lines == ["result=cancelled", "detail=a stop=true", "stop=false"], "one line each, nothing injected"

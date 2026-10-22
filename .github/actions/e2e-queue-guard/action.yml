@@ -92,16 +92,18 @@ runs:
             out=$(run e2e-queue-watch --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" --suites "$SUITES" \
               --branch "$BRANCH" --timeout "$TIMEOUT" --interval "$INTERVAL")
             echo "$out"
-            echo "outcome=$(jq -r '.outcome' <<<"$out")" >> "$GITHUB_OUTPUT"
+            echo "outcome=$(jq -r '.outcome | select(. == "failed" or . == "done" or . == "timeout") // "failed"' <<<"$out")" >> "$GITHUB_OUTPUT"
             ;;
           verdict)
             out=$(run e2e-queue-verdict --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" --suites "$SUITES" \
               --branch "$BRANCH" --plan-result "$PLAN_RESULT" --watch-outcome "$WATCH_OUTCOME")
             echo "$out"
+            # The detail can hold names from the workflows of the commit: one line only (a line break would let it write
+            # an output of its own), and the other two outputs are checked to be what they should be.
             {
-              echo "result=$(jq -r '.result' <<<"$out")"
-              echo "detail=$(jq -r '.detail' <<<"$out")"
-              echo "stop=$(jq -r '.stop' <<<"$out")"
+              echo "result=$(jq -r '.result | select(. == "success" or . == "failure" or . == "cancelled") // "cancelled"' <<<"$out")"
+              echo "detail=$(jq -r '.detail | gsub("[\r\n]+"; " ")' <<<"$out")"
+              echo "stop=$(jq -r 'if .stop == true then "true" else "false" end' <<<"$out")"
             } >> "$GITHUB_OUTPUT"
             ;;
           stop)

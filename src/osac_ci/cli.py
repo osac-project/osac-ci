@@ -718,9 +718,16 @@ def main(argv: list[str] | None = None) -> int:
                 )  # fmt: skip
                 print(json.dumps({"outcome": outcome}))
             else:
-                found = queue_guard.verdict(
-                    client, args.repo, args.sha, args.run_id, wanted, required, args.plan_result, args.watch_outcome
-                )
+                try:
+                    found = queue_guard.verdict(
+                        client, args.repo, args.sha, args.run_id, wanted, required, args.plan_result, args.watch_outcome
+                    )
+                except GitHubError as exc:
+                    print(
+                        f"::warning::the state of the entry could not be read ({exc}); closing it as cancelled",
+                        file=sys.stderr,
+                    )
+                    found = queue_guard.UNREADABLE
                 print(json.dumps({"result": found.result, "detail": found.detail, "stop": found.stop}))
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: {args.command} failed: {exc}", file=sys.stderr)
