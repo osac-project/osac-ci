@@ -1,0 +1,112 @@
+---
+name: Look after a merge queue entry
+description: >-
+  One phase of the job that looks after a merge queue entry: "watch" waits until a suite of the entry, or a required
+  check of the other workflows on its commit (the unit and integration tests of CI, the Jira check), fails; "verdict" says
+  what the required E2E check should be now; "stop" cancels every run of the commit that has not ended. Called from the
+  shared e2e-queue-result workflow of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the job's built-in token, with actions: write). This action never checks out the
+# calling repository, so it cannot run its code. Every input reaches the shell through an environment variable, never
+# through the script text.
+inputs:
+  phase:
+    description: watch, verdict or stop
+    required: true
+  github-token:
+    description: Token that can read workflow runs and cancel them (actions write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The merge group commit (github.event.merge_group.head_sha)
+    required: true
+  run-id:
+    description: The workflow run that holds the suite jobs
+    default: ${{ github.run_id }}
+  suites:
+    description: JSON list of the suite ids the plan selected (the suites output of the plan)
+    default: "[]"
+  branch:
+    description: The branch the merge group is built on (github.event.merge_group.base_ref)
+    default: ""
+  plan-result:
+    description: The result of the plan job (verdict)
+    default: success
+  watch-outcome:
+    description: "How the watch step ended: success, failure, cancelled or skipped (verdict)"
+    default: ""
+  timeout:
+    description: Seconds to watch before giving up (watch)
+    default: "14400"
+  interval:
+    description: Seconds between two looks (watch)
+    default: "30"
+
+outputs:
+  outcome:
+    description: "watch: failed (a suite or a required check failed), done (every suite ended without a failure) or timeout"
+    value: ${{ steps.guard.outputs.outcome }}
+  result:
+    description: "verdict: success, failure or cancelled"
+    value: ${{ steps.guard.outputs.result }}
+  detail:
+    description: "verdict: the text after the result in the E2E check"
+    value: ${{ steps.guard.outputs.detail }}
+  stop:
+    description: "verdict: true when runs of the commit may still be going and should be stopped"
+    value: ${{ steps.guard.outputs.stop }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Look
+      id: guard
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PHASE: ${{ inputs.phase }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        RUN_ID: ${{ inputs.run-id }}
+        SUITES: ${{ inputs.suites }}
+        BRANCH: ${{ inputs.branch }}
+        PLAN_RESULT: ${{ inputs.plan-result }}
+        WATCH_OUTCOME: ${{ inputs.watch-outcome }}
+        TIMEOUT: ${{ inputs.timeout }}
+        INTERVAL: ${{ inputs.interval }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
+        case "$TIMEOUT" in "" | *[!0-9]*) echo "::error::The timeout must be digits only."; exit 1 ;; esac
+        case "$INTERVAL" in "" | *[!0-9]*) echo "::error::The interval must be digits only."; exit 1 ;; esac
+        run() { uv run --locked --project "$root" osac-ci "$@"; }
+        case "$PHASE" in
+          watch)
+            out=$(run e2e-queue-watch --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" --suites "$SUITES" \
+              --branch "$BRANCH" --timeout "$TIMEOUT" --interval "$INTERVAL")
+            echo "$out"
+            echo "outcome=$(jq -r '.outcome' <<<"$out")" >> "$GITHUB_OUTPUT"
+            ;;
+          verdict)
+            out=$(run e2e-queue-verdict --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" --suites "$SUITES" \
+              --branch "$BRANCH" --plan-result "$PLAN_RESULT" --watch-outcome "$WATCH_OUTCOME")
+            echo "$out"
+            {
+              echo "result=$(jq -r '.result' <<<"$out")"
+              echo "detail=$(jq -r '.detail' <<<"$out")"
+              echo "stop=$(jq -r '.stop' <<<"$out")"
+            } >> "$GITHUB_OUTPUT"
+            ;;
+          stop)
+            run e2e-queue-stop --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID"
+            ;;
+          *)
+            echo "::error::The phase must be watch, verdict or stop."; exit 1 ;;
+        esac

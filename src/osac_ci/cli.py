@@ -23,10 +23,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci import bot_approve, cancel_older, e2e_check, e2e_start, e2e_suites_check, lockfacts, manual_run
+from osac_ci import (
+    bot_approve,
+    cancel_older,
+    e2e_check,
+    e2e_start,
+    e2e_suites_check,
+    lockfacts,
+    manual_run,
+    queue_guard,
+)
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
+from osac_ci.compare import required_contexts
 from osac_ci.flow import FlowError, flow
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
@@ -482,15 +492,24 @@ def _parser() -> argparse.ArgumentParser:
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
 
-    ffast = sub.add_parser(
-        "e2e-queue-fail-fast",
-        help="stop the run of a merge queue entry as soon as one of its suites fails (instead of when all have ended)",
-    )
-    ffast.add_argument("--repo", required=True, help="owner/name")
-    ffast.add_argument("--run-id", type=int, required=True, help="the workflow run that holds the suite jobs")
-    ffast.add_argument("--suites", required=True, metavar="JSON", help="JSON list of the suite ids (the plan's suites)")
-    ffast.add_argument("--timeout", type=float, default=14400, help="seconds to watch before giving up")
-    ffast.add_argument("--interval", type=float, default=30, help="seconds between two looks")
+    for name, text in (
+        ("e2e-queue-watch", "wait until a suite of a merge queue entry or a required check of its commit fails"),
+        ("e2e-queue-verdict", "say what the required E2E check of a merge queue entry should be now"),
+        ("e2e-queue-stop", "cancel every run of a merge queue entry's commit that has not ended"),
+    ):
+        guard = sub.add_parser(name, help=text)
+        guard.add_argument("--repo", required=True, help="owner/name")
+        guard.add_argument("--sha", required=True, help="the merge group commit")
+        guard.add_argument("--run-id", type=int, required=True, help="the workflow run that holds the suite jobs")
+        if name != "e2e-queue-stop":
+            guard.add_argument("--suites", required=True, metavar="JSON", help="JSON list of the plan's suite ids")
+            guard.add_argument("--branch", required=True, help="the branch the merge group is built on (base_ref)")
+        if name == "e2e-queue-watch":
+            guard.add_argument("--timeout", type=float, default=14400, help="seconds to watch before giving up")
+            guard.add_argument("--interval", type=float, default=30, help="seconds between two looks")
+        if name == "e2e-queue-verdict":
+            guard.add_argument("--plan-result", required=True, help="the result of the plan job")
+            guard.add_argument("--watch-outcome", required=True, help="how the watch step ended")
 
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
@@ -682,26 +701,30 @@ def main(argv: list[str] | None = None) -> int:
         print(f"E2E status: {args.result}")
         return 0
 
-    if args.command == "e2e-queue-fail-fast":
+    if args.command in ("e2e-queue-watch", "e2e-queue-verdict", "e2e-queue-stop"):
         try:
+            client = build_client()
+            if args.command == "e2e-queue-stop":
+                print(json.dumps(queue_guard.stop_runs(client, args.repo, args.sha, args.run_id)))
+                return 0
             wanted = json.loads(args.suites)
             if not isinstance(wanted, list) or not all(isinstance(x, str) for x in wanted):
                 raise ValueError("--suites must be a JSON list of suite ids")
-            if not wanted:
-                print(json.dumps({"result": "done", "failed": []}))
-                return 0
-            result, failed = e2e_suites_check.fail_fast(
-                build_client(), args.repo, args.run_id, wanted, timeout=args.timeout, interval=args.interval
-            )
+            required = {r.context for r in required_contexts(client, args.repo, queue_guard.branch_name(args.branch))}
+            if args.command == "e2e-queue-watch":
+                outcome = queue_guard.watch(
+                    client, args.repo, args.sha, args.run_id, wanted, required,
+                    timeout=args.timeout, interval=args.interval,
+                )  # fmt: skip
+                print(json.dumps({"outcome": outcome}))
+            else:
+                found = queue_guard.verdict(
+                    client, args.repo, args.sha, args.run_id, wanted, required, args.plan_result, args.watch_outcome
+                )
+                print(json.dumps({"result": found.result, "detail": found.detail, "stop": found.stop}))
         except (GitHubError, KeyError, ValueError) as exc:
-            print(f"error: e2e-queue-fail-fast failed: {exc}", file=sys.stderr)
+            print(f"error: {args.command} failed: {exc}", file=sys.stderr)
             return 3
-        if failed:
-            print(
-                f"::warning::{', '.join(failed)} failed: the run was stopped, so the queue entry does not wait",
-                file=sys.stderr,
-            )
-        print(json.dumps({"result": result, "failed": failed}))
         return 0
 
     if args.command in ("e2e-suites-track", "e2e-suites-settle"):

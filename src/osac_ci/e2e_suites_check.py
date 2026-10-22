@@ -25,7 +25,6 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from osac_ci.e2e_check import (
-    SUITE_ID,
     check_sha,
     newest_status,
     post_status,
@@ -34,7 +33,7 @@ from osac_ci.e2e_check import (
     tiered,
     validate_lines,
 )
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
+from osac_ci.github.api import GitHubClient, check_repo, paginate
 
 
 @dataclass(frozen=True)
@@ -178,7 +177,7 @@ def settle(
     return written
 
 
-# fail fast in the merge queue -------------------------------------------------------------------------------------
+# where the suites of a merge queue run are ------------------------------------------------------------------------
 
 PASSED_CONCLUSIONS = frozenset({"success", "neutral", "skipped", "cancelled"})  # none of these is a failed suite
 
@@ -208,37 +207,3 @@ def suite_progress(client: GitHubClient, repo: str, run_id: int, suites: list[st
         else:
             out[suite] = "failed"
     return out
-
-
-def fail_fast(
-    client: GitHubClient,
-    repo: str,
-    run_id: int,
-    suites: list[str],
-    *,
-    timeout: float = 14400,
-    interval: float = 30,
-    sleep: Callable[[float], None] = time.sleep,
-    clock: Callable[[], float] = time.monotonic,
-) -> tuple[str, list[str]]:
-    """Watch the suite jobs of a merge queue run and stop the whole run as soon as one of them fails, so the queue entry
-    does not wait for the other suites (about 100 minutes each) to end before it is told. Returns ``("stopped", the
-    suites that failed)`` after asking GitHub to cancel the run, ``("done", [])`` once every suite has ended without a
-    failure, or ``("timeout", [])``. The shared ``e2e-queue-finish`` then writes the required check: a failed suite
-    makes it a failure whatever the others say, so the entry is removed at once."""
-    if not suites or any(not SUITE_ID.fullmatch(s) for s in suites):
-        raise ValueError("the suites must be a list of suite ids")
-    deadline = clock() + timeout
-    while True:
-        progress = suite_progress(client, repo, run_id, suites)
-        failed = [s for s, state in progress.items() if state == "failed"]
-        if failed:
-            response = client.request("POST", f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/cancel")
-            if response.status not in (202, 409):  # 409: the run has ended already
-                raise GitHubError(response.status, "cancelling the run")
-            return "stopped", failed
-        if all(state in ("passed", "cancelled", "skipped") for state in progress.values()):
-            return "done", []
-        if clock() >= deadline:
-            return "timeout", []
-        sleep(interval)
