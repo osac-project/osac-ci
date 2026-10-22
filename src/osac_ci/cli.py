@@ -482,6 +482,16 @@ def _parser() -> argparse.ArgumentParser:
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
 
+    ffast = sub.add_parser(
+        "e2e-queue-fail-fast",
+        help="stop the run of a merge queue entry as soon as one of its suites fails (instead of when all have ended)",
+    )
+    ffast.add_argument("--repo", required=True, help="owner/name")
+    ffast.add_argument("--run-id", type=int, required=True, help="the workflow run that holds the suite jobs")
+    ffast.add_argument("--suites", required=True, metavar="JSON", help="JSON list of the suite ids (the plan's suites)")
+    ffast.add_argument("--timeout", type=float, default=14400, help="seconds to watch before giving up")
+    ffast.add_argument("--interval", type=float, default=30, help="seconds between two looks")
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -670,6 +680,28 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E status: {args.result}")
+        return 0
+
+    if args.command == "e2e-queue-fail-fast":
+        try:
+            wanted = json.loads(args.suites)
+            if not isinstance(wanted, list) or not all(isinstance(x, str) for x in wanted):
+                raise ValueError("--suites must be a JSON list of suite ids")
+            if not wanted:
+                print(json.dumps({"result": "done", "failed": []}))
+                return 0
+            result, failed = e2e_suites_check.fail_fast(
+                build_client(), args.repo, args.run_id, wanted, timeout=args.timeout, interval=args.interval
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: e2e-queue-fail-fast failed: {exc}", file=sys.stderr)
+            return 3
+        if failed:
+            print(
+                f"::warning::{', '.join(failed)} failed: the run was stopped, so the queue entry does not wait",
+                file=sys.stderr,
+            )
+        print(json.dumps({"result": result, "failed": failed}))
         return 0
 
     if args.command in ("e2e-suites-track", "e2e-suites-settle"):

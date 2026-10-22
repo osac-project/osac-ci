@@ -1,0 +1,51 @@
+---
+# Shared workflow: stops the run of a merge queue entry as soon as one of its suites fails. Without it the required `E2E`
+# check is written only when every suite has ended (the finish job needs them all), so an entry whose BMaaS suite failed
+# after half an hour keeps the first place in the queue for the other suites' 100 minutes, and everything behind it waits.
+# Here a job watches the suites next to them and cancels the run on the first failure; the finish job, which runs
+# whatever happened (`if: always()`), then writes `E2E` as failed (a failed suite wins over the cancelled ones) and the
+# entry is removed at once. The cancelled suites tear down their clusters (their teardown steps run after a cancel).
+#
+# It must be its own call, next to the suites: a call only completes when all its jobs do, so inside the plan workflow it
+# would hold the suites back. The caller runs it with `needs: plan` and the plan's suites, in parallel with the suite
+# jobs, and gives the calling job `actions: write` (read the jobs of the run, and cancel it):
+#   fail-fast:
+#     needs: plan
+#     if: needs.plan.outputs.suites != '[]'
+#     uses: osac-project/osac-ci/.github/workflows/e2e-queue-fail-fast.yml@<sha>
+#     permissions:
+#       actions: write
+#     with:
+#       suites: ${{ needs.plan.outputs.suites }}
+# The job ends by itself once every suite has ended. It watches a run, so it can be cancelled with it.
+name: E2E queue fail fast
+
+on:
+  workflow_call:
+    inputs:
+      suites:
+        description: JSON list of the suite ids the plan selected (the plan's `suites` output)
+        type: string
+        required: true
+      timeout:
+        description: Seconds to watch before giving up
+        type: string
+        default: "14400"
+
+permissions: {}
+
+jobs:
+  watch:
+    name: Stop the run when a suite fails
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    permissions:
+      actions: write
+    steps:
+      # `$/` is this workflow's own repository at the exact commit the caller pinned.
+      - uses: $/.github/actions/e2e-queue-fail-fast
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          suites: ${{ inputs.suites }}
+          timeout: ${{ inputs.timeout }}

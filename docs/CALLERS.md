@@ -23,6 +23,7 @@ an approver, which bots may be approved without a person, which checks are not "
 | `e2e-pr-track.yml` | `e2e-pr.yml`, next to the suites | one check per suite on the pull request |
 | `e2e-pr-finish.yml` | `e2e-pr.yml`, after the suites | records the result, also after a cancel |
 | `e2e-queue-plan.yml` | `e2e-queue.yml` | plans the suites of a merge queue entry; cancels superseded entries |
+| `e2e-queue-fail-fast.yml` | `e2e-queue.yml`, next to the suites | stops the run of a queue entry as soon as one suite fails, so the entry is not held until the others end |
 | `e2e-queue-finish.yml` | `e2e-queue.yml`, after the suites | writes the required `E2E` check of the queue entry |
 | `bot-sweep.yml` | `bot-approve.yml` | approves dependency updates of the update bots when no person needs to read them |
 
@@ -219,6 +220,26 @@ The rules are in [`RULES.md`](RULES.md).
 `repo: ${{ github.repository }}` and `sha: ${{ github.event.merge_group.head_sha }}`, and
 `finish: needs: [plan, <suites>]`, `if: always()`, `uses: ...e2e-queue-finish.yml@<sha>` with
 `sha: ${{ github.event.merge_group.head_sha }}`, `results: ${{ toJSON(needs) }}` and the app key.
+
+To stop a queue entry whose suite failed (without it the required `E2E` check is written only when every suite has ended,
+about 100 minutes, and the entry keeps its place in the queue meanwhile), add one job next to the suites:
+
+```yaml
+  fail-fast:
+    needs: plan
+    if: needs.plan.outputs.suites != '[]'
+    uses: osac-project/osac-ci/.github/workflows/e2e-queue-fail-fast.yml@<sha>
+    permissions:
+      actions: write
+    with:
+      suites: ${{ needs.plan.outputs.suites }}
+```
+
+It watches the suite jobs of the run and cancels the run on the first failure (a failure is anything but a pass, a skip or a
+cancel). `finish`, which runs whatever happened, then writes `E2E` as failed and names the suites that failed (`Failed:
+bmaas`), the others being cancelled, and GitHub removes the entry. It needs no secret, is not a dependency of `finish`, and
+ends by itself once every suite has ended. It is a job of its own because a call only completes when all its jobs do:
+inside `plan` it would hold the suites back.
 
 ## The caller of the bot sweep (`.github/workflows/bot-approve.yml`)
 
