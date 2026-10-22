@@ -101,6 +101,12 @@ newest first (when it started, the suite, the version when the suite has variant
 A run that was waiting or running when a newer run of the same suite began is listed as stopped. It is read from the
 statuses the commit kept, so it lists the last 20 runs of the lines written as commit statuses (`lines-kind: statuses`).
 
+A suite that a person is running by hand when the automatic start comes (its line waits or runs, in a workflow run
+that is still going and is not the one that claimed the `E2E` check) is left alone: it is not started a second time.
+The automatic start runs the other suites the change needs, and the `E2E` check is then the sum of all of them,
+written when every one has passed, as for a run started by hand. A line whose run is gone (a crashed run leaves its
+line as it was) is not believed.
+
 A run started by hand writes only the line of its suite (`E2E / <suite>`). The required `E2E` check does not follow it
 until **every** suite the change needs has passed (by hand or by the approval); a suite that failed is shown on its own
 line and the `E2E` check stays as it was. An approval later runs only what has not passed yet.

@@ -64,6 +64,7 @@ class Action(StrEnum):
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
     ALREADY_PASSED = "already-passed"  # every suite the change needs has already passed on this commit
     NOTHING_TO_START = "nothing-to-start"  # a person asked for suites by hand, and none needs to start
+    RUNNING_BY_HAND = "running-by-hand"  # every suite the change needs that has not passed is being run by hand
 
 
 # A request by hand that names no suite ("/test"): the suites the change needs. It cannot be typed as a suite name.
@@ -129,6 +130,9 @@ class Inputs:
     # only starts like the command (`/testing`) would fall through to the automatic path, which starts every suite
     # again once the E2E check has an answer.
     comment_ignored: bool = False
+    # The workflow runs that still go among those the suite lines on the commit link to (read by ``fetch_inputs``): a
+    # line that waits or runs is only believed when the run it links to is alive.
+    live_runs: frozenset[int] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,7 @@ def applicable_suites(inputs: Inputs) -> tuple[Suite, ...]:
     return _needed(suites, inputs.changed_files, inputs.filters)
 
 
+LIVE_RUN_STATUSES = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 TIER = re.compile(r"[a-z][a-z0-9-]{0,19}")  # what a variant asks of a suite: it is passed to the suite's job
 TIER_SEP = " · "  # a line run for a variant says so: "Running · regression"
@@ -253,6 +258,16 @@ def tier_of(description: str) -> str:
     """The tier a line says it runs ("" for the suite itself): what ``tiered`` wrote."""
     head, sep, tail = description.rpartition(TIER_SEP)
     return tail if head and sep and TIER.fullmatch(tail) else ""
+
+
+def _running_by_hand(
+    suite: Suite, latest: Mapping[str, CheckRun], live_runs: frozenset[int], claim_run: int | None
+) -> bool:
+    line = latest.get(suite.check)
+    if line is None or line_state(latest, suite.check) != "active":
+        return False
+    run = run_of_url(line.url)
+    return run is not None and run in live_runs and run != claim_run
 
 
 def line_state(latest: Mapping[str, CheckRun], check: str) -> str:
@@ -338,6 +353,21 @@ def decide(inputs: Inputs) -> Decision:
     answer = latest.get("E2E")
     answered = answer is not None and answer.status == "completed"
     todo = needed if answered else tuple(s for s in needed if line_state(latest, s.check) != "passed")
+    # A suite whose line waits or runs in a run that is alive, and that is not the run that claimed the E2E, is being
+    # run by hand: starting it again would run it twice (and the line follows the newer run). The automatic start
+    # leaves it alone and starts the others; the sum of the suites is then written when every one of them has passed.
+    claim_run = run_of_url(answer.url) if answer is not None and answer.status != "completed" else None
+    held = tuple(s for s in todo if _running_by_hand(s, latest, inputs.live_runs, claim_run))
+    todo = tuple(s for s in todo if s not in held)
+    if not todo and held:
+        return Decision(
+            action=Action.RUNNING_BY_HAND,
+            reason=f"{', '.join(s.name for s in held)} {'is' if len(held) == 1 else 'are'} being run by hand on this "
+            "commit; the E2E is written when every suite the change needs has passed",
+            suites=(),
+            selected_checks=selected,
+            **base,
+        )
     if not todo:
         return Decision(
             action=Action.ALREADY_PASSED,
@@ -381,9 +411,14 @@ def decide(inputs: Inputs) -> Decision:
     return Decision(
         action=Action.START,
         reason=f"approved by {', '.join(approvers)}"
-        + (f"; CI still running: {', '.join(g.split(':')[0] for g in pending)}" if pending else ""),
+        + (f"; CI still running: {', '.join(g.split(':')[0] for g in pending)}" if pending else "")
+        + (f"; {', '.join(s.name for s in held)} run by hand" if held else ""),
         suites=names,
         suite_checks=checks,
+        # With a suite run by hand the E2E is not claimed by this run: it is the sum of the suites the change needs,
+        # written by whichever run ends last (the same rule as a run started by hand).
+        manual=bool(held),
+        selected_checks=selected if held else (),
         **base,
     )
 
@@ -520,6 +555,31 @@ def suites_of(policy: Policy) -> tuple[Suite, ...]:
     )
 
 
+def _live_runs(
+    client: GitHubClient, repo: str, latest: Mapping[str, CheckRun], suites: Iterable[Suite]
+) -> frozenset[int]:
+    """The workflow runs that still go among those the waiting or running suite lines link to. A line that says it runs
+    is only believed when its run is alive (a run that crashed leaves its line as it was); a run that cannot be read is
+    taken for not alive."""
+    alive: set[int] = set()
+    seen: set[int] = set()
+    for suite in suites:
+        line = latest.get(suite.check)
+        if line is None or line_state(latest, suite.check) != "active":
+            continue
+        run = run_of_url(line.url)
+        if run is None or run in seen:
+            continue
+        seen.add(run)
+        try:
+            found = get(client, f"/repos/{check_repo(repo)}/actions/runs/{run}")
+        except GitHubError:
+            continue
+        if isinstance(found, Mapping) and str(found.get("status")) in LIVE_RUN_STATUSES:
+            alive.add(run)
+    return frozenset(alive)
+
+
 def refuse_stale_request(
     requested: tuple[str, ...], refused: str, request_sha: str, head_sha: str
 ) -> tuple[tuple[str, ...], str]:
@@ -597,6 +657,7 @@ def fetch_inputs(
         )
         for r in lines
     )
+    live = _live_runs(client, repo, latest_checks(tuple(r for r in runs if r.app == CHECK_APP)), suites)
     files: list[str] = []
     listed = 0
     for raw in paginate(client, f"{base}/pulls/{number}/files"):
@@ -626,6 +687,7 @@ def fetch_inputs(
         requested_by=requested_by,
         request_refused=request_refused,
         comment_ignored=comment_given and not requested and not request_refused,
+        live_runs=live,
     )
 
 
