@@ -26,6 +26,8 @@ from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 
 ACTIVE_RUNS = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 DETAIL_MAX = 100
+BACKOFF_AFTER = 600  # seconds of watching after which the looks are spaced out
+SLOW_INTERVAL = 60  # the least time between two looks after that
 
 
 @dataclass(frozen=True)
@@ -57,18 +59,31 @@ def _jobs_of(client: GitHubClient, repo: str, run_id: int) -> list[Mapping[str, 
     return [j for j in jobs if isinstance(j, Mapping)]
 
 
-def required_failures(client: GitHubClient, repo: str, sha: str, this_run: int, required: Collection[str]) -> list[str]:
+def required_failures(
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    this_run: int,
+    required: Collection[str],
+    quiet: set[int] | None = None,
+) -> list[str]:
     """The failed jobs of the other runs on the commit that belong to a workflow providing a required check (a run with
     a job named like a required check: ``CI``, ``jira-reference``). A failed job of such a run settles the entry
     whether or not the job is itself the required one, since the check is the sum of the run's jobs, and so does a
     run that has ended without passing (GitHub's jobs list can lag behind it). Runs of workflows that provide no
-    required check (CodeQL, say) are left alone, so an optional failure does not stop the entry."""
+    required check (CodeQL, say) are left alone, so an optional failure does not stop the entry.
+
+    ``quiet`` (kept by the caller between looks) holds the runs that need no more reading: the ones that provide no
+    required check, and the ones that have ended without failing. The jobs of the other runs are read once per look."""
     found: list[str] = []
     for run in _runs_of(client, repo, sha):
-        if run.get("id") == this_run:
+        run_id = int(str(run.get("id")))
+        if run_id == this_run or (quiet is not None and run_id in quiet):
             continue
-        jobs = _jobs_of(client, repo, int(str(run.get("id"))))
+        jobs = _jobs_of(client, repo, run_id)
         if not any(str(j.get("name")) in required for j in jobs):
+            if quiet is not None:
+                quiet.add(run_id)
             continue
         named = [
             f"{run.get('name')} / {job.get('name')}"
@@ -78,17 +93,26 @@ def required_failures(client: GitHubClient, repo: str, sha: str, this_run: int, 
         found += named
         # The jobs API can lag behind the run (a failed job still listed as running while its run has ended failed):
         # a run that has ended without passing settles the entry whatever its jobs say.
-        if not named and run.get("status") == "completed" and str(run.get("conclusion")) not in PASSED_CONCLUSIONS:
+        ended = run.get("status") == "completed"
+        if not named and ended and str(run.get("conclusion")) not in PASSED_CONCLUSIONS:
             found.append(str(run.get("name")))
+        elif not named and ended and quiet is not None:
+            quiet.add(run_id)
     return found
 
 
 def _look(
-    client: GitHubClient, repo: str, sha: str, run_id: int, suites: list[str], required: Collection[str]
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    run_id: int,
+    suites: list[str],
+    required: Collection[str],
+    quiet: set[int] | None = None,
 ) -> tuple[dict[str, str], list[str], list[str]]:
     progress = suite_progress(client, repo, run_id, suites) if suites else {}
     failed = [s for s, state in progress.items() if state == "failed"]
-    return progress, failed, required_failures(client, repo, sha, run_id, required)
+    return progress, failed, required_failures(client, repo, sha, run_id, required, quiet)
 
 
 def watch(
@@ -108,16 +132,20 @@ def watch(
     failed job. ``done``: every suite has ended without a failure. ``timeout``: neither happened in time."""
     if any(not SUITE_ID.fullmatch(s) for s in suites):
         raise ValueError("the suites must be a list of suite ids")
-    deadline = clock() + timeout
+    started = clock()
+    deadline = started + timeout
+    quiet: set[int] = set()
     while True:
-        progress, failed, others = _look(client, repo, sha, run_id, suites, required)
+        progress, failed, others = _look(client, repo, sha, run_id, suites, required, quiet)
         if failed or others:
             return "failed"
         if all(state in ("passed", "cancelled", "skipped") for state in progress.values()):
             return "done"
         if clock() >= deadline:
             return "timeout"
-        sleep(interval)
+        # A failure after the first ten minutes costs a minute to see, which is nothing next to the suites; the long
+        # runs are read half as often.
+        sleep(interval if clock() - started < BACKOFF_AFTER else max(interval, SLOW_INTERVAL))
 
 
 def verdict_of(progress: Mapping[str, str], plan_result: str, others_failed: list[str], watch_outcome: str) -> Verdict:
