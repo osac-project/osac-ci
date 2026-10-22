@@ -91,6 +91,11 @@ class Suite:
     filters: tuple[str, ...]
     filters_any: tuple[str, ...]
     manual_only: bool = False  # only ever started by hand (the control comment), never chosen by the decision
+    # A second way to start the suite ``variant_of``: its own box and `/test` name, but it starts that suite (same job,
+    # same line, so it counts like it) with ``tier`` passed to the suite's job, shown in the comment as ``label``.
+    variant_of: str = ""
+    tier: str = ""
+    label: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +151,8 @@ class Decision:
     manual: bool = False
     selected_checks: tuple[tuple[str, str], ...] = ()  # (suite, line) of every suite the change needs: the E2E's sum
     notes: tuple[tuple[str, str], ...] = ()  # (suite, what happened to the request), for the control comment
+    # (suite, tier) of the suites to start that were asked for through a variant: the suite's job gets the tier
+    tiers: tuple[tuple[str, str], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -252,10 +259,10 @@ def suites_for_files(policy: Policy, files: Sequence[str]) -> tuple[str, ...]:
 def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:
     latest = latest_checks(inputs.check_runs)
     out = []
-    for suite in inputs.suites:
-        run = latest.get(suite.check)
+    for check in dict.fromkeys(suite.check for suite in inputs.suites):  # a variant shares the line of its suite
+        run = latest.get(check)
         if run is not None:
-            out.append(f"{suite.check}: {run.conclusion or run.status}")
+            out.append(f"{check}: {run.conclusion or run.status}")
     return tuple(out)
 
 
@@ -381,19 +388,33 @@ def _decide_by_hand(
             notes.append(
                 ("", "no E2E suite is affected by the changed files (docs only); name a suite to run it anyway")
             )
+    tiers: dict[str, str] = {}
     for name in dict.fromkeys(names):
         suite = known.get(name)
         if suite is None:
             notes.append((name, f"is not a suite of this repository (suites: {', '.join(known)})"))
             continue
-        state = line_state(latest, suite.check)
+        target = known.get(suite.variant_of) if suite.variant_of else suite
+        if target is None:
+            notes.append((name, f"is a variant of {suite.variant_of}, which is not a suite of this repository"))
+            continue
+        state = line_state(latest, target.check)
         if state == "active":
             notes.append((name, "is already running on this commit; it was not started again"))
-        elif state == "passed":
+        elif state == "passed" and not suite.variant_of:
             notes.append((name, "already passed on this commit; it was not run again"))
         else:
-            starts.append(suite)
+            # A variant runs even when its suite passed on this commit: it asks for more than that run did.
+            if target.name not in {s.name for s in starts}:
+                starts.append(target)
+            if suite.variant_of:
+                tiers[target.name] = suite.tier
             notes.append((name, f"started by {inputs.requested_by}"))
+    # A suite asked for both ways runs once, with the tier: the variant is the larger of the two.
+    for done, note in list(notes):
+        if note.startswith("already passed") and done in tiers:
+            notes.remove((done, note))
+            notes.append((done, f"covered by the run started by {inputs.requested_by}"))
     if not starts:
         return Decision(
             action=Action.NOTHING_TO_START,
@@ -411,6 +432,7 @@ def _decide_by_hand(
         manual=True,
         selected_checks=selected,
         notes=tuple(notes),
+        tiers=tuple(tiers.items()),
         **base,
     )
 
@@ -421,7 +443,16 @@ def _decide_by_hand(
 def suites_of(policy: Policy) -> tuple[Suite, ...]:
     """The E2E suites of the policy: its jobs of kind ``e2e``."""
     return tuple(
-        Suite(job.suite or name, job.check, job.filters, job.filters_any, job.manual_only)
+        Suite(
+            job.suite or name,
+            job.check,
+            job.filters,
+            job.filters_any,
+            job.manual_only,
+            job.variant_of or "",
+            job.tier or "",
+            job.label or "",
+        )
         for name, job in policy.jobs.items()
         if job.kind == "e2e"
     )
@@ -643,6 +674,7 @@ def to_json(decision: Decision) -> str:
             "e2e_checks": list(decision.e2e_checks),
             "manual": decision.manual,
             "selected_checks": dict(decision.selected_checks),
+            "tiers": dict(decision.tiers),
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

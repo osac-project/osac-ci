@@ -58,6 +58,8 @@ def legacy_states(inputs: Inputs) -> dict[str, str]:
     latest = latest_checks(inputs.check_runs)
     states: dict[str, str] = {}
     for suite in inputs.suites:
+        if suite.variant_of:
+            continue  # a second box of a suite: it has no job of its own
         job = latest.get(f"e2e-{suite.name.split('/')[0]}-full-install / e2e")
         if job is None or (job.status == "completed" and job.conclusion == "skipped"):
             states[suite.name] = "not started"

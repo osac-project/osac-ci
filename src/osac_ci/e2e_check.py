@@ -57,6 +57,7 @@ WRITE_STATES = (*STATES, "waiting")
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 SUITE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")  # a suite id: it ends up in job names, so no spaces or slashes
 LINE_MAX = 100  # the longest name a suite line may have
+TIER = re.compile(r"[a-z][a-z0-9-]{0,19}")  # what a variant asks of a suite: it is passed to the suite's job
 
 WAITING_TITLES = {
     "skip-draft": "Waiting: the pull request is a draft",
@@ -119,6 +120,7 @@ class Report:
     suites: tuple[str, ...]
     note: str
     suite_checks: tuple[tuple[str, str], ...] = ()  # (suite, line name) of the suites that run, from the policy
+    tiers: tuple[tuple[str, str], ...] = ()  # (suite, tier) of the suites asked for through a variant
 
 
 def validate_lines(raw: object) -> dict[str, str]:
@@ -152,6 +154,21 @@ def describe(text: str) -> str:
 
 def _suites(entry: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(s) for s in entry.get("suites") or ())
+
+
+def _tiers(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
+    """The tier each suite that runs is asked for (a variant of it was ticked). It is read from data and ends up in a
+    job's inputs, so each part is checked: the suite is one that runs, the tier a short lower-case word."""
+    raw = entry.get("tiers") or {}
+    if not isinstance(raw, Mapping):
+        raise ValueError("the tiers must be an object of suite id to tier")
+    suites = _suites(entry)
+    out: list[tuple[str, str]] = []
+    for suite, tier in raw.items():
+        if suite not in suites or not isinstance(tier, str) or not TIER.fullmatch(tier):
+            raise ValueError(f"invalid tier for {suite!r}: {tier!r}")
+        out.append((suite, tier))
+    return tuple(out)
 
 
 def waiting_description(entry: Mapping[str, Any]) -> str:
@@ -432,7 +449,7 @@ def report(
         # attempt of this run). The tracking job keeps them current from here on.
         for _suite, line in lines:
             post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, lines_kind or kind)
-    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines)
+    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry))
 
 
 def finish(
@@ -506,6 +523,7 @@ def to_json(found: Report) -> str:
             "start": found.start,
             "suites": list(found.suites),
             "suite_checks": dict(found.suite_checks),
+            "tiers": dict(found.tiers),
             "note": found.note,
         },
         indent=2,

@@ -96,6 +96,11 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         value: ${{ jobs.decide.outputs.suites }}
       suite-checks:
         value: ${{ jobs.decide.outputs.suite-checks }}
+      tiers:
+        description: >-
+          JSON object, suite id -> tier, for a suite started through a variant of it (for example {"caas":"regression"});
+          `{}` otherwise. Give the tier to the suite's job: `fromJSON(needs.decide.outputs.tiers).caas || ''`
+        value: ${{ jobs.decide.outputs.tiers }}
       head-repo:
         value: ${{ jobs.decide.outputs.head-repo }}
       fork-author:
@@ -185,6 +190,7 @@ jobs:
       number: ${{ steps.report.outputs.number }}
       suites: ${{ steps.report.outputs.suites }}
       suite-checks: ${{ steps.report.outputs.suite-checks }}
+      tiers: ${{ steps.report.outputs.tiers }}
       head-repo: ${{ steps.code.outputs.repo }}
       fork-author: ${{ steps.code.outputs.fork-author }}
       fork-association: ${{ steps.code.outputs.fork-association }}
