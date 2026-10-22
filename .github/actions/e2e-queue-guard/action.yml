@@ -35,7 +35,9 @@ inputs:
     description: The result of the plan job (verdict)
     default: success
   watch-outcome:
-    description: "How the watch step ended: success, failure, cancelled or skipped (verdict)"
+    description: >-
+      "How the watch ended (verdict): what it returned (failed, done or timeout), or how its step ended when it did not
+      (cancelled, failure, skipped)"
     default: ""
   timeout:
     description: Seconds to watch before giving up (watch)

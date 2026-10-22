@@ -99,7 +99,9 @@ jobs:
           suites: ${{ inputs.suites }}
           branch: ${{ inputs.branch }}
           plan-result: ${{ inputs.plan-result }}
-          watch-outcome: ${{ steps.watch.outcome }}
+          # What the watch found when it ended (failed, done or timeout: its output), else how the step itself ended
+          # (cancelled, failure, skipped).
+          watch-outcome: ${{ steps.watch.outcome == 'success' && steps.watch.outputs.outcome || steps.watch.outcome }}
       - name: Token of the OSAC CI app, for the E2E check
         id: app-token
         if: always()

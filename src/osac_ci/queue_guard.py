@@ -169,9 +169,9 @@ UNREADABLE = Verdict("cancelled", "could not read the state of the entry", True)
 
 
 def verdict_of(progress: Mapping[str, str], plan_result: str, others_failed: list[str], watch_outcome: str) -> Verdict:
-    """What the required ``E2E`` check of the entry should say. ``watch_outcome`` is how the watch step ended:
-    ``success`` (it returned), ``cancelled`` (the run is being cancelled), ``failure``, ``timeout`` or ``skipped``
-    (there was nothing to watch)."""
+    """What the required ``E2E`` check of the entry should say. ``watch_outcome`` is how the watch ended: what it
+    returned (``failed``, ``done`` or ``timeout``), or how its step ended when it returned nothing (``cancelled``: the
+    run is being cancelled; ``failure``; ``skipped``: there was nothing to watch)."""
     if plan_result == "cancelled":
         return Verdict("cancelled", "", False)
     if plan_result != "success":
