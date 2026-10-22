@@ -715,7 +715,9 @@ def render_markdown(decision: Decision) -> str:
         "",
     ]
     if decision.suites:
-        lines.append(f"- suites {'to start' if decision.starts else 'affected'}: {', '.join(decision.suites)}")
+        tiers = dict(decision.tiers)
+        named = ", ".join(f"{s} ({tiers[s]})" if s in tiers else s for s in decision.suites)
+        lines.append(f"- suites {'to start' if decision.starts else 'affected'}: {named}")
     if decision.approvers:
         lines.append(f"- approved by: {', '.join(decision.approvers)}")
     if decision.stale_approvals:

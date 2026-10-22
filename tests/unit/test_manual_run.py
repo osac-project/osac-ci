@@ -252,6 +252,20 @@ def test_the_sum_is_written_only_when_every_needed_suite_passed() -> None:
     assert any(p[0] == "POST" and p[2]["name"] == "E2E" and p[2]["conclusion"] == "success" for p in full.posted)
 
 
+def test_the_sum_says_which_tier_a_suite_ran_with_and_nothing_for_the_suite_itself() -> None:
+    lines = {"vmaas": "E2E / VMaaS Full Install", "caas": "E2E / CaaS Full Install"}
+    ran_full = {**passed("E2E / CaaS Full Install"), "output": {"title": "Passed · full"}}
+    ran_plain = {**passed("E2E / VMaaS Full Install"), "output": {"title": "Passed"}}
+    fake = Fake([ran_plain, ran_full])
+    assert "green" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+    written = next(p[2] for p in fake.posted if p[0] == "POST" and p[2]["name"] == "E2E")
+    assert written["output"]["title"] == "Passed: vmaas, caas (full)"
+    plain = Fake([ran_plain, {**passed("E2E / CaaS Full Install"), "output": {"title": "Passed"}}])
+    e2e_check.finish_by_hand(plain, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+    written = next(p[2] for p in plain.posted if p[0] == "POST" and p[2]["name"] == "E2E")
+    assert written["output"]["title"] == "Passed: vmaas, caas"
+
+
 def test_a_failed_suite_never_turns_the_sum_green() -> None:
     lines = {"vmaas": "E2E / VMaaS Full Install"}
     fake = Fake([{**passed("E2E / VMaaS Full Install"), "conclusion": "failure"}])

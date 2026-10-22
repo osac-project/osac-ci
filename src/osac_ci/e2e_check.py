@@ -470,18 +470,38 @@ def finish(
     write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url, kind)
 
 
-def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
-    """For each suite (id -> line name), what its line says on the commit: none, active, passed or failed. A line is a
-    check run of the app or a commit status (see ``suite_lines``); the newest of a name counts."""
+def suite_readings(
+    client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """For each suite (id -> line name), what its line says on the commit (none, active, passed or failed) and the tier
+    it says it ran with ("" for the suite itself). A line is a check run of the app or a commit status (see
+    ``suite_lines``); the newest of a name counts."""
     raw = [
         r
         for r in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
         if (r.get("app") or {}).get("slug") == CHECK_APP
     ]
     raw += suite_line_runs_if_readable(client, repo, sha, lines.values(), CHECK_APP)
-    runs = tuple(CheckRun(r["name"], r["status"], r.get("conclusion"), r.get("started_at"), app=CHECK_APP) for r in raw)
+    runs = tuple(
+        CheckRun(
+            r["name"],
+            r["status"],
+            r.get("conclusion"),
+            r.get("started_at"),
+            app=CHECK_APP,
+            title=str((r.get("output") or {}).get("title") or "") if isinstance(r.get("output"), Mapping) else "",
+        )
+        for r in raw
+    )
     latest = latest_checks(runs)
-    return {suite: line_state(latest, line) for suite, line in lines.items()}
+    return {suite: line_state(latest, line) for suite, line in lines.items()}, {
+        suite: tier_of(latest[line].title) if line in latest else "" for suite, line in lines.items()
+    }
+
+
+def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
+    """``suite_readings`` without the tiers: what each suite's line says on the commit."""
+    return suite_readings(client, repo, sha, lines)[0]
 
 
 def finish_by_hand(
@@ -495,14 +515,15 @@ def finish_by_hand(
     lines = validate_lines(selected)
     if not lines:
         return "nothing selected: the E2E check is left as it is"
-    states = suite_states(client, repo, sha, lines)
+    states, tiers = suite_readings(client, repo, sha, lines)
     if any(state != "passed" for state in states.values()):
         left = ", ".join(s for s, state in states.items() if state != "passed")
         return f"not every suite has passed yet ({left}): the E2E check is left as it is"
     existing = latest_check(client, repo, sha, kind)
     if not replaceable(existing):
         return "the E2E check already passed or a run is running it"
-    write_status(client, repo, sha, Write("success", describe(f"Passed: {', '.join(lines)}")), run_url, kind)
+    named = ", ".join(f"{suite} ({tiers[suite]})" if tiers.get(suite) else suite for suite in lines)
+    write_status(client, repo, sha, Write("success", describe(f"Passed: {named}")), run_url, kind)
     return "every suite passed: the E2E check is green"
 
 
@@ -514,7 +535,8 @@ def render(found: Report) -> str:
         return f"### E2E status: nothing to do\n\n{found.note}\n"
     lines = [f"### E2E status: **{found.state}**" + (" (starting the suites)" if found.start else ""), ""]
     if found.suites:
-        lines.append(f"- suites: {', '.join(found.suites)}")
+        tiers = dict(found.tiers)
+        lines.append(f"- suites: {', '.join(f'{s} ({tiers[s]})' if s in tiers else s for s in found.suites)}")
     lines.append(f"- commit: `{found.sha[:7]}`")
     if found.note:
         lines.append(f"- {found.note}")
