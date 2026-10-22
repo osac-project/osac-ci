@@ -26,6 +26,7 @@ from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 
 ACTIVE_RUNS = frozenset({"queued", "in_progress", "waiting", "requested", "pending"})
 DETAIL_MAX = 100
+MAX_ERRORS = 5  # consecutive failed reads of GitHub after which the watch gives up
 BACKOFF_AFTER = 600  # seconds of watching after which the looks are spaced out
 SLOW_INTERVAL = 60  # the least time between two looks after that
 
@@ -80,8 +81,15 @@ def required_failures(
         run_id = int(str(run.get("id")))
         if run_id == this_run or (quiet is not None and run_id in quiet):
             continue
+        ended = run.get("status") == "completed"
+        if ended and str(run.get("conclusion")) in PASSED_CONCLUSIONS:
+            if quiet is not None:
+                quiet.add(run_id)  # it ended without failing: its jobs need not be read
+            continue
         jobs = _jobs_of(client, repo, run_id)
-        if not any(str(j.get("name")) in required for j in jobs):
+        # A run that provides a required check has a job named like it. A list with no job at all is no evidence
+        # that it does not (GitHub fills the list late): only a list with other jobs says it provides none.
+        if jobs and not any(str(j.get("name")) in required for j in jobs):
             if quiet is not None:
                 quiet.add(run_id)
             continue
@@ -93,11 +101,8 @@ def required_failures(
         found += named
         # The jobs API can lag behind the run (a failed job still listed as running while its run has ended failed):
         # a run that has ended without passing settles the entry whatever its jobs say.
-        ended = run.get("status") == "completed"
-        if not named and ended and str(run.get("conclusion")) not in PASSED_CONCLUSIONS:
+        if not named and ended:
             found.append(str(run.get("name")))
-        elif not named and ended and quiet is not None:
-            quiet.add(run_id)
     return found
 
 
@@ -135,8 +140,18 @@ def watch(
     started = clock()
     deadline = started + timeout
     quiet: set[int] = set()
+    errors = 0
     while True:
-        progress, failed, others = _look(client, repo, sha, run_id, suites, required, quiet)
+        try:
+            progress, failed, others = _look(client, repo, sha, run_id, suites, required, quiet)
+        except GitHubError:
+            # a hiccup of GitHub must not end the watch for the rest of the run: try again, a few times in a row
+            errors += 1
+            if errors >= MAX_ERRORS or clock() >= deadline:
+                raise
+            sleep(interval)
+            continue
+        errors = 0
         if failed or others:
             return "failed"
         if all(state in ("passed", "cancelled", "skipped") for state in progress.values()):
@@ -146,6 +161,11 @@ def watch(
         # A failure after the first ten minutes costs a minute to see, which is nothing next to the suites; the long
         # runs are read half as often.
         sleep(interval if clock() - started < BACKOFF_AFTER else max(interval, SLOW_INTERVAL))
+
+
+# What the check says when the state of the entry cannot be read at all: closed as cancelled (the entry leaves the
+# queue, which is better than a check that never comes) and everything that still runs is stopped.
+UNREADABLE = Verdict("cancelled", "could not read the state of the entry", True)
 
 
 def verdict_of(progress: Mapping[str, str], plan_result: str, others_failed: list[str], watch_outcome: str) -> Verdict:
@@ -184,12 +204,23 @@ def verdict(
     required: Collection[str],
     plan_result: str,
     watch_outcome: str,
+    *,
+    sleep: Callable[[float], None] | None = None,
+    retry_wait: float = 5,
 ) -> Verdict:
-    """``verdict_of`` for the state of the entry now."""
+    """``verdict_of`` for the state of the entry now. A failed read of GitHub is tried again a few times."""
     if plan_result != "success" or not suites:
         return verdict_of({}, plan_result, [], watch_outcome)
-    progress, _, others = _look(client, repo, sha, run_id, suites, required)
-    return verdict_of(progress, plan_result, others, watch_outcome)
+    for attempt in range(1, MAX_ERRORS + 1):
+        try:
+            progress, _, others = _look(client, repo, sha, run_id, suites, required)
+        except GitHubError:
+            if attempt == MAX_ERRORS:
+                raise
+            (sleep or time.sleep)(retry_wait)
+        else:
+            return verdict_of(progress, plan_result, others, watch_outcome)
+    raise AssertionError("unreachable")  # the last attempt returns or raises
 
 
 def stop_runs(client: GitHubClient, repo: str, sha: str, this_run: int) -> list[int]:

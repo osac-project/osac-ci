@@ -77,6 +77,25 @@ def deepest_jobs(jobs: Iterable[Mapping[str, Any]], suites: list[str]) -> dict[s
     return {suite: job for suite, (_, job) in best.items()}
 
 
+def leaf_jobs(jobs: Iterable[Mapping[str, Any]], suites: list[str]) -> dict[str, list[Job]]:
+    """Every job at the greatest depth that did not get skipped, for each suite (``deepest_jobs`` keeps one of them).
+    A suite whose called workflow has two jobs at the same level has not passed until both have."""
+    best: dict[str, tuple[int, list[Job]]] = {}
+    for job in jobs:
+        name = str(job.get("name", ""))
+        if job.get("conclusion") == "skipped":
+            continue
+        for suite in suites:
+            if name == suite or name.startswith(f"{suite} / "):
+                depth = name.count(" / ")
+                this = Job(str(job.get("html_url", "")), str(job.get("status", "")), str(job.get("conclusion") or ""))
+                if suite not in best or depth > best[suite][0]:
+                    best[suite] = (depth, [this])
+                elif depth == best[suite][0]:
+                    best[suite][1].append(this)
+    return {suite: found for suite, (_, found) in best.items()}
+
+
 def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, Job]:
     """``deepest_jobs`` for the jobs of a workflow run, read from GitHub."""
     jobs = paginate(
@@ -201,7 +220,7 @@ def suite_progress(client: GitHubClient, repo: str, run_id: int, suites: list[st
         )
     )
     names = [(str(j.get("name", "")), j) for j in jobs]
-    found = deepest_jobs(jobs, suites)
+    found = leaf_jobs(jobs, suites)
     out: dict[str, str] = {}
     for suite in suites:
         mine = [j for n, j in names if n == suite or n.startswith(f"{suite} / ")]
@@ -209,12 +228,12 @@ def suite_progress(client: GitHubClient, repo: str, run_id: int, suites: list[st
             out[suite] = "waiting"
         elif suite not in found:  # ``find_jobs`` leaves out the skipped jobs, so these are all skipped
             out[suite] = "skipped"
-        elif found[suite].status != "completed":
+        elif any(job.status == "completed" and job.conclusion not in PASSED_CONCLUSIONS for job in found[suite]):
+            out[suite] = "failed"  # one failed leaf is enough, whatever the others are doing
+        elif any(job.status != "completed" for job in found[suite]):
             out[suite] = "running"
-        elif found[suite].conclusion == "success":
-            out[suite] = "passed"
-        elif found[suite].conclusion == "cancelled":
+        elif any(job.conclusion == "cancelled" for job in found[suite]):
             out[suite] = "cancelled"
         else:
-            out[suite] = "failed"
+            out[suite] = "passed"
     return out
