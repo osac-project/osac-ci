@@ -23,9 +23,10 @@ it cannot drift from what the code applies.
    place. A person can say no: it is not switched on while changes are requested, and not again after someone turned
    auto-merge off, or took the pull request out of the merge queue, since the approval (a new approval of the head
    commit counts again; what GitHub does on its own, such as closing the pull request, does not count as a no).
-5. The merge queue runs `CI` and `E2E` once more on the exact commit that will land and merges it. When one of the
-   suites of a queue entry fails, the others are stopped at once and the `E2E` check says which suite failed, so the
-   entry leaves the queue instead of holding its place until every suite has ended.
+5. The merge queue runs `CI` and `E2E` once more on the exact commit that will land and merges it. When a
+   suite of a queue entry fails, or a required check of the entry's other workflows does (a unit or integration test of
+   `CI`, the Jira check), everything that still runs for the entry is stopped at once and the `E2E` check says what
+   failed, so the entry leaves the queue instead of holding its place until every suite has ended.
 
 ## Who may start the E2E
 

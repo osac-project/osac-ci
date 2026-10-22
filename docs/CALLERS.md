@@ -23,8 +23,8 @@ an approver, which bots may be approved without a person, which checks are not "
 | `e2e-pr-track.yml` | `e2e-pr.yml`, next to the suites | one check per suite on the pull request |
 | `e2e-pr-finish.yml` | `e2e-pr.yml`, after the suites | records the result, also after a cancel |
 | `e2e-queue-plan.yml` | `e2e-queue.yml` | plans the suites of a merge queue entry; cancels superseded entries |
-| `e2e-queue-fail-fast.yml` | `e2e-queue.yml`, next to the suites | stops the run of a queue entry as soon as one suite fails, so the entry is not held until the others end |
-| `e2e-queue-finish.yml` | `e2e-queue.yml`, after the suites | writes the required `E2E` check of the queue entry |
+| `e2e-queue-result.yml` | `e2e-queue.yml`, next to the suites | one job that looks after the queue entry: watches the suites and the other required checks of the commit (`CI`'s unit and integration tests, the Jira check), writes the required `E2E` check at once when one fails and stops everything that still runs |
+| `e2e-queue-finish.yml` | `e2e-queue.yml`, after the suites | the older way: writes the required `E2E` check once every suite has ended (use `e2e-queue-result.yml` instead) |
 | `bot-sweep.yml` | `bot-approve.yml` | approves dependency updates of the update bots when no person needs to read them |
 
 Call each one by a full commit SHA of an osac-ci release, with the tag in a comment, for example
@@ -221,25 +221,39 @@ The rules are in [`RULES.md`](RULES.md).
 `finish: needs: [plan, <suites>]`, `if: always()`, `uses: ...e2e-queue-finish.yml@<sha>` with
 `sha: ${{ github.event.merge_group.head_sha }}`, `results: ${{ toJSON(needs) }}` and the app key.
 
-To stop a queue entry whose suite failed (without it the required `E2E` check is written only when every suite has ended,
-about 100 minutes, and the entry keeps its place in the queue meanwhile), add one job next to the suites:
+A queue entry is tested by several runs on the same commit: this E2E run and the others (`CI` with its unit and integration
+tests, the Jira check). With `finish` the required `E2E` check is written only when every suite has ended (about 100
+minutes), and a failure in `CI` does not stop the suites at all, so an entry whose BMaaS suite or unit tests failed
+keeps its place in the queue, and everything behind it waits, while the rest of its runs go on for nothing. Instead of
+`finish`, use one job, started by the plan and running next to the suites, that no suite job needs:
 
 ```yaml
-  fail-fast:
+  result:
     needs: plan
-    if: needs.plan.outputs.suites != '[]'
-    uses: osac-project/osac-ci/.github/workflows/e2e-queue-fail-fast.yml@<sha>
+    if: always()
+    uses: osac-project/osac-ci/.github/workflows/e2e-queue-result.yml@<sha>
     permissions:
       actions: write
+      contents: read
     with:
+      sha: ${{ github.event.merge_group.head_sha }}
+      branch: ${{ github.event.merge_group.base_ref }}
+      plan-result: ${{ needs.plan.result }}
       suites: ${{ needs.plan.outputs.suites }}
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
 ```
 
-It watches the suite jobs of the run and cancels the run on the first failure (a failure is anything but a pass, a skip or a
-cancel). `finish`, which runs whatever happened, then writes `E2E` as failed and names the suites that failed (`Failed:
-bmaas`), the others being cancelled, and GitHub removes the entry. It needs no secret, is not a dependency of `finish`, and
-ends by itself once every suite has ended. It is a job of its own because a call only completes when all its jobs do:
-inside `plan` it would hold the suites back.
+It watches the jobs of the suites and the jobs of the other runs on the commit that belong to a workflow providing a required
+check of the branch (a run with a job named like one: `CI`, `jira-reference`; a workflow that provides none, such as
+CodeQL, is left alone). On the first failure it writes `E2E` at once: `Failed: bmaas` for a suite (the suites that failed
+are named), or `Cancelled: stopped, CI / unit-tests failed` when another workflow caused it (`E2E` did not fail itself),
+and only then cancels every run of the commit that has not ended, this one last. So the entry is removed at once, and
+without waiting for the cancelled suites to shut their clusters down. When every suite passed it writes `E2E` as passed.
+When the run is cancelled (a newer entry replaced it) its closing steps still run and the check is closed. It needs the app
+key (the check is written with the app's token, made after the watch: a token lives an hour) and `actions: write`. It is a
+job of its own because a call only completes when all its jobs do: inside `plan` it would hold the suites back. Its job
+ends as cancelled when it stops the run (it stops itself with the rest); that is expected.
 
 ## The caller of the bot sweep (`.github/workflows/bot-approve.yml`)
 

@@ -1,0 +1,129 @@
+---
+# Shared workflow: ONE job that looks after the merge queue entry from the moment the plan has chosen the suites. It
+# replaces the `finish` job of e2e-queue-finish.yml (which waits for every suite) and goes further:
+#   * it watches the suite jobs of this run AND the jobs of the other runs on the entry's commit that provide a required
+#     check (the unit and integration tests of `CI`, the Jira check). The first failure settles the entry;
+#   * it writes the required `E2E` check at once (the suites that failed are named: "Failed: bmaas"; when the cause was
+#     another workflow, `E2E` is "cancelled, stopped": it did not fail itself), and only then stops everything that still
+#     runs for the commit (the other suites, `CI`), so the entry is removed without waiting for 100 minutes of suites, and
+#     without waiting for the cancelled suites to shut their clusters down;
+#   * when every suite passed it writes `E2E` as passed; when the run is cancelled (a newer entry replaced it) its closing
+#     steps still run and the check is closed, as the finish workflow did.
+# The merge rule requires `E2E` from the OSAC CI app only, so the check is written with the app's token (a token made at
+# the end: the watch can outlive the hour an app token lives).
+#
+# The caller gives it its own job, started by the plan and running next to the suites (a call only completes when all its
+# jobs do, so inside the plan workflow it would hold the suites back), and no suite job needs it:
+#   result:
+#     needs: plan
+#     if: always()
+#     uses: osac-project/osac-ci/.github/workflows/e2e-queue-result.yml@<sha>
+#     permissions:
+#       actions: write
+#       contents: read
+#     with:
+#       sha: ${{ github.event.merge_group.head_sha }}
+#       branch: ${{ github.event.merge_group.base_ref }}
+#       plan-result: ${{ needs.plan.result }}
+#       suites: ${{ needs.plan.outputs.suites }}
+#     secrets:
+#       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+name: E2E queue result
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The queue entry's commit (`github.event.merge_group.head_sha`)
+        type: string
+        required: true
+      branch:
+        description: The branch the merge group is built on (`github.event.merge_group.base_ref`)
+        type: string
+        required: true
+      plan-result:
+        description: The result of the caller's plan job (`needs.plan.result`)
+        type: string
+        required: true
+      suites:
+        description: The suites the plan selected (`needs.plan.outputs.suites`, a JSON list)
+        type: string
+        default: "[]"
+      timeout:
+        description: Seconds to watch before giving up
+        type: string
+        default: "14400"
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  result:
+    name: Record the E2E check
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    permissions:
+      actions: write  # read the jobs of the runs of the commit, and cancel them
+      contents: read
+    steps:
+      # `$/` is this workflow's own repository at the exact commit the caller pinned.
+      - name: Watch the suites and the required checks
+        id: watch
+        if: inputs.plan-result == 'success' && inputs.suites != '[]'
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: watch
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suites: ${{ inputs.suites }}
+          branch: ${{ inputs.branch }}
+          timeout: ${{ inputs.timeout }}
+      # From here on the steps run whatever happened to the watch, a cancel of the run included.
+      - name: What the check should say
+        id: verdict
+        if: always()
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: verdict
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suites: ${{ inputs.suites }}
+          branch: ${{ inputs.branch }}
+          plan-result: ${{ inputs.plan-result }}
+          watch-outcome: ${{ steps.watch.outcome }}
+      - name: Token of the OSAC CI app, for the E2E check
+        id: app-token
+        if: always()
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - uses: $/.github/actions/e2e-finish
+        if: always()
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          result: ${{ steps.verdict.outputs.result || 'cancelled' }}
+          detail: ${{ steps.verdict.outputs.detail }}
+      # After the check is written: stop what still runs for the commit (the other suites, CI), this run last.
+      - name: Stop what still runs
+        if: always() && steps.verdict.outputs.stop == 'true'
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: stop
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
