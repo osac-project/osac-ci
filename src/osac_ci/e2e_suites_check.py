@@ -24,7 +24,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from osac_ci.e2e_check import check_sha, newest_status, post_status, run_of_url, validate_lines
+from osac_ci.e2e_check import check_sha, newest_status, post_status, run_of_url, tier_of, tiered, validate_lines
 from osac_ci.github.api import GitHubClient, check_repo, paginate
 
 
@@ -129,7 +129,8 @@ def track(
             if owner is not None and owner != run_id:
                 newer.add(suite)
                 continue
-            post_status(client, repo, sha, lines[suite], state, description, url, kind)
+            says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
+            post_status(client, repo, sha, lines[suite], state, says, url, kind)
             shown[suite] = (description, url)
         if follow:
             finished = all(s in jobs and jobs[s].status == "completed" for s in suites)
@@ -162,8 +163,7 @@ def settle(
             continue
         job = jobs.get(suite)
         result = _result(job)
-        post_status(
-            client, repo, sha, name, RESULT_STATES[result], RESULT_TITLES[result], job.url if job else run_url, kind
-        )
+        says = tiered(RESULT_TITLES[result], tier_of(str(newest.get("description") or "")) if newest else "")
+        post_status(client, repo, sha, name, RESULT_STATES[result], says, job.url if job else run_url, kind)
         written.append(suite)
     return written

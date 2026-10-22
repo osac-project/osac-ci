@@ -51,9 +51,10 @@ jobs:
 """
 
 
-def line(name: str, conclusion: str | None = "success") -> CheckRun:
+def line(name: str, conclusion: str | None = "success", title: str = "", run: int = 0) -> CheckRun:
     status = "completed" if conclusion else "in_progress"
-    return CheckRun(name, status, conclusion, "2026-10-10T10:00:00Z", app="osac-ci", app_id=1)
+    url = f"https://github.com/o/r/actions/runs/{run}/job/9" if run else ""
+    return CheckRun(name, status, conclusion, "2026-10-10T10:00:00Z", app="osac-ci", app_id=1, title=title, url=url)
 
 
 def inputs(**changes: object) -> Inputs:
@@ -143,15 +144,27 @@ def test_a_variant_runs_even_when_its_suite_passed_because_it_asks_for_more() ->
     assert d.starts and d.suites == ("caas",) and d.tiers == (("caas", "regression"),)
 
 
-def test_the_suite_alone_is_still_not_run_again_after_it_passed() -> None:
-    d = decide(inputs(requested=("caas",), requested_by="bob", check_runs=(line(CAAS, "success"),)))
-    assert d.action is Action.NOTHING_TO_START and d.tiers == ()
+def test_a_suite_asked_for_by_name_runs_again_after_it_passed_and_the_bare_command_leaves_it_alone() -> None:
+    passed = (line(CAAS, "success"),)
+    d = decide(inputs(requested=("caas",), requested_by="bob", check_runs=passed))
+    assert d.starts and d.suites == ("caas",) and d.tiers == () and d.cancel == ()
+    bare = decide(
+        inputs(
+            requested=(NEEDED,), requested_by="bob", check_runs=passed + (line("E2E / VMaaS Full Install", "success"),)
+        )
+    )
+    assert bare.action is Action.NOTHING_TO_START
 
 
-@pytest.mark.parametrize("name", ["caas", "caas-regression"])
-def test_neither_box_starts_the_suite_while_it_is_running(name: str) -> None:
-    d = decide(inputs(requested=(name,), requested_by="bob", check_runs=(line(CAAS, None),)))
-    assert d.action is Action.NOTHING_TO_START and d.tiers == ()
+def tiered_title(tier: str) -> str:
+    return f"Running · {tier}" if tier else "Running"
+
+
+@pytest.mark.parametrize(("name", "running"), [("caas", ""), ("caas-regression", "regression")])
+def test_the_same_thing_asked_for_again_while_it_runs_does_nothing(name: str, running: str) -> None:
+    running_line = line(CAAS, None, tiered_title(running), run=50)
+    d = decide(inputs(requested=(name,), requested_by="bob", check_runs=(running_line,)))
+    assert d.action is Action.NOTHING_TO_START and d.cancel == () and d.tiers == ()
     assert d.notes == ((name, "is already running on this commit; it was not started again"),)
 
 
@@ -167,11 +180,9 @@ def test_both_boxes_start_the_suite_once_with_the_tier_in_either_order(order: tu
     assert d.suite_checks == (("caas", CAAS),)
 
 
-def test_the_variant_covers_a_suite_that_passed_when_both_are_asked_for() -> None:
+def test_both_boxes_for_a_suite_that_passed_run_it_once_with_the_tier() -> None:
     d = decide(inputs(requested=("caas", "caas-regression"), requested_by="bob", check_runs=(line(CAAS, "success"),)))
-    assert d.starts and d.suites == ("caas",)
-    assert ("caas", "covered by the run started by bob") in d.notes
-    assert not any("already passed" in note for _, note in d.notes)
+    assert d.starts and d.suites == ("caas",) and d.tiers == (("caas", "regression"),)
 
 
 def test_a_variant_asked_for_with_another_suite_starts_both() -> None:
@@ -260,3 +271,123 @@ def test_the_decision_workflow_hands_the_tiers_from_the_report_to_its_callers() 
     wf = yaml.safe_load((ROOT / ".github/workflows/e2e-pr-decide.yml").read_text(encoding="utf-8"))
     assert wf[True]["workflow_call"]["outputs"]["tiers"]["value"] == "${{ jobs.decide.outputs.tiers }}"
     assert wf["jobs"]["decide"]["outputs"]["tiers"] == "${{ steps.report.outputs.tiers }}"
+
+
+# something else asked for while a suite runs -----------------------------------------------------------------------
+
+
+def test_the_variant_asked_for_while_the_suite_runs_stops_that_run_and_starts_the_variant() -> None:
+    d = decide(
+        inputs(requested=("caas-regression",), requested_by="bob", check_runs=(line(CAAS, None, "Running", 50),))
+    )
+    assert d.starts and d.suites == ("caas",) and d.tiers == (("caas", "regression"),) and d.cancel == (50,)
+    assert d.notes == (("caas-regression", "started by bob; the run of the suite was stopped"),)
+    assert json.loads(to_json(d))["cancel"] == [50]
+
+
+def test_the_suite_asked_for_while_the_variant_runs_stops_that_run_and_starts_the_suite_alone() -> None:
+    d = decide(
+        inputs(requested=("caas",), requested_by="bob", check_runs=(line(CAAS, None, "Running · regression", 50),))
+    )
+    assert d.starts and d.suites == ("caas",) and d.tiers == () and d.cancel == (50,)
+    assert d.notes == (("caas", "started by bob; the run of regression was stopped"),)
+
+
+def test_the_suites_that_shared_the_stopped_run_start_again_as_they_were() -> None:
+    vmaas = "E2E / VMaaS Full Install"
+    d = decide(inputs(
+        requested=("caas-regression",), requested_by="bob",
+        check_runs=(line(CAAS, None, "Running", 50), line(vmaas, None, "Running", 50)),
+    ))  # fmt: skip
+    assert d.suites == ("caas", "vmaas") and d.cancel == (50,) and d.tiers == (("caas", "regression"),)
+    assert d.suite_checks == (("caas", CAAS), ("vmaas", vmaas))
+    assert ("vmaas", "was stopped with the run of another suite and started again") in d.notes
+
+
+def test_a_suite_that_runs_in_another_run_is_left_alone() -> None:
+    vmaas = "E2E / VMaaS Full Install"
+    d = decide(inputs(
+        requested=("caas-regression",), requested_by="bob",
+        check_runs=(line(CAAS, None, "Running", 50), line(vmaas, None, "Running", 60)),
+    ))  # fmt: skip
+    assert d.suites == ("caas",) and d.cancel == (50,)
+
+
+def test_the_suite_asked_for_while_its_variant_runs_restarts_what_shared_that_run() -> None:
+    vmaas = "E2E / VMaaS Full Install"
+    d = decide(inputs(
+        requested=("caas",), requested_by="bob",
+        check_runs=(line(vmaas, None, "Running", 50), line(CAAS, None, "Running · regression", 50)),
+    ))  # fmt: skip
+    assert d.suites == ("caas", "vmaas") and d.tiers == () and d.cancel == (50,)
+
+
+def test_a_line_with_no_run_to_stop_is_started_without_stopping_anything() -> None:
+    d = decide(inputs(requested=("caas-regression",), requested_by="bob", check_runs=(line(CAAS, None, "Running"),)))
+    assert d.starts and d.cancel == ()
+
+
+def test_the_bare_command_never_stops_a_run() -> None:
+    d = decide(inputs(requested=(NEEDED,), requested_by="bob", check_runs=(line(CAAS, None, "Running", 50),)))
+    assert d.cancel == () and ("caas", "is already running on this commit; it was not started again") in d.notes
+
+
+# what the line says --------------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("text", "tier"),
+    [("Running · regression", "regression"), ("Running", ""), ("Passed: all · x y", ""), ("", ""), (" · full", "")],
+)
+def test_the_tier_a_line_says_is_read_back_from_what_it_says(text: str, tier: str) -> None:
+    from osac_ci.e2e_start import tier_of
+
+    assert tier_of(text) == tier
+
+
+def test_tiered_adds_the_tier_after_the_state_and_nothing_for_the_suite_itself() -> None:
+    from osac_ci.e2e_start import tier_of, tiered
+
+    assert tiered("Waiting for a runner", "regression") == "Waiting for a runner · regression"
+    assert tiered("Running", "") == "Running" and tier_of(tiered("Passed", "full")) == "full"
+
+
+def test_the_report_carries_the_runs_to_stop_and_checks_them() -> None:
+    entry = {"suites": ["caas"], "cancel": [50, 51]}
+    assert e2e_check._cancel(entry) == (50, 51)
+    assert e2e_check._cancel({}) == ()
+    for bad in ([0], [-1], ["50"], [True], "50", [50, "x; id"], [1.5]):
+        with pytest.raises(ValueError, match="run numbers"):
+            e2e_check._cancel({"cancel": bad})
+    found = e2e_check.Report(HEAD, 7, "running", True, ("caas",), "", (("caas", CAAS),), (), (50,))
+    assert json.loads(e2e_check.to_json(found))["cancel"] == [50]
+
+
+# the workflow ---------------------------------------------------------------------------------------------------------
+
+
+def test_the_decision_workflow_stops_only_the_runs_the_report_names_and_never_its_own() -> None:
+    wf = yaml.safe_load((ROOT / ".github/workflows/e2e-pr-decide.yml").read_text(encoding="utf-8"))
+    steps = {s.get("name"): s for s in wf["jobs"]["decide"]["steps"]}
+    step = steps["Stop the run this request replaces"]
+    assert (
+        step["env"]["CANCEL"] == "${{ steps.report.outputs.cancel }}"
+        and step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    )
+    assert "${{" not in step["run"], "nothing is expanded into the script"
+    assert "THIS_RUN" in step["run"] and "*[!0-9]*" in step["run"] and "actions/runs/${id}/cancel" in step["run"]
+    names = [s.get("name") or s.get("id") for s in wf["jobs"]["decide"]["steps"]]
+    assert names.index("report") < names.index("Stop the run this request replaces"), "after the new lines are written"
+
+
+def test_the_decision_gets_the_text_of_the_edited_comment_from_the_event_never_through_the_script() -> None:
+    action = yaml.safe_load((ROOT / ".github/actions/e2e-decide/action.yml").read_text(encoding="utf-8"))
+    step = next(s for s in action["runs"]["steps"] if s.get("id") == "decide")
+    assert step["env"]["MANUAL_COMMENT_BODY"] == "${{ inputs.manual-comment-body }}"
+    assert "${{" not in step["run"] and "--manual-comment-body-file" in step["run"]
+    assert action["inputs"]["manual-comment-body"]["default"] == ""
+    wf = yaml.safe_load((ROOT / ".github/workflows/e2e-pr-decide.yml").read_text(encoding="utf-8"))
+    given = next(s for s in wf["jobs"]["decide"]["steps"] if s.get("id") == "decide")["with"]
+    assert (
+        given["manual-comment-body"] == "${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}"
+    )

@@ -278,6 +278,16 @@ def test_the_claim_writes_the_suite_lines_with_it_so_they_appear_together() -> N
     assert all(w["target_url"] == URL for w in suites.values())
 
 
+def test_a_run_asked_for_through_a_variant_says_so_on_its_waiting_line_and_only_there() -> None:
+    world = World()
+    run_report(world, entry("start", tiers={"caas": "regression"}))
+    lines = {w["context"]: w["description"] for w in world.writes if w["context"] != "E2E"}
+    assert lines == {
+        "E2E / VMaaS Full Install": "Waiting for a runner",
+        "E2E / CaaS Full Install": "Waiting for a runner · regression",
+    }
+
+
 def test_a_claim_replaces_the_suite_lines_an_earlier_attempt_left() -> None:
     world = World()
     world.add(context="E2E / VMaaS Full Install", state="error", description="Cancelled", target_url=URL)

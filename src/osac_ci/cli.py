@@ -361,6 +361,14 @@ def _parser() -> argparse.ArgumentParser:
     dec.add_argument(
         "--manual-by", default="", help="who edited or wrote the comment (a member of the organization may ask)"
     )
+    dec.add_argument(
+        "--manual-comment-body-file",
+        type=Path,
+        help=(
+            "the text of the edited control comment as the event delivered it; its checked boxes are the request "
+            "(the live comment may have been rewritten by the app since)"
+        ),
+    )
 
     suites_cmd = sub.add_parser(
         "e2e-suites",
@@ -927,9 +935,15 @@ def main(argv: list[str] | None = None) -> int:
             refused = ""
             seen = ""
             if args.manual_comment_id is not None:
-                asked, refused, seen = manual_run.read_request(
-                    client, args.repo, n, args.manual_comment_id, args.manual_by, org_client=build_org_client()
+                given = (
+                    args.manual_comment_body_file.read_text(encoding="utf-8")
+                    if args.manual_comment_body_file is not None
+                    else None
                 )
+                asked, refused, seen = manual_run.read_request(
+                    client, args.repo, n, args.manual_comment_id, args.manual_by,
+                    org_client=build_org_client(), event_body=given,
+                )  # fmt: skip
             return e2e_start.fetch_inputs(
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,

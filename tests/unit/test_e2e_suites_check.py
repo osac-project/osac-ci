@@ -215,6 +215,16 @@ def test_tracking_writes_the_line_its_own_run_started() -> None:
     assert fast(world, {"vmaas": VM}, follow=True, timeout=2) == ["vmaas"]
 
 
+def test_tracking_keeps_the_tier_the_line_says_and_adds_none_to_the_others() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    world.job("caas / e2e", "in_progress")
+    world.add(context=CA, state="pending", description="Waiting for a runner · regression", target_url=RUN_URL)
+    world.add(context=VM, state="pending", description="Waiting for a runner", target_url=RUN_URL)
+    fast(world, LINES, follow=True, timeout=2)
+    assert world.line(CA)["description"] == "Running · regression" and world.line(VM)["description"] == "Running"
+
+
 def test_nothing_is_written_again_when_nothing_changed() -> None:
     world = SuiteWorld()
     world.job("vmaas / e2e", "queued")
@@ -289,6 +299,14 @@ def test_settle_never_overwrites_the_line_of_a_newer_run() -> None:
     world.add(context=VM, state="pending", description="Running", target_url=NEWER_RUN_URL)
     assert settle(world, REPO, SHA, RUN, RUN_URL, LINES) == ["caas"]
     assert world.line(VM)["description"] == "Running"
+
+
+def test_settle_keeps_the_tier_the_line_says() -> None:
+    world = SuiteWorld()
+    world.job("caas / e2e", "completed", "success")
+    world.add(context=CA, state="pending", description="Running · regression", target_url=RUN_URL)
+    settle(world, REPO, SHA, RUN, RUN_URL, {"caas": CA})
+    assert world.line(CA)["description"] == "Passed · regression"
 
 
 def test_settle_replaces_the_line_its_own_run_wrote() -> None:

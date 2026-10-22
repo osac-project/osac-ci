@@ -41,6 +41,11 @@ inputs:
   manual-by:
     description: Login of the person who edited the control comment or wrote the /test comment
     default: ""
+  manual-comment-body:
+    description: >-
+      The text of the comment as the event delivered it (github.event.comment.body). For an edit of the control comment
+      its checked boxes are the request, whatever the app has rewritten since; empty reads the comment as it is now
+    default: ""
   org-token:
     description: Token that can read the members of the organization (members read); used for a request by hand
     default: ""
@@ -89,6 +94,7 @@ runs:
         HEAD_SHA: ${{ inputs.head-sha }}
         MANUAL_COMMENT_ID: ${{ inputs.manual-comment-id }}
         MANUAL_BY: ${{ inputs.manual-by }}
+        MANUAL_COMMENT_BODY: ${{ inputs.manual-comment-body }}
         OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
         OSAC_CI_STATUSES_TOKEN: ${{ inputs.statuses-token }}
         ACTION_PATH: ${{ github.action_path }}
@@ -130,6 +136,10 @@ runs:
             *[!0-9]*) echo "::error::The comment id must be digits only."; exit 1 ;;
           esac
           by_hand=(--manual-comment-id "$MANUAL_COMMENT_ID" "--manual-by=${MANUAL_BY:-}")
+          if [ -n "${MANUAL_COMMENT_BODY:-}" ]; then
+            printf '%s' "$MANUAL_COMMENT_BODY" > "$OUT_DIR/comment-body.md"
+            by_hand+=(--manual-comment-body-file "$OUT_DIR/comment-body.md")
+          fi
         fi
         uv run --locked --project "$root" osac-ci e2e-decide --policy "$policy_path" --repo "$REPO" "${which[@]}" \
           ${by_hand[@]+"${by_hand[@]}"} --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
