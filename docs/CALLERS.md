@@ -197,7 +197,10 @@ with its regression tests). In the policy it is a `manual_only` job with `varian
 lower-case word) and a `label` (the text of its box), and the same `check` as its suite, so it writes the line of the suite
 and counts like it. It needs no job of its own: the decision starts the suite itself and gives the tier in its `tiers`
 output (`{"caas":"regression"}`, `{}` when nobody used a variant). The suite's job passes it on, for a suite that takes
-one: `tier: ${{ fromJSON(needs.decide.outputs.tiers).caas || '' }}`.
+one: `tier: ${{ fromJSON(needs.decide.outputs.tiers).caas || '' }}`. The line of a suite run for a variant says so
+("Running · regression"). A request for a suite that is running with another tier stops that run (the decision workflow
+does it, with its own token: nothing to add to the caller) and starts the one asked for; a request is read from the
+event, so a rewrite of the comment between the click and the decision does not take it away.
 The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
 on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
 request is in the merge queue (in it, with its place; taken out, with why; or not queued); a draft and a merge conflict get

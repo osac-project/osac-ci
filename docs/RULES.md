@@ -46,14 +46,16 @@ Besides the automatic start, osac-ci keeps one comment on a pull request of a me
 checkbox for each E2E suite of the repository (and the ones that are only ever started by hand). **Any member of the
 organization** can check a box, whatever the approval state: on a draft, on a fork, and on their own pull request. The
 suite then runs for the head commit, with the repository's secrets, the same way an approved one does. The box clears
-itself and the comment says what became of the request. A suite that is already running, or has already passed on that
-commit, is not started again.
+itself and the comment says what became of the request. A suite named in a request runs again whatever it ended with
+on that commit. While it runs, asking for the same thing again does nothing; asking for something else of it (its
+variant, or the suite itself) stops that run and starts the one asked for, and the suites that shared the stopped run
+start again as they were.
 
 The same can be asked with a comment of one line on the pull request: `/test` starts the suites the change needs that
-have not passed on the head commit (it is also how a failed suite is tried again), and `/test vmaas caas` starts the
-suites named, including the ones that are only started by hand. Only the first line counts, it must be the command and
-nothing else, and only a member of the organization is heard. The comment gets a rocket when suites started and a
-confused face when none did; the control comment says why. The command is read from the comment itself, so it is never
+have not passed on the head commit (it is also how a failed suite is tried again) and leaves the ones that run
+alone, and `/test vmaas caas` starts the suites named, including the ones that are only started by hand. Only the
+first line counts, it must be the command and nothing else, and only a member of the organization is heard. The
+comment gets a rocket when suites started and a confused face when none did; the control comment says why. The command is read from the comment itself, so it is never
 tied to an older commit. A comment that only starts like the command (`/testing`), or an edit of the control comment
 that checks nothing, asks for nothing: it is ignored and never starts the automatic decision.
 
@@ -63,8 +65,8 @@ line and the `E2E` check stays as it was. An approval later runs only what has n
 
 A suite can have a **variant**: a second box (and a second name for `/test`) that starts the same suite with more tests,
 for example CaaS with its regression tests. It runs the same job and writes the same line, so the required `E2E` check
-counts it exactly like the suite. It runs even when the suite has already passed on the commit, because it asks for more
-than that run did, and it does not run while the suite is running. The automatic start and the merge queue never use it.
+counts it exactly like the suite, and its line says which one ran ("Running · regression"). The automatic start and the
+merge queue never use it.
 
 ## Checks that do not count as cheap
 

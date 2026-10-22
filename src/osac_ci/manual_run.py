@@ -333,8 +333,9 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status
         "- Or comment `/test` for the suites this change needs.",
         "- Or comment `/test <suite>` for the ones you name (the ids are in the boxes below).",
         "",
-        f"**Good to know:** suites run on the head commit `{sha[:7]}`. A suite that is already running, or "
-        "has already passed on this commit, is not started again.",
+        f"**Good to know:** suites run on the head commit `{sha[:7]}`. A suite you ask for runs again, whatever it "
+        "ended with. If it is running, the same ask does nothing; asking for another version of it stops that run "
+        "and starts the one you asked for.",
         "",
     ]
     for view in views:
@@ -442,6 +443,7 @@ def read_request(
     sender: str,
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
+    event_body: str | None = None,
 ) -> tuple[tuple[str, ...], str, str]:
     """The suites asked for by ``sender`` in the comment ``comment_id`` of pull request ``number``, the reason a
     request was refused (empty when none was) and the head commit the comment was written for (the decision refuses
@@ -450,13 +452,18 @@ def read_request(
     person themselves (an account of a person, not a bot), which names them or asks for the suites the change needs. A
     command is not tied to a commit: it means "now". Only a member of the organization may ask. Nothing asked for is
     not a refusal: an edit that unchecks a box (the app clearing it) asks for nothing. ``org_client`` is the client
-    that may read the organization's members (the main client when none is given)."""
+    that may read the organization's members (the main client when none is given). ``event_body`` is the text of the
+    control comment as the event delivered it, which is what the person checked: the app rewrites the comment all the
+    time while CI and the suites change, and a rewrite between the click and the moment the decision reads the comment
+    would take the box away, so the boxes are read from the event when it is given."""
     repo = check_repo(repo)
     comment = get(client, f"/repos/{repo}/issues/comments/{comment_id}")
     if not str(comment.get("issue_url", "")).endswith(f"/issues/{number}"):
         return (), "", ""
     body = str(comment.get("body", ""))
     if is_control_comment(comment, bot):
+        if event_body is not None:
+            body = event_body
         asked = requested_suites(body)
         seen = head_of(body)
     else:

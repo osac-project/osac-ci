@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from osac_ci.e2e_start import CHECK_APP, line_state
+from osac_ci.e2e_start import CHECK_APP, TIER, line_state, run_of_url, tier_of, tiered  # noqa: F401
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
 from osac_ci.model import CheckRun
@@ -54,10 +54,8 @@ STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a
 # draws a dot) and only one that runs is in progress (the page draws a spinner); a status has no such difference, so a
 # waiting status is pending like a running one.
 WRITE_STATES = (*STATES, "waiting")
-RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 SUITE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")  # a suite id: it ends up in job names, so no spaces or slashes
 LINE_MAX = 100  # the longest name a suite line may have
-TIER = re.compile(r"[a-z][a-z0-9-]{0,19}")  # what a variant asks of a suite: it is passed to the suite's job
 
 WAITING_TITLES = {
     "skip-draft": "Waiting: the pull request is a draft",
@@ -121,6 +119,7 @@ class Report:
     note: str
     suite_checks: tuple[tuple[str, str], ...] = ()  # (suite, line name) of the suites that run, from the policy
     tiers: tuple[tuple[str, str], ...] = ()  # (suite, tier) of the suites asked for through a variant
+    cancel: tuple[int, ...] = ()  # the workflow runs a request by hand replaces: the caller stops them
 
 
 def validate_lines(raw: object) -> dict[str, str]:
@@ -169,6 +168,16 @@ def _tiers(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
             raise ValueError(f"invalid tier for {suite!r}: {tier!r}")
         out.append((suite, tier))
     return tuple(out)
+
+
+def _cancel(entry: Mapping[str, Any]) -> tuple[int, ...]:
+    """The runs a request replaces. They end up in an API path, so each must be a number."""
+    raw = entry.get("cancel") or ()
+    if not isinstance(raw, (list, tuple)) or not all(
+        isinstance(r, int) and not isinstance(r, bool) and r > 0 for r in raw
+    ):
+        raise ValueError("the runs to cancel must be a list of run numbers")
+    return tuple(raw)
 
 
 def waiting_description(entry: Mapping[str, Any]) -> str:
@@ -278,12 +287,6 @@ def check_sha(sha: str) -> str:
     if not COMMIT_SHA.fullmatch(sha):
         raise ValueError(f"invalid commit id: {sha!r}")
     return sha
-
-
-def run_of_url(url: str) -> int | None:
-    """The workflow run a link points into (a run page or one of its jobs)."""
-    found = RUN_IN_URL.search(url or "")
-    return int(found.group(1)) if found else None
 
 
 def newest_status(
@@ -428,6 +431,7 @@ def report(
     lines = tuple((suite, wanted[suite]) for suite in _suites(entry) if suite in wanted)
     if lines_kind is not None and lines_kind not in KINDS:
         raise ValueError(f"lines kind must be one of {', '.join(KINDS)}, not {lines_kind!r}")
+    tiers = dict(_tiers(entry))
     existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     for write in outcome.writes:
@@ -435,8 +439,9 @@ def report(
     number = int(entry["number"])
     by_hand = bool(entry.get("manual"))
     if outcome.start and by_hand:
-        for _suite, line in lines:
-            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, lines_kind or kind)
+        for suite, line in lines:
+            waiting = tiered("Waiting for a runner", tiers.get(suite, ""))
+            post_status(client, repo, sha, line, "waiting", waiting, run_url, lines_kind or kind)
     elif outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
@@ -447,9 +452,11 @@ def report(
             return Report(sha, number, "already-running", False, _suites(entry), f"{other} claimed the E2E first")
         # The suite lines appear together with E2E, not a job start later (and replace a result left by an earlier
         # attempt of this run). The tracking job keeps them current from here on.
-        for _suite, line in lines:
-            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, lines_kind or kind)
-    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry))
+        for suite, line in lines:
+            waiting = tiered("Waiting for a runner", tiers.get(suite, ""))
+            post_status(client, repo, sha, line, "waiting", waiting, run_url, lines_kind or kind)
+    cancel = _cancel(entry) if outcome.start and by_hand else ()
+    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry), cancel)
 
 
 def finish(
@@ -524,6 +531,7 @@ def to_json(found: Report) -> str:
             "suites": list(found.suites),
             "suite_checks": dict(found.suite_checks),
             "tiers": dict(found.tiers),
+            "cancel": list(found.cancel),
             "note": found.note,
         },
         indent=2,

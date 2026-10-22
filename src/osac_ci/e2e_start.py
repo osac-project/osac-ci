@@ -22,6 +22,7 @@ older commit is reported, not counted, so a repository without that rule is neve
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -153,6 +154,9 @@ class Decision:
     notes: tuple[tuple[str, str], ...] = ()  # (suite, what happened to the request), for the control comment
     # (suite, tier) of the suites to start that were asked for through a variant: the suite's job gets the tier
     tiers: tuple[tuple[str, str], ...] = ()
+    # The workflow runs a request by hand replaces: a suite that was running with another tier (its run is stopped; the
+    # suites that shared that run are started again here)
+    cancel: tuple[int, ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -227,6 +231,28 @@ def applicable_suites(inputs: Inputs) -> tuple[Suite, ...]:
     if not inputs.changed_files or not inputs.changed_files_known:
         return suites
     return _needed(suites, inputs.changed_files, inputs.filters)
+
+
+RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
+TIER = re.compile(r"[a-z][a-z0-9-]{0,19}")  # what a variant asks of a suite: it is passed to the suite's job
+TIER_SEP = " · "  # a line run for a variant says so: "Running · regression"
+
+
+def run_of_url(url: str) -> int | None:
+    """The workflow run a link points into (a run page or one of its jobs)."""
+    found = RUN_IN_URL.search(url or "")
+    return int(found.group(1)) if found else None
+
+
+def tiered(text: str, tier: str) -> str:
+    """What a line says for a run of a variant: the state, then the tier ("Running · regression")."""
+    return f"{text}{TIER_SEP}{tier}" if tier else text
+
+
+def tier_of(description: str) -> str:
+    """The tier a line says it runs ("" for the suite itself): what ``tiered`` wrote."""
+    head, sep, tail = description.rpartition(TIER_SEP)
+    return tail if head and sep and TIER.fullmatch(tail) else ""
 
 
 def line_state(latest: Mapping[str, CheckRun], check: str) -> str:
@@ -369,26 +395,37 @@ def _decide_by_hand(
     selected: tuple[tuple[str, str], ...],
 ) -> Decision:
     """A member of the organization asked for suites (a box in the control comment, or a ``/test`` comment). Approval,
-    draft and cheap checks do not matter (the person decides to spend the run); what matters is that each suite exists
-    and is not already running or passed on this commit. Nothing is claimed: the E2E check stays what the automatic path
-    says."""
+    draft and cheap checks do not matter (the person decides to spend the run); what matters is that each suite exists.
+    Nothing is claimed: the E2E check stays what the automatic path says.
+
+    What a suite already says on this commit decides what a request means. Asked for by name (a box, or ``/test
+    <suite>``), a suite runs again whatever it ended with: the person asked. While it runs, asking for the same thing
+    again does nothing, and asking for something else of it (its variant, or the suite itself) stops that run and starts
+    the asked one; so do the suites that shared the stopped run, which start again as they were. The bare ``/test``
+    starts what the change needs and has not passed, and leaves what runs alone."""
     known = {s.name: s for s in inputs.suites}
-    starts: list[Suite] = []
+    starts: dict[str, Suite] = {}
+    tiers: dict[str, str] = {}
+    cancel: list[int] = []
     notes: list[tuple[str, str]] = []
     if inputs.request_refused:
         notes.append(("", inputs.request_refused))
     names: list[str] = []
+    bare: set[str] = set()  # asked for by the bare command: a suite that passed or runs is left alone
     for name in inputs.requested:
         if name != NEEDED:
             names.append(name)
             continue
         needed = applicable_suites(inputs)
         names.extend(s.name for s in needed)
+        bare.update(s.name for s in needed)
         if not needed:
             notes.append(
                 ("", "no E2E suite is affected by the changed files (docs only); name a suite to run it anyway")
             )
-    tiers: dict[str, str] = {}
+    asked: dict[
+        str, tuple[Suite, str]
+    ] = {}  # suite -> (the suite, the tier asked of it; a variant wins over the suite)
     for name in dict.fromkeys(names):
         suite = known.get(name)
         if suite is None:
@@ -398,23 +435,47 @@ def _decide_by_hand(
         if target is None:
             notes.append((name, f"is a variant of {suite.variant_of}, which is not a suite of this repository"))
             continue
+        if suite.variant_of or target.name not in asked:
+            asked[target.name] = (target, suite.tier)
+        elif not asked[target.name][1]:
+            asked[target.name] = (target, "")
+    for name in dict.fromkeys(names):
+        suite = known.get(name)
+        target = known.get(suite.variant_of) if suite is not None and suite.variant_of else suite
+        if suite is None or target is None:
+            continue
+        tier = asked[target.name][1]
+        line = latest.get(target.check)
         state = line_state(latest, target.check)
-        if state == "active":
+        running = tier_of(line.title) if line is not None else ""
+        by_name = name not in bare
+        if state == "active" and (not by_name or running == tier):
             notes.append((name, "is already running on this commit; it was not started again"))
-        elif state == "passed" and not suite.variant_of:
+            continue
+        if state == "passed" and not by_name:
             notes.append((name, "already passed on this commit; it was not run again"))
+            continue
+        if state == "active":
+            # a different thing than the one that runs: that run is stopped, and what shared it is started again
+            run = run_of_url(line.url) if line is not None else None
+            if run is not None and run not in cancel:
+                cancel.append(run)
+            notes.append((name, f"started by {inputs.requested_by}; the run of {running or 'the suite'} was stopped"))
         else:
-            # A variant runs even when its suite passed on this commit: it asks for more than that run did.
-            if target.name not in {s.name for s in starts}:
-                starts.append(target)
-            if suite.variant_of:
-                tiers[target.name] = suite.tier
             notes.append((name, f"started by {inputs.requested_by}"))
-    # A suite asked for both ways runs once, with the tier: the variant is the larger of the two.
-    for done, note in list(notes):
-        if note.startswith("already passed") and done in tiers:
-            notes.remove((done, note))
-            notes.append((done, f"covered by the run started by {inputs.requested_by}"))
+        starts[target.name] = target
+        if tier:
+            tiers[target.name] = tier
+    for run in cancel:
+        for other in inputs.suites:
+            line = latest.get(other.check)
+            if other.variant_of or other.name in starts or line is None or line_state(latest, other.check) != "active":
+                continue
+            if run_of_url(line.url) == run:
+                starts[other.name] = other
+                if tier_of(line.title):
+                    tiers[other.name] = tier_of(line.title)
+                notes.append((other.name, "was stopped with the run of another suite and started again"))
     if not starts:
         return Decision(
             action=Action.NOTHING_TO_START,
@@ -426,13 +487,14 @@ def _decide_by_hand(
         )
     return Decision(
         action=Action.START,
-        reason=f"started by hand by {inputs.requested_by}: {', '.join(s.name for s in starts)}",
-        suites=tuple(s.name for s in starts),
-        suite_checks=tuple((s.name, s.check) for s in starts),
+        reason=f"started by hand by {inputs.requested_by}: {', '.join(starts)}",
+        suites=tuple(starts),
+        suite_checks=tuple((name, suite.check) for name, suite in starts.items()),
         manual=True,
         selected_checks=selected,
         notes=tuple(notes),
         tiers=tuple(tiers.items()),
+        cancel=tuple(cancel),
         **base,
     )
 
@@ -509,6 +571,8 @@ def fetch_inputs(
             raw.get("started_at"),
             app=str((raw.get("app") or {}).get("slug") or ""),
             app_id=_app_id(raw),
+            title=str((raw.get("output") or {}).get("title") or ""),
+            url=str(raw.get("details_url") or ""),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
     )
@@ -521,7 +585,16 @@ def fetch_inputs(
         else suite_line_runs_if_readable(client, repo, head_sha, gates, CHECK_APP)
     )
     runs += tuple(
-        CheckRun(r["name"], r["status"], r.get("conclusion"), r.get("started_at"), app=CHECK_APP, app_id=0)
+        CheckRun(
+            r["name"],
+            r["status"],
+            r.get("conclusion"),
+            r.get("started_at"),
+            app=CHECK_APP,
+            app_id=0,
+            title=str((r.get("output") or {}).get("title") or ""),
+            url=str(r.get("details_url") or ""),
+        )
         for r in lines
     )
     files: list[str] = []
@@ -675,6 +748,7 @@ def to_json(decision: Decision) -> str:
             "manual": decision.manual,
             "selected_checks": dict(decision.selected_checks),
             "tiers": dict(decision.tiers),
+            "cancel": list(decision.cancel),
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

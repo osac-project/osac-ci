@@ -240,6 +240,7 @@ jobs:
           statuses-token: ${{ inputs.lines-kind == 'statuses' && steps.app-token.outputs.token || '' }}
           manual-comment-id: ${{ github.event_name == 'issue_comment' && github.event.comment.id || '' }}
           manual-by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
+          manual-comment-body: ${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}
       - uses: $/.github/actions/e2e-report
         id: report
         with:
@@ -248,6 +249,23 @@ jobs:
           lines-kind: ${{ inputs.lines-kind }}
           repo: ${{ github.repository }}
           decision-file: ${{ steps.decide.outputs.json-file }}
+      # A request for a suite that runs with another tier (its variant, or the suite itself) replaces that run: it is
+      # stopped here, after the report has written the new lines, so the stopped run leaves them alone (a line that
+      # belongs to a newer run is never overwritten). The suites that shared the stopped run start again in this one.
+      - name: Stop the run this request replaces
+        if: steps.report.outputs.cancel != '' && steps.report.outputs.cancel != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CANCEL: ${{ steps.report.outputs.cancel }}
+          THIS_RUN: ${{ github.run_id }}
+        run: |
+          for id in $(jq -r '.[]' <<<"${CANCEL}"); do
+            case "$id" in *[!0-9]* | "") echo "::error::A run number must be digits only."; exit 1 ;; esac
+            if [ "$id" = "${THIS_RUN}" ]; then continue; fi
+            gh api -X POST "repos/${REPO}/actions/runs/${id}/cancel" --silent \
+              && echo "Stopped run ${id}." || echo "::notice::Run ${id} could not be stopped (it may have ended)."
+          done
       # A run started by hand, and the suites the change needs (the finish workflow sums them up).
       - name: Was it started by hand?
         id: by-hand

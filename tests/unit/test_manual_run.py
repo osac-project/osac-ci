@@ -81,12 +81,12 @@ def test_a_suite_that_is_running_is_not_started_again() -> None:
     assert ("vmaas", "is already running on this commit; it was not started again") in d.notes
 
 
-def test_a_suite_that_passed_is_not_run_again() -> None:
+def test_a_suite_asked_for_by_name_runs_again_after_it_passed() -> None:
     d = decide(
         inputs(requested=("vmaas",), requested_by="bob", check_runs=(line("E2E / VMaaS Full Install", "success"),))
     )
-    assert d.action is Action.NOTHING_TO_START and not d.starts
-    assert d.notes == (("vmaas", "already passed on this commit; it was not run again"),)
+    assert d.starts and d.suites == ("vmaas",) and d.cancel == ()
+    assert d.notes == (("vmaas", "started by bob"),)
 
 
 def test_a_suite_that_failed_can_be_asked_for_again() -> None:
@@ -344,6 +344,23 @@ def checked(suite: str) -> str:
 def test_a_member_checking_a_box_asks_for_that_suite() -> None:
     got = manual_run.read_request(comment_api(checked("caas")), REPO, 7, 9, "bob")  # type: ignore[arg-type]
     assert got == (("caas",), "", HEAD)
+
+
+def test_the_boxes_are_read_from_the_event_so_a_rewrite_of_the_comment_does_not_take_a_click_away() -> None:
+    rewritten = comment_api(manual_run.render_comment(HEAD, views()))  # the app has cleared every box since the click
+    got = manual_run.read_request(rewritten, REPO, 7, 9, "bob", event_body=checked("caas"))  # type: ignore[arg-type]
+    assert got == (("caas",), "", HEAD)
+    stale = manual_run.read_request(rewritten, REPO, 7, 9, "bob")  # type: ignore[arg-type]
+    assert stale == ((), "", "")
+
+
+def test_the_event_body_is_used_only_for_the_control_comment_and_the_person_is_still_checked() -> None:
+    api = command_api("/test vmaas")
+    assert manual_run.read_request(api, REPO, 7, 9, "bob", event_body=checked("caas")) == (("vmaas",), "", "")  # type: ignore[arg-type]
+    asked, refused, _ = manual_run.read_request(
+        comment_api(checked("vmaas")), REPO, 7, 9, "eve", event_body=checked("caas")
+    )  # type: ignore[arg-type]
+    assert asked == () and "not a member" in refused
 
 
 def test_anyone_in_the_organization_may_ask_even_for_their_own_pull_request() -> None:
