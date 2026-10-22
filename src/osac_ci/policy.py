@@ -423,9 +423,16 @@ class Policy(_Strict):
                 raise ValueError(f"jobs {seen[job.check]!r} and {job_id!r} report the same check {job.check!r}")
             seen[job.check] = job_id
         suites = {job.suite or job_id: job for job_id, job in jobs.items()}
+        tiers: dict[tuple[str, str | None], str] = {}
         for job_id, job in jobs.items():
             if job.variant_of is None:
                 continue
+            if (job.variant_of, job.tier) in tiers:
+                raise ValueError(
+                    f"jobs {tiers[(job.variant_of, job.tier)]!r} and {job_id!r} are variants of {job.variant_of!r} "
+                    f"with the same tier {job.tier!r}"
+                )
+            tiers[(job.variant_of, job.tier)] = job_id
             base = suites.get(job.variant_of)
             if base is None or base.kind != "e2e" or base.manual_only or base.variant_of is not None:
                 raise ValueError(

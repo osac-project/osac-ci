@@ -162,6 +162,7 @@ class SuiteView:
     variant: bool = False
     title: str = ""
     covered_by: str = ""  # the tier of the variant whose run is on the suite's line
+    current: bool = True  # the box of the version the shared line shows now: the one the summary counts
 
     @property
     def label(self) -> str:
@@ -311,7 +312,7 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
 def suites_summary(views: Sequence[SuiteView]) -> str:
     """What the suites say, as counts in the fixed order failed, running, passed, not run: the E2E section's title."""
     counts = [
-        (state, mark, word, sum(v.state == state and not v.variant for v in views))
+        (state, mark, word, sum(v.state == state and v.current for v in views))
         for state, mark, word in (
             ("failed", icon("error"), "failed"),
             ("active", icon("pending"), "running"),
@@ -360,8 +361,8 @@ def history_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -
     for key, r in last.items():
         suite = by_check[key[0]]
         state = _line_state_of(r)
-        if state == "active" and first[key] < newest_start[key[0]]:
-            state = "stopped"
+        if _unfinished(r) and first[key] < newest_start[key[0]]:
+            state = "stopped"  # a newer run of the suite began: this one was replaced, however it was left
         link = str(r.get("details_url") or r.get("html_url") or "")
         rows.append(
             HistoryRow(first[key], _label_of(suite.check), tier_of(_title(r)), state, link, suite.name in versioned)
@@ -602,7 +603,7 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
         if run is None:
             return None
         state = _line_state_of(run)
-        if state == "active" and last_tier[check] != tier:
+        if _unfinished(run) and last_tier[check] != tier:
             state = "stopped"  # the other version replaced this run: it never got to say how it ended
         return state, str(run.get("details_url") or run.get("html_url") or "")
 
@@ -612,6 +613,10 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
         if not s.variant_of and s.name not in variants:
             views.append(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, ""), False, s.label))
             continue
+        # the shared line shows the newest run of any version: that box is the one the summary counts
+        current = last_tier.get(s.check) == (s.tier if s.variant_of else "") or (
+            s.check not in last_tier and not s.variant_of
+        )
         state, url, covered = "none", "", ""
         got = own(s.check, s.tier if s.variant_of else "")
         if got is not None:
@@ -622,8 +627,13 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
                 if other is not None and other[0] != "stopped":
                     state, url = other
                     covered = v.tier
-        views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered))
+        views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered, current))
     return tuple(views)
+
+
+def _unfinished(run: Mapping[str, object]) -> bool:
+    """A run that never said how it ended: still waiting or running, or cancelled (stopped by a newer run)."""
+    return str(run.get("status")) != "completed" or _conclusion(run) == "cancelled"
 
 
 def _line_state_of(run: Mapping[str, object]) -> str:

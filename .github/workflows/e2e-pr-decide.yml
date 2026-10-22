@@ -263,8 +263,23 @@ jobs:
           for id in $(jq -r '.[]' <<<"${CANCEL}"); do
             case "$id" in *[!0-9]* | "") echo "::error::A run number must be digits only."; exit 1 ;; esac
             if [ "$id" = "${THIS_RUN}" ]; then continue; fi
-            gh api -X POST "repos/${REPO}/actions/runs/${id}/cancel" --silent \
-              && echo "Stopped run ${id}." || echo "::notice::Run ${id} could not be stopped (it may have ended)."
+            if gh api -X POST "repos/${REPO}/actions/runs/${id}/cancel" --silent; then
+              echo "Stopped run ${id}; waiting for it to end."
+              # The request returns before the run has ended (its jobs still tear down). Wait a bounded time (two
+              # minutes) so the suites started here do not run next to it, then go on: a run that ends slowly must not
+              # hold back the suite that was asked for.
+              status=""
+              for _ in $(seq 1 24); do
+                status=$(gh api "repos/${REPO}/actions/runs/${id}" --jq .status 2>/dev/null || true)
+                if [ "${status}" = "completed" ]; then break; fi
+                sleep 5
+              done
+              if [ "${status}" != "completed" ]; then
+                echo "::warning::Run ${id} is still ending; the suites asked for start anyway."
+              fi
+            else
+              echo "::notice::Run ${id} could not be stopped (it may have ended)."
+            fi
           done
       # A run started by hand, and the suites the change needs (the finish workflow sums them up).
       - name: Was it started by hand?
