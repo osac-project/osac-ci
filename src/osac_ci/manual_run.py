@@ -92,6 +92,7 @@ STATE_TEXT = {
     "active": f"{icon('pending')} running",
     "passed": f"{icon('passed')} passed",
     "failed": f"{icon('error')} failed",
+    "stopped": f"{icon('closed')} stopped, replaced by another run",
 }
 RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
 # The checks the status block shows. CI and the Jira reference are jobs of the repository's own workflows (GitHub
@@ -514,19 +515,50 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
     urls: dict[str, str] = {}
     for r in sorted(runs, key=lambda r: str(r.get("started_at") or "")):
         urls[str(r["name"])] = str(r.get("details_url") or r.get("html_url") or "")
-    tiers = {s.tier for s in suites if s.variant_of}
+    # A suite and its variants share one line, and a newer run of one version replaces what the line says, so each box
+    # keeps the last result of its own version (the commit keeps every status the line ever had).
+    ordered = [r for _, r in sorted(enumerate(runs), key=lambda p: (str(p[1].get("started_at") or ""), p[0]))]
+    newest: dict[tuple[str, str], Mapping[str, object]] = {}
+    last_tier: dict[str, str] = {}
+    for r in ordered:
+        tier = tier_of(_title(r))
+        newest[(str(r["name"]), tier)] = r
+        last_tier[str(r["name"])] = tier
+
+    def own(check: str, tier: str) -> tuple[str, str] | None:
+        run = newest.get((check, tier))
+        if run is None:
+            return None
+        state = _line_state_of(run)
+        if state == "active" and last_tier[check] != tier:
+            state = "stopped"  # the other version replaced this run: it never got to say how it ended
+        return state, str(run.get("details_url") or run.get("html_url") or "")
+
+    variants = {s.variant_of for s in suites if s.variant_of}
     views: list[SuiteView] = []
     for s in suites:
-        state, url = line_state(latest, s.check), urls.get(s.check, "")
-        line = latest.get(s.check)
-        shown = tier_of(line.title) if line is not None else ""  # which version the line says it is for
-        covered = ""
-        if s.variant_of and shown != s.tier:
-            state, url = "none", ""  # the line is for another version
-        elif not s.variant_of and shown in tiers:
-            covered = shown  # the line is for a variant, which includes this suite
+        if not s.variant_of and s.name not in variants:
+            views.append(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, ""), False, s.label))
+            continue
+        state, url, covered = "none", "", ""
+        got = own(s.check, s.tier if s.variant_of else "")
+        if got is not None:
+            state, url = got
+        elif not s.variant_of:
+            for v in (v for v in suites if v.variant_of == s.name):  # the run of a variant includes this suite
+                other = own(s.check, v.tier)
+                if other is not None and other[0] != "stopped":
+                    state, url = other
+                    covered = v.tier
         views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered))
     return tuple(views)
+
+
+def _line_state_of(run: Mapping[str, object]) -> str:
+    """What one line (a status or a check run of the app) says: active, passed or failed, as ``line_state`` reads it."""
+    if str(run.get("status")) != "completed":
+        return "active"
+    return "passed" if _conclusion(run) == "success" else "failed"
 
 
 def _title(r: Mapping[str, object]) -> str:

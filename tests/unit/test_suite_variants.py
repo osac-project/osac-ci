@@ -257,9 +257,9 @@ def test_a_checked_variant_box_is_a_request_for_its_id() -> None:
     assert manual_run.requested_suites(ticked) == ("caas-regression",)
 
 
-def run_line(title: str, state: str = "success") -> dict:
+def run_line(title: str, state: str | None = "success", at: str = "10:00", run: int = 1) -> dict:
     return {"name": CAAS, "status": "completed" if state else "in_progress", "conclusion": state or None,
-            "app": {"slug": "osac-ci"}, "details_url": "https://x/run/1", "started_at": "2026-10-10T10:00:00Z",
+            "app": {"slug": "osac-ci"}, "details_url": f"https://x/run/{run}", "started_at": f"2026-10-10T{at}:00Z",
             "output": {"title": title}}  # fmt: skip
 
 
@@ -416,3 +416,45 @@ def test_the_decision_gets_the_text_of_the_edited_comment_from_the_event_never_t
     assert (
         given["manual-comment-body"] == "${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}"
     )
+
+
+# each box keeps the last result of its own version -----------------------------------------------------------------
+
+
+def test_a_newer_plain_run_does_not_take_the_result_of_the_full_run_from_its_box() -> None:
+    got = boxes([run_line("Passed · regression", "success", "10:00", 1), run_line("Running", None, "11:00", 2)])
+    assert got["caas-regression"] == f" · {manual_run.icon('passed')} passed ([run](https://x/run/1))"
+    assert got["caas"] == f" · {manual_run.icon('pending')} running ([run](https://x/run/2))"
+
+
+def test_a_newer_full_run_does_not_take_the_result_of_the_plain_run_from_its_box() -> None:
+    got = boxes([run_line("Failed", "failure", "10:00", 1), run_line("Running · regression", None, "11:00", 2)])
+    assert got["caas"] == f" · {manual_run.icon('error')} failed ([run](https://x/run/1))"
+    assert got["caas-regression"] == f" · {manual_run.icon('pending')} running ([run](https://x/run/2))"
+
+
+def test_a_run_the_other_version_replaced_says_it_was_stopped_instead_of_running_for_ever() -> None:
+    stopped = f" · {manual_run.icon('closed')} stopped, replaced by another run ([run](https://x/run/1))"
+    got = boxes(
+        [run_line("Waiting for a runner", None, "10:00", 1), run_line("Passed · regression", "success", "11:00", 2)]
+    )
+    assert got["caas"] == stopped
+    assert got["caas-regression"] == f" · {manual_run.icon('passed')} passed ([run](https://x/run/2))"
+    views = manual_run.views_for(
+        SUITES,
+        [run_line("Waiting for a runner", None, "10:00", 1), run_line("Passed · regression", "success", "11:00", 2)],
+    )
+    # only the other suite (vmaas, never run) is counted: a stopped run is neither running nor passed nor failed
+    assert manual_run.suites_summary(views) == f"{manual_run.icon('neutral')} 1 not run"
+
+
+def test_the_suite_box_is_covered_by_the_variant_only_when_the_suite_itself_never_ran() -> None:
+    only_full = boxes([run_line("Passed · regression", "success", "10:00", 1)])
+    assert "(in the regression run)" in only_full["caas"]
+    both = boxes([run_line("Passed", "success", "09:00", 1), run_line("Passed · regression", "success", "10:00", 2)])
+    assert "in the" not in both["caas"] and "https://x/run/1" in both["caas"]
+
+
+def test_a_suite_without_a_variant_is_read_as_before() -> None:
+    views = manual_run.views_for(SUITES, [run_line("Passed", "success", "10:00", 1)])
+    assert next(v for v in views if v.suite == "vmaas").state == "none"
