@@ -60,6 +60,11 @@ command is read from the comment itself, so it is never tied to an older commit.
 command (`/testing`), or an edit of the control comment
 that checks nothing, asks for nothing: it is ignored and never starts the automatic decision.
 
+The E2E tests section of the comment also holds a collapsed **History**: one line per run of a suite on the head commit,
+newest first (when it started, the suite, the version when the suite has variants, how it ended and a link to the run).
+A run that was waiting or running when a newer run of the same suite began is listed as stopped. It is read from the
+statuses the commit kept, so it lists the last 20 runs of the lines written as commit statuses (`lines-kind: statuses`).
+
 A run started by hand writes only the line of its suite (`E2E / <suite>`). The required `E2E` check does not follow it
 until **every** suite the change needs has passed (by hand or by the approval); a suite that failed is shown on its own
 line and the `E2E` check stays as it was. An approval later runs only what has not passed yet.
