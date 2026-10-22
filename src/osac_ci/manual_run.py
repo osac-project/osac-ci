@@ -38,6 +38,7 @@ from osac_ci.e2e_start import (
     reviews_with_roles,
     reviews_with_roles_unread,
     suites_of,
+    tier_of,
     unqualified_approvers,
 )
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
@@ -142,8 +143,10 @@ QUEUE_REMOVAL_WORDS = {
 @dataclass(frozen=True)
 class SuiteView:
     """One box of the comment: a suite (its id, its line name and what its line says on the head commit), or a variant
-    of a suite (``variant``): a second box that starts the same suite, so it has no state of its own, and ``title`` is
-    what its box says."""
+    of a suite (``variant``): a second box that starts the same suite, and ``title`` is what its box says. A suite and
+    its variants share one line, which says which of them ran (``Running · full``): the box of that version shows the
+    line, the box of the suite says the variant's run covers it (``covered_by``), and the other boxes say nothing
+    ran."""
 
     suite: str
     check: str
@@ -151,6 +154,7 @@ class SuiteView:
     url: str = ""
     variant: bool = False
     title: str = ""
+    covered_by: str = ""  # the tier of the variant whose run is on the suite's line
 
     @property
     def label(self) -> str:
@@ -339,12 +343,10 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "", status
         "",
     ]
     for view in views:
-        if view.variant:  # the state and the run are those of the suite's own line
-            lines.append(f"- [ ] <!-- suite:{view.suite} --> **{view.label}**")
-            continue
         link = f" ([run]({view.url}))" if view.url else ""
+        via = f" (in the {view.covered_by} run)" if view.covered_by and view.state != "none" else ""
         lines.append(
-            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{link}"
+            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{via}{link}"
         )
     lines += ["", "</details>", "", NOTES_START]
     if notes.strip():
@@ -498,17 +500,39 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
     runs = [r for r in runs if _is_app(r)]
     latest = latest_checks(
         tuple(
-            CheckRun(str(r["name"]), str(r["status"]), _conclusion(r), str(r.get("started_at") or ""), app=CHECK_APP)
+            CheckRun(
+                str(r["name"]),
+                str(r["status"]),
+                _conclusion(r),
+                str(r.get("started_at") or ""),
+                app=CHECK_APP,
+                title=_title(r),
+            )
             for r in runs
         )
     )
     urls: dict[str, str] = {}
     for r in sorted(runs, key=lambda r: str(r.get("started_at") or "")):
         urls[str(r["name"])] = str(r.get("details_url") or r.get("html_url") or "")
-    return tuple(
-        SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, ""), bool(s.variant_of), s.label)
-        for s in suites
-    )
+    tiers = {s.tier for s in suites if s.variant_of}
+    views: list[SuiteView] = []
+    for s in suites:
+        state, url = line_state(latest, s.check), urls.get(s.check, "")
+        line = latest.get(s.check)
+        shown = tier_of(line.title) if line is not None else ""  # which version the line says it is for
+        covered = ""
+        if s.variant_of and shown != s.tier:
+            state, url = "none", ""  # the line is for another version
+        elif not s.variant_of and shown in tiers:
+            covered = shown  # the line is for a variant, which includes this suite
+        views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered))
+    return tuple(views)
+
+
+def _title(r: Mapping[str, object]) -> str:
+    """What a line says (the output title of a check run, the description a status was read as)."""
+    output = r.get("output")
+    return str(output.get("title") or "") if isinstance(output, Mapping) else ""
 
 
 def _started(r: Mapping[str, object]) -> str:
