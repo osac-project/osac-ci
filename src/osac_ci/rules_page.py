@@ -88,8 +88,9 @@ The same can be asked with a comment of one line on the pull request: `/test` st
 have not passed on the head commit (it is also how a failed suite is tried again) and leaves the ones that run
 alone, and `/test vmaas caas` starts the suites named, including the ones that are only started by hand. Only the
 first line counts, it must be the command and nothing else, and only a member of the organization is heard. The
-comment gets a rocket when suites started and a confused face when none did; the control comment says why. The command is read from the comment itself, so it is never
-tied to an older commit. A comment that only starts like the command (`/testing`), or an edit of the control comment
+comment gets a rocket when suites started and a confused face when none did; the control comment says why. The
+command is read from the comment itself, so it is never tied to an older commit. A comment that only starts like the
+command (`/testing`), or an edit of the control comment
 that checks nothing, asks for nothing: it is ignored and never starts the automatic decision.
 
 A run started by hand writes only the line of its suite (`E2E / <suite>`). The required `E2E` check does not follow it
