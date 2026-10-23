@@ -65,6 +65,31 @@ WAITING_TITLES = {
 }
 
 
+BY_HAND_PREFIX = (
+    "By hand: "  # a waiting check that also says what suites a person started: "By hand: vmaas running · Waiting…"
+)
+BY_HAND_WORDS = {"active": "running", "passed": "passed", "failed": "failed"}
+
+
+def by_hand_text(states: Mapping[str, str]) -> str:
+    """What the suites started by hand say, for the front of a waiting check: ``By hand: vmaas running, caas passed``.
+    Suites with no line are left out; empty when none has one."""
+    parts = [f"{suite} {BY_HAND_WORDS[state]}" for suite, state in states.items() if state in BY_HAND_WORDS]
+    return BY_HAND_PREFIX + ", ".join(parts) if parts else ""
+
+
+def waiting_part(description: str) -> str:
+    """The wait a waiting check names (``Waiting: the pull request is a draft``), without a by-hand front."""
+    if description.startswith(BY_HAND_PREFIX) and " · " in description:
+        return description.split(" · ", 1)[1]
+    return description
+
+
+def with_by_hand(states: Mapping[str, str], waiting: str) -> str:
+    front = by_hand_text(states)
+    return describe(f"{front} · {waiting}" if front else waiting)
+
+
 class Phase(StrEnum):
     WAITING = "waiting"
     RUNNING = "running"
@@ -187,7 +212,13 @@ def waiting_description(entry: Mapping[str, Any]) -> str:
     title = WAITING_TITLES.get(action, f"Waiting: {action}")
     reason = str(entry.get("reason", "")).strip()
     # a reason that only says again what the title says (a draft) is left out
-    return describe(f"{title}: {reason}" if reason and reason.lower() not in title.lower() else title)
+    text = f"{title}: {reason}" if reason and reason.lower() not in title.lower() else title
+    return with_by_hand(_by_hand(entry), text)
+
+
+def _by_hand(entry: Mapping[str, Any]) -> dict[str, str]:
+    raw = entry.get("by_hand") or {}
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, Mapping) else {}
 
 
 def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callable[[int], bool]) -> Outcome:
@@ -203,6 +234,16 @@ def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callabl
             return Outcome("already-running", False, note=f"run {existing.run_id} is running it")
         return Outcome("waiting", False, (write,))
     return Outcome("already-ran", False, note="a result is already on this commit")
+
+
+def _hand_writes(entry: Mapping[str, Any], existing: Existing | None) -> tuple[Write, ...]:
+    if existing is None or existing.phase is not Phase.WAITING:
+        return ()
+    counted = {suite for suite in _selected(entry)}
+    states = {s: st for s, st in _by_hand(entry).items() if s in counted}
+    states.update({s: "active" for s in _suites(entry) if s in counted})
+    text = with_by_hand(states, waiting_part(existing.description))
+    return () if text == existing.description else (Write("waiting", text),)
 
 
 def _claim(entry: Mapping[str, Any]) -> Write:
@@ -273,8 +314,9 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
         return Outcome("ignored", False, note=str(entry.get("reason", "")))
     if action == "start":
         if entry.get("manual"):
-            # started by hand: only the suites' lines change; the E2E check is not claimed (see finish_by_hand)
-            return Outcome("running", True, note="started by hand")
+            # started by hand: only the suites' lines change; the E2E check is not claimed (see finish_by_hand). A check
+            # that waits says so in front of its wait, so the page does not read "waiting" while the suites run.
+            return Outcome("running", True, _hand_writes(entry, existing), note="started by hand")
         return _start(entry, existing, run_id, alive)
     return _waiting(entry, existing, alive)
 
@@ -517,10 +559,14 @@ def finish_by_hand(
     if not lines:
         return "nothing selected: the E2E check is left as it is"
     states, tiers = suite_readings(client, repo, sha, lines)
+    existing = latest_check(client, repo, sha, kind)
     if any(state != "passed" for state in states.values()):
         left = ", ".join(s for s, state in states.items() if state != "passed")
-        return f"not every suite has passed yet ({left}): the E2E check is left as it is"
-    existing = latest_check(client, repo, sha, kind)
+        if existing is not None and existing.phase is Phase.WAITING:
+            text = with_by_hand(states, waiting_part(existing.description))
+            if text != existing.description:
+                write_status(client, repo, sha, Write("waiting", text), run_url, kind)
+        return f"not every suite has passed yet ({left}): the E2E check is not turned green"
     if not replaceable(existing):
         return "the E2E check already passed or a run is running it"
     named = ", ".join(f"{suite} ({tiers[suite]})" if tiers.get(suite) else suite for suite in lines)

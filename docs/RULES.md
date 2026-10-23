@@ -54,6 +54,10 @@ on that commit. While it runs, asking for the same thing again does nothing; ask
 variant, or the suite itself) stops that run and starts the one asked for, and the suites that shared the stopped run
 start again as they were.
 
+While the `E2E` check waits (a draft, an approval, a failed CI) and suites were started by hand, its text says what they
+do in front of the wait (`By hand: vmaas running, caas passed · Waiting: the pull request is a draft`); the check turns
+green only when every suite the change needs has passed.
+
 The same can be asked with a comment of one line on the pull request: `/test` starts the suites the change needs that
 have not passed on the head commit (it is also how a failed suite is tried again) and leaves the ones that run
 alone, and `/test vmaas caas` starts the suites named, including the ones that are only started by hand. Only the

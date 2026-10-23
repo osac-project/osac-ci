@@ -279,7 +279,7 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
         elif over:
             rows.append(f"{lead('closed')}**Closed** without merging")
         if status.draft and not over:
-            rows.append(f"{lead('warning')}**Draft:** mark it ready for review")
+            rows.append(f"{lead('warning')}**Draft:** mark it ready for review; suites can still be started by hand")
         if status.conflict and not over:
             rows.append(f"{lead('error')}**Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))

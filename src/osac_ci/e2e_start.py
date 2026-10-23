@@ -161,6 +161,9 @@ class Decision:
     # The workflow runs a request by hand replaces: a suite that was running with another tier (its run is stopped; the
     # suites that shared that run are started again here)
     cancel: tuple[int, ...] = ()
+    # (suite, state) of the suites the change needs that have a line on the head commit (active | passed | failed): what
+    # a person started by hand, for the text of an E2E check that is still waiting
+    by_hand: tuple[tuple[str, str], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -329,6 +332,7 @@ def decide(inputs: Inputs) -> Decision:
     # the same name must not make a suite look passed or running.
     latest = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP))
     selected = tuple((s.name, s.check) for s in applicable_suites(inputs))
+    base["by_hand"] = tuple((n, st) for n, c in selected if (st := line_state(latest, c)) != "none")
     if inputs.requested or inputs.request_refused:
         return _decide_by_hand(inputs, base, latest, selected)
     if inputs.comment_ignored:
@@ -817,6 +821,7 @@ def to_json(decision: Decision) -> str:
             "selected_checks": dict(decision.selected_checks),
             "tiers": dict(decision.tiers),
             "cancel": list(decision.cancel),
+            "by_hand": dict(decision.by_hand),
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,
