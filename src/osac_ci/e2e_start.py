@@ -374,6 +374,10 @@ def decide(inputs: Inputs) -> Decision:
             reason=f"every suite this change needs has passed on this commit: {', '.join(s.name for s in needed)}",
             suites=(),
             selected_checks=selected,
+            # the version each of them passed with ("full"), for the text of the E2E check
+            tiers=tuple(
+                (s.name, tier) for s in needed if (tier := tier_of(latest[s.check].title if s.check in latest else ""))
+            ),
             **base,
         )
     names = tuple(s.name for s in todo)

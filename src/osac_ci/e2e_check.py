@@ -161,7 +161,7 @@ def _tiers(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     raw = entry.get("tiers") or {}
     if not isinstance(raw, Mapping):
         raise ValueError("the tiers must be an object of suite id to tier")
-    suites = _suites(entry)
+    suites = {*_suites(entry), *_selected(entry)}  # a decision that starts nothing still names the suites it counted
     out: list[tuple[str, str]] = []
     for suite, tier in raw.items():
         if suite not in suites or not isinstance(tier, str) or not TIER.fullmatch(tier):
@@ -247,7 +247,8 @@ def _already_passed(entry: Mapping[str, Any], existing: Existing | None) -> Outc
     that is running stay."""
     if not replaceable(existing):
         return Outcome("already-ran", False, note="a result is already on this commit")
-    names = ", ".join(_selected(entry))
+    tiers = dict(_tiers(entry))
+    names = ", ".join(f"{s} ({tiers[s]})" if s in tiers else s for s in _selected(entry))
     return Outcome("already-passed", False, (Write("success", describe(f"Passed: {names}")),))
 
 
