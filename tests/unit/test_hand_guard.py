@@ -206,3 +206,39 @@ def test_fetch_inputs_reads_whether_the_run_of_an_active_line_is_alive(status: s
     )
     got = fetch_inputs(Repo({50: status}), policy, "o/r", 7, required=())  # type: ignore[arg-type]
     assert got.live_runs == live
+
+
+# the text of the E2E check when every needed suite has already passed -----------------------------
+
+
+def passed_line(name: str, title: str, run: int = 50) -> CheckRun:
+    return line(name, status="completed", conclusion="success", run=run, title=title)
+
+
+def test_when_every_needed_suite_has_passed_the_decision_says_with_which_version() -> None:
+    d = decide(inputs(passed_line(VM, "Passed"), passed_line(CA, "Passed · full")))
+    assert d.action is Action.ALREADY_PASSED and d.suites == ()
+    assert d.tiers == (("caas", "full"),), "only a suite that passed with a version names it"
+    assert json.loads(to_json(d))["tiers"] == {"caas": "full"}
+    plain = decide(inputs(passed_line(VM, "Passed"), passed_line(CA, "Passed")))
+    assert plain.action is Action.ALREADY_PASSED and plain.tiers == ()
+
+
+def test_the_e2e_check_written_for_suites_that_already_passed_names_the_version_they_ran_with() -> None:
+    entry = json.loads(to_json(decide(inputs(passed_line(VM, "Passed"), passed_line(CA, "Passed · full")))))
+    outcome = e2e_check.plan(entry, None, 9, lambda _: False)
+    assert outcome.state == "already-passed" and [w.description for w in outcome.writes] == [
+        "Passed: vmaas, caas (full)"
+    ]
+    plain = json.loads(to_json(decide(inputs(passed_line(VM, "Passed"), passed_line(CA, "Passed")))))
+    assert [w.description for w in e2e_check.plan(plain, None, 9, lambda _: False).writes] == ["Passed: vmaas, caas"]
+
+
+def test_a_version_for_a_suite_the_decision_did_not_count_is_refused() -> None:
+    entry = json.loads(to_json(decide(inputs(passed_line(VM, "Passed"), passed_line(CA, "Passed")))))
+    entry["tiers"] = {"netris": "full"}
+    with pytest.raises(ValueError, match="tier"):
+        e2e_check.plan(entry, None, 9, lambda _: False)
+    entry["tiers"] = {"caas": "x; id"}
+    with pytest.raises(ValueError, match="tier"):
+        e2e_check._tiers(entry)
