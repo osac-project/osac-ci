@@ -245,7 +245,7 @@ def test_the_sum_is_written_only_when_every_needed_suite_passed() -> None:
     lines = {"vmaas": "E2E / VMaaS Full Install", "caas": "E2E / CaaS Full Install"}
     partial = Fake([passed("E2E / VMaaS Full Install")])
     note = e2e_check.finish_by_hand(partial, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
-    assert "left as it is" in note and not [p for p in partial.posted if p[0] == "POST"]
+    assert "not turned green" in note and not [p for p in partial.posted if p[0] == "POST"]
     full = Fake([passed("E2E / VMaaS Full Install"), passed("E2E / CaaS Full Install")])
     note = e2e_check.finish_by_hand(full, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
     assert "green" in note
@@ -269,7 +269,7 @@ def test_the_sum_says_which_tier_a_suite_ran_with_and_nothing_for_the_suite_itse
 def test_a_failed_suite_never_turns_the_sum_green() -> None:
     lines = {"vmaas": "E2E / VMaaS Full Install"}
     fake = Fake([{**passed("E2E / VMaaS Full Install"), "conclusion": "failure"}])
-    assert "left as it is" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+    assert "not turned green" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
 
 
 def test_runs_by_hand_need_check_runs() -> None:
@@ -520,7 +520,7 @@ def test_a_check_of_another_app_with_a_suite_s_name_does_not_make_it_passed_or_r
 def test_a_check_of_another_app_does_not_make_the_sum_green() -> None:
     lines = {"vmaas": "E2E / VMaaS Full Install"}
     fake = Fake([passed("E2E / VMaaS Full Install", app="someone-else")])
-    assert "left as it is" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+    assert "not turned green" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
 
 
 def test_the_comment_does_not_show_another_app_s_check_as_the_suite() -> None:
@@ -965,7 +965,9 @@ def test_each_state_of_the_pull_request_has_its_own_row() -> None:
         return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
 
     assert f"{lead('neutral')}**Auto-merge:** off" in rows(auto_merge="")
-    assert f"{lead('warning')}**Draft:** mark it ready for review" in rows(draft=True)
+    assert f"{lead('warning')}**Draft:** mark it ready for review; suites can still be started by hand" in rows(
+        draft=True
+    )
     assert f"{lead('error')}**Merge conflict:** rebase on the target branch" in rows(conflict=True)
     assert f"{lead('pending')}**Approval:** waiting for an approval" in rows(approval="waiting", approvers=())
     assert (
