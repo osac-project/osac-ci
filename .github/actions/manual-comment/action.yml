@@ -19,7 +19,7 @@ inputs:
     default: ""
   edit-token:
     description: >-
-      The workflow's own token (`github.token`, with issues write), to edit the comment quietly: an edit made with it
+      The workflow's own token (`github.token`, with pull-requests write), to edit the comment quietly: an edit made with it
       starts no workflow, so it wakes no issue_comment run, which every edit by the app does. Empty (or a token that is
       refused) edits with github-token, as before.
     default: ""
