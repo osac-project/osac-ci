@@ -20,6 +20,7 @@ from osac_ci.rules.labels import QUEUE_BLOCKING_LABELS, REQUIRED_LABELS
 
 _JOB_ID = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 _TIER = re.compile(r"^[a-z][a-z0-9-]{0,19}$")
+_WORKFLOW_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml")  # a file name of .github/workflows, never a path
 
 
 class PolicyError(ValueError):
@@ -99,6 +100,15 @@ class Job(_Strict):
         ),
     )
 
+    workflow: str | None = Field(
+        default=None,
+        description=(
+            "The file name of the suite's workflow in .github/workflows (for example e2e-vmaas-full-install.yml). "
+            "With it the decision starts the suite as a run of its own (workflow_dispatch) instead of as a job of its "
+            "own run, so a failed suite can be run again, by GitHub's own button or by /test, without waiting for the "
+            "others. Absent: the suite is a job of the caller's workflow, as before"
+        ),
+    )
     variant_of: str | None = Field(
         default=None,
         description=(
@@ -129,6 +139,21 @@ class Job(_Strict):
             raise ValueError("needs_readiness is only valid for kind: e2e")
         if self.manual_only and self.kind != "e2e":
             raise ValueError("manual_only is only valid for kind: e2e")
+        return self
+
+    @field_validator("workflow")
+    @classmethod
+    def _workflow_is_a_file_name(cls, value: str | None) -> str | None:
+        if value is not None and not _WORKFLOW_FILE.fullmatch(value):
+            raise ValueError(f"workflow must be a file name of .github/workflows ({_WORKFLOW_FILE.pattern})")
+        return value
+
+    @model_validator(mode="after")
+    def _workflow_only_for_a_suite(self) -> Job:
+        if self.workflow is not None and (self.kind != "e2e" or self.variant_of is not None):
+            raise ValueError(
+                "workflow is only valid for a kind: e2e suite that is not a variant (a variant uses its suite's)"
+            )
         return self
 
     @model_validator(mode="after")

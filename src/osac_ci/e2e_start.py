@@ -98,6 +98,9 @@ class Suite:
     variant_of: str = ""
     tier: str = ""
     label: str = ""
+    workflow: str = (
+        ""  # the file of the suite's workflow, when the suite runs as a run of its own (see policy.Job.workflow)
+    )
 
 
 @dataclass(frozen=True)
@@ -164,6 +167,9 @@ class Decision:
     # (suite, state) of the suites the change needs that have a line on the head commit (active | passed | failed): what
     # a person started by hand, for the text of an E2E check that is still waiting
     by_hand: tuple[tuple[str, str], ...] = ()
+    # (suite, workflow file) of the suites to start that run as a run of their own: the caller does not run them as jobs
+    # of its run, the decision dispatches them (see e2e_dispatch)
+    workflows: tuple[tuple[str, str], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -313,6 +319,12 @@ def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _workflows(suites: Iterable[Suite], names: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """(suite, workflow file) of the named suites that run as a run of their own."""
+    by_name = {s.name: s for s in suites}
+    return tuple((n, by_name[n].workflow) for n in names if n in by_name and by_name[n].workflow)
+
+
 def decide(inputs: Inputs) -> Decision:
     approvers, stale, blocking = approvals(inputs)
     snapshot = Snapshot(repo="", number=inputs.number, head_sha=inputs.head_sha, check_runs=inputs.check_runs)
@@ -436,6 +448,7 @@ def decide(inputs: Inputs) -> Decision:
         # written by whichever run ends last (the same rule as a run started by hand).
         manual=bool(held),
         selected_checks=selected if held else (),
+        workflows=_workflows(inputs.suites, names),
         **base,
     )
 
@@ -547,6 +560,7 @@ def _decide_by_hand(
         notes=tuple(notes),
         tiers=tuple(tiers.items()),
         cancel=tuple(cancel),
+        workflows=_workflows(inputs.suites, starts),
         **base,
     )
 
@@ -566,6 +580,7 @@ def suites_of(policy: Policy) -> tuple[Suite, ...]:
             job.variant_of or "",
             job.tier or "",
             job.label or "",
+            job.workflow or "",
         )
         for name, job in policy.jobs.items()
         if job.kind == "e2e"
@@ -831,6 +846,7 @@ def to_json(decision: Decision) -> str:
             "tiers": dict(decision.tiers),
             "cancel": list(decision.cancel),
             "by_hand": dict(decision.by_hand),
+            "workflows": dict(decision.workflows),
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

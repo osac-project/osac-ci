@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -54,6 +54,7 @@ STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a
 # draws a dot) and only one that runs is in progress (the page draws a spinner); a status has no such difference, so a
 # waiting status is pending like a running one.
 WRITE_STATES = (*STATES, "waiting")
+WORKFLOW_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml")  # a file name of .github/workflows, never a path
 SUITE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")  # a suite id: it ends up in job names, so no spaces or slashes
 LINE_MAX = 100  # the longest name a suite line may have
 
@@ -151,6 +152,43 @@ class Report:
     suite_checks: tuple[tuple[str, str], ...] = ()  # (suite, line name) of the suites that run, from the policy
     tiers: tuple[tuple[str, str], ...] = ()  # (suite, tier) of the suites asked for through a variant
     cancel: tuple[int, ...] = ()  # the workflow runs a request by hand replaces: the caller stops them
+    workflows: tuple[tuple[str, str], ...] = ()  # (suite, workflow file) of the suites that run as a run of their own
+
+    @property
+    def inline_suites(self) -> tuple[str, ...]:
+        """The suites that run as jobs of the run of the caller (the others are dispatched)."""
+        own = {suite for suite, _ in self.workflows}
+        return tuple(s for s in self.suites if s not in own)
+
+    @property
+    def inline_checks(self) -> tuple[tuple[str, str], ...]:
+        own = {suite for suite, _ in self.workflows}
+        return tuple((s, line) for s, line in self.suite_checks if s not in own)
+
+    @property
+    def dispatched(self) -> tuple[Mapping[str, str], ...]:
+        """What the decision starts as runs of their own: the suite, its workflow file, its line and its tier."""
+        lines, tiers = dict(self.suite_checks), dict(self.tiers)
+        return tuple(
+            {"suite": suite, "workflow": file, "check": lines.get(suite, ""), "tier": tiers.get(suite, "")}
+            for suite, file in self.workflows
+        )
+
+
+def validate_workflows(raw: object, suites: Iterable[str]) -> tuple[tuple[str, str], ...]:
+    """The suite -> workflow file mapping of the decision. It ends up in an API path, so each part is checked: the suite
+    is one the decision starts, the file a name of .github/workflows (no path, no query)."""
+    if not raw:
+        return ()
+    if not isinstance(raw, Mapping):
+        raise ValueError("the workflows must be an object of suite id to workflow file")
+    started = set(suites)
+    out: list[tuple[str, str]] = []
+    for suite, file in raw.items():
+        if suite not in started or not isinstance(file, str) or not WORKFLOW_FILE.fullmatch(file):
+            raise ValueError(f"invalid workflow for {suite!r}: {file!r}")
+        out.append((suite, file))
+    return tuple(out)
 
 
 def validate_lines(raw: object) -> dict[str, str]:
@@ -505,7 +543,10 @@ def report(
             waiting = tiered("Waiting for a runner", tiers.get(suite, ""))
             post_status(client, repo, sha, line, "waiting", waiting, run_url, lines_kind or kind)
     cancel = _cancel(entry) if outcome.start and by_hand else ()
-    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry), cancel)
+    workflows = validate_workflows(entry.get("workflows"), _suites(entry))
+    return Report(
+        sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry), cancel, workflows
+    )
 
 
 def finish(
@@ -687,6 +728,11 @@ def to_json(found: Report) -> str:
             "suite_checks": dict(found.suite_checks),
             "tiers": dict(found.tiers),
             "cancel": list(found.cancel),
+            "workflows": dict(found.workflows),
+            # what the caller runs as jobs of its own run, and what the decision dispatches as runs of their own
+            "inline_suites": list(found.inline_suites),
+            "inline_suite_checks": dict(found.inline_checks),
+            "dispatched": list(found.dispatched),
             "note": found.note,
         },
         indent=2,

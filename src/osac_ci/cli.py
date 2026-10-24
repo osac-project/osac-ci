@@ -28,6 +28,7 @@ from osac_ci import (
     cancel_older,
     clean_runs,
     e2e_check,
+    e2e_dispatch,
     e2e_start,
     e2e_suites_check,
     lockfacts,
@@ -55,6 +56,7 @@ TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
 APPROVE_TOKEN_ENV = "OSAC_CI_APPROVE_TOKEN"  # the bot's own credential, used only to submit an approval
 ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
+LINES_TOKEN_ENV = "OSAC_CI_LINES_TOKEN"  # optional: the app's token, to write the lines of the suites
 EDIT_TOKEN_ENV = "OSAC_CI_EDIT_TOKEN"  # optional: the workflow's own token, to edit the control comment quietly
 STATUSES_TOKEN_ENV = "OSAC_CI_STATUSES_TOKEN"  # optional: a token that can read commit statuses (the suite lines)
 
@@ -116,6 +118,13 @@ def build_org_client(*, required: bool = False) -> GitHubClient | None:
     if token:
         return HttpClient(token)
     return _NoOrgToken() if required else None
+
+
+def build_lines_client() -> GitHubClient | None:
+    """A client that writes the lines of the suites, when ``OSAC_CI_LINES_TOKEN`` is set (the dispatch is made with the
+    workflow's own token, the lines with the app's); None otherwise: the main client writes them."""
+    token = os.environ.get(LINES_TOKEN_ENV)
+    return HttpClient(token) if token else None
 
 
 def build_edit_client() -> GitHubClient | None:
@@ -422,6 +431,26 @@ def _parser() -> argparse.ArgumentParser:
         help="where the lines of the suites are written (default: as --kind); a status links its row to the job",
     )
 
+    edis = sub.add_parser(
+        "e2e-dispatch",
+        help="start the suites whose job in the policy names a workflow as runs of their own, and write their lines",
+    )
+    edis.add_argument("--repo", required=True, help="owner/name")
+    edis.add_argument("--sha", required=True, help="the head commit the suites run for")
+    edis.add_argument("--number", type=int, required=True, help="the pull request")
+    edis.add_argument("--head-repo", required=True, help="owner/name of the repository that holds the commit")
+    edis.add_argument("--fork-author", default="", help="login of the author of a fork pull request")
+    edis.add_argument("--fork-association", default="", help="author association of a fork pull request")
+    edis.add_argument(
+        "--dispatch",
+        required=True,
+        metavar="JSON",
+        help="JSON list of {suite, workflow, check, tier} (from e2e-report)",
+    )
+    edis.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+    edis.add_argument("--run-url", default="", help="link of the workflow run that dispatches, shown on a failed line")
+    edis.add_argument("--json-file", type=Path, help="write the runs started here, as JSON")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -710,6 +739,37 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "e2e-report":
         return _e2e_report(args)
+
+    if args.command == "e2e-dispatch":
+        try:
+            items = json.loads(args.dispatch)
+            if not isinstance(items, list) or not all(isinstance(i, dict) for i in items):
+                raise ValueError("--dispatch must be a JSON list of objects")
+            started, failed = e2e_dispatch.dispatch_suites(
+                build_client(),
+                args.repo,
+                items,
+                sha=args.sha,
+                number=args.number,
+                head_repo=args.head_repo,
+                fork_author=args.fork_author,
+                fork_association=args.fork_association,
+                lines_client=build_lines_client(),
+                lines_kind=args.lines_kind,
+                run_url=args.run_url,
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: e2e-dispatch failed: {exc}", file=sys.stderr)
+            return 3
+        for s in started:
+            print(f"Started {s.suite} as run {s.run}: {s.url}")
+        for suite in failed:
+            print(f"error: {suite} could not be started", file=sys.stderr)
+        if args.json_file is not None:
+            args.json_file.write_text(
+                json.dumps({"runs": {s.suite: s.run for s in started}, "failed": failed}), encoding="utf-8"
+            )
+        return 3 if failed else 0
 
     if args.command == "e2e-finish":
         try:

@@ -1,0 +1,99 @@
+name: Start suites as runs of their own
+description: >-
+  Start the E2E suites whose job in the policy names a `workflow` as runs of their own (workflow_dispatch), and write
+  their lines on the pull request, linked to those runs. A suite that is a run of its own can be run again the moment it
+  ends, by GitHub's own button or by /test, without waiting for the other suites. Called from the decision workflow of
+  osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow decides when this runs and what tokens it holds: github-token starts the runs (the workflow's own
+# token, with actions write: events made with it start no workflow, but a workflow_dispatch is the exception), lines-token
+# writes the lines of the suites (the app's token). This action never checks out the calling repository, so it cannot run
+# pull request code; the suites it starts run the commit that was approved, from the default branch's workflow files.
+# Every input reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: The workflow's own token, with actions write
+    required: true
+  lines-token:
+    description: Token that writes the lines of the suites (the OSAC CI app); empty uses github-token
+    default: ""
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The head commit the suites run for (the sha output of e2e-report)
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  head-repo:
+    description: The repository that holds the commit (a fork for a fork pull request), owner/name
+    required: true
+  fork-author:
+    description: Login of the author of a fork pull request, empty for a commit of this repository
+    default: ""
+  fork-association:
+    description: Author association of a fork pull request, empty for a commit of this repository
+    default: ""
+  dispatched:
+    description: JSON list of {suite, workflow, check, tier} (the dispatched output of e2e-report)
+    required: true
+  lines-kind:
+    description: Where the lines are written, "statuses" or "checks" (the same as the other workflows of the flow)
+    default: statuses
+  run-url:
+    description: Link of this workflow run, shown on a line that could not be started
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+outputs:
+  runs:
+    description: JSON object, suite id -> id of the run that was started (for the tracking of the suites)
+    value: ${{ steps.dispatch.outputs.runs }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Start the suites
+      id: dispatch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OSAC_CI_LINES_TOKEN: ${{ inputs.lines-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        NUMBER: ${{ inputs.number }}
+        HEAD_REPO: ${{ inputs.head-repo }}
+        FORK_AUTHOR: ${{ inputs.fork-author }}
+        FORK_ASSOCIATION: ${{ inputs.fork-association }}
+        DISPATCHED: ${{ inputs.dispatched }}
+        LINES_KIND: ${{ inputs.lines-kind }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        case "$SHA" in
+          "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+        esac
+        if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+        case "$LINES_KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
+        esac
+        # An empty lines token must not reach the program as an empty variable: it then uses the main token.
+        if [ -z "$OSAC_CI_LINES_TOKEN" ]; then unset OSAC_CI_LINES_TOKEN; fi
+        json="${RUNNER_TEMP:-/tmp}/e2e-dispatch.json"
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        status=0
+        uv run --locked --project "$root" osac-ci e2e-dispatch --repo "$REPO" --sha "$SHA" --number "$NUMBER" \
+          --head-repo "$HEAD_REPO" --fork-author "$FORK_AUTHOR" --fork-association "$FORK_ASSOCIATION" \
+          --dispatch "$DISPATCHED" --lines-kind "$LINES_KIND" --run-url "$RUN_URL" --json-file "$json" \
+          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}" || status=$?
+        if [ -s "$json" ]; then echo "runs=$(jq -c '.runs' "$json")" >> "$GITHUB_OUTPUT"; else echo "runs={}" >> "$GITHUB_OUTPUT"; fi
+        exit "$status"

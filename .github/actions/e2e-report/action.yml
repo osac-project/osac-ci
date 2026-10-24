@@ -54,13 +54,26 @@ outputs:
     description: waiting, running, not-affected, already-running, already-ran or ignored
     value: ${{ steps.report.outputs.state }}
   suites:
-    description: JSON list of the suites the change affects, such as ["vmaas","caas"]
+    description: >-
+      JSON list of the suites that run as jobs of the calling workflow's own run, such as ["vmaas","caas"]. A suite whose
+      job in the policy names a `workflow` is not in it: the decision dispatches it (see `dispatched`)
     value: ${{ steps.report.outputs.suites }}
   suite-checks:
     description: >-
-      JSON object, suite id -> line name on the pull request, of the suites the change affects (the "check" of each
-      suite in the policy); pass it to e2e-suites-track and e2e-suites-settle
+      JSON object, suite id -> line name on the pull request, of those suites (the "check" of each suite in the policy);
+      pass it to e2e-suites-track and e2e-suites-settle
     value: ${{ steps.report.outputs.suite-checks }}
+  dispatched:
+    description: >-
+      JSON list of the suites that run as a run of their own, each {"suite","workflow","check","tier"}: pass it to
+      e2e-dispatch. Empty list when none
+    value: ${{ steps.report.outputs.dispatched }}
+  all-suites:
+    description: JSON list of every suite the decision starts, the dispatched ones too
+    value: ${{ steps.report.outputs.all-suites }}
+  all-suite-checks:
+    description: JSON object, suite id -> line name, of every suite the decision starts, the dispatched ones too
+    value: ${{ steps.report.outputs.all-suite-checks }}
   cancel:
     description: >-
       JSON list of the workflow runs a request by hand replaces (a suite that ran with another tier): the calling
@@ -116,6 +129,9 @@ runs:
             echo "state=ignored"
             echo "suites=[]"
             echo "suite-checks={}"
+            echo "dispatched=[]"
+            echo "all-suites=[]"
+            echo "all-suite-checks={}"
             echo "tiers={}"
             echo "cancel=[]"
             echo "number="
@@ -131,8 +147,11 @@ runs:
           echo "start=$(jq -r '.start' "$json")"
           echo "sha=$(jq -r '.sha' "$json")"
           echo "state=$(jq -r '.state' "$json")"
-          echo "suites=$(jq -c '.suites' "$json")"
-          echo "suite-checks=$(jq -c '.suite_checks // {}' "$json")"
+          echo "suites=$(jq -c '.inline_suites // .suites' "$json")"
+          echo "suite-checks=$(jq -c '.inline_suite_checks // .suite_checks // {}' "$json")"
+          echo "dispatched=$(jq -c '.dispatched // []' "$json")"
+          echo "all-suites=$(jq -c '.suites' "$json")"
+          echo "all-suite-checks=$(jq -c '.suite_checks // {}' "$json")"
           echo "tiers=$(jq -c '.tiers // {}' "$json")"
           echo "cancel=$(jq -c '.cancel // []' "$json")"
           echo "number=$(jq -r '.number // empty' "$json")"
