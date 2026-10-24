@@ -439,6 +439,13 @@ def _parser() -> argparse.ArgumentParser:
     efin.add_argument(
         "--selected-checks", default="{}", metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
     )
+    efin.add_argument(
+        "--suite-checks",
+        default="{}",
+        metavar="JSON",
+        help="JSON object: suite id -> line name of the suites this run started; a failed run then lets their lines "
+        "decide (a suite run again since, by hand, may have passed)",
+    )
 
     mcom = sub.add_parser(
         "manual-comment",
@@ -715,11 +722,16 @@ def main(argv: list[str] | None = None) -> int:
                     + e2e_check.finish_by_hand(build_client(), args.repo, args.sha, selected, args.run_url, args.kind)
                 )
                 return 0
-            e2e_check.finish(build_client(), args.repo, args.sha, args.result, args.run_url, args.detail, args.kind)
+            suite_checks = json.loads(args.suite_checks)
+            if not isinstance(suite_checks, dict):
+                raise ValueError("--suite-checks must be a JSON object")
+            said = e2e_check.finish_from_lines(
+                build_client(), args.repo, args.sha, args.result, args.run_url, args.detail, suite_checks, args.kind
+            )
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
             return 3
-        print(f"E2E status: {args.result}")
+        print(f"E2E status: {said}")
         return 0
 
     if args.command in ("e2e-queue-watch", "e2e-queue-verdict", "e2e-queue-stop"):

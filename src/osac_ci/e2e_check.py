@@ -519,12 +519,9 @@ def finish(
     write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url, kind)
 
 
-def suite_readings(
-    client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]
-) -> tuple[dict[str, str], dict[str, str]]:
-    """For each suite (id -> line name), what its line says on the commit (none, active, passed or failed) and the tier
-    it says it ran with ("" for the suite itself). A line is a check run of the app or a commit status (see
-    ``suite_lines``); the newest of a name counts."""
+def _latest_lines(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> Mapping[str, CheckRun]:
+    """The newest line of each name on the commit. A line is a check run of the app or a commit status (see
+    ``suite_lines``)."""
     raw = [
         r
         for r in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
@@ -539,10 +536,19 @@ def suite_readings(
             r.get("started_at"),
             app=CHECK_APP,
             title=str((r.get("output") or {}).get("title") or "") if isinstance(r.get("output"), Mapping) else "",
+            url=str(r.get("details_url") or r.get("html_url") or ""),
         )
         for r in raw
     )
-    latest = latest_checks(runs)
+    return latest_checks(runs)
+
+
+def suite_readings(
+    client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]
+) -> tuple[dict[str, str], dict[str, str]]:
+    """For each suite (id -> line name), what its line says on the commit (none, active, passed or failed) and the tier
+    it says it ran with ("" for the suite itself); the newest line of a name counts."""
+    latest = _latest_lines(client, repo, sha, lines)
     return {suite: line_state(latest, line) for suite, line in lines.items()}, {
         suite: tier_of(latest[line].title) if line in latest else "" for suite, line in lines.items()
     }
@@ -551,6 +557,48 @@ def suite_readings(
 def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
     """``suite_readings`` without the tiers: what each suite's line says on the commit."""
     return suite_readings(client, repo, sha, lines)[0]
+
+
+def finish_from_lines(
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    result: str,
+    run_url: str,
+    detail: str,
+    suite_checks: Mapping[str, str],
+    kind: str = "checks",
+) -> str:
+    """After the run that started the suites: the E2E check says how the suites ended, but a suite of this run that
+    failed may have been run again since, by hand, in a run of its own. When this run ended in failure, the lines of its
+    suites decide what the check says: every one passed (the retest did), so ``Passed``; one is being run again, so the
+    check waits (the run of the retest writes the answer when it ends); otherwise ``Failed`` as before. A result that is
+    not a failure (a pass, a cancel) is written as it is."""
+    lines = validate_lines(suite_checks)
+    if result != "failure" or not lines:
+        finish(client, repo, sha, result, run_url, detail, kind)
+        return result
+    latest = _latest_lines(client, repo, sha, lines)
+    states = {suite: line_state(latest, line) for suite, line in lines.items()}
+    again = [
+        suite
+        for suite, state in states.items()
+        if state == "active"
+        and (run := run_of_url(latest[lines[suite]].url)) is not None
+        and run_is_alive(client, repo, run)
+    ]
+    if again:
+        text = f"Waiting: {', '.join(again)} running again"
+        write_status(client, repo, sha, Write("waiting", describe(text)), run_url, kind)
+        return "waiting"
+    if all(state == "passed" for state in states.values()):
+        named = ", ".join(
+            f"{suite} ({tier})" if (tier := tier_of(latest[line].title)) else suite for suite, line in lines.items()
+        )
+        write_status(client, repo, sha, Write("success", describe(f"Passed: {named}")), run_url, kind)
+        return "passed"
+    finish(client, repo, sha, result, run_url, detail, kind)
+    return result
 
 
 def finish_by_hand(

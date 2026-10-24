@@ -119,8 +119,16 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-members: read
-      # A run started by hand does not write the E2E check: its suites' lines are completed below, and then the check is
-      # written only if every suite the change needs has passed.
+      - uses: $/.github/actions/e2e-suites-settle
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: ${{ inputs.lines-kind }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suite-checks: ${{ inputs.suite-checks }}
+      # The lines are completed first: when this run failed, the lines of its suites decide what the check says (a suite
+      # that failed here may have been run again since, by hand, in a run of its own, and passed). A run started by hand
+      # does not write the E2E check this way: below, the check is written only if every suite the change needs has passed.
       - uses: $/.github/actions/e2e-finish
         if: inputs.manual != 'true'
         with:
@@ -130,12 +138,6 @@ jobs:
           sha: ${{ inputs.sha }}
           result: ${{ steps.result.outputs.result }}
           detail: ${{ steps.result.outputs.suites }}
-      - uses: $/.github/actions/e2e-suites-settle
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          kind: ${{ inputs.lines-kind }}
-          repo: ${{ github.repository }}
-          sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
       - uses: $/.github/actions/e2e-finish
         if: inputs.manual == 'true'

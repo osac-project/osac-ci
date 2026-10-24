@@ -1691,3 +1691,38 @@ def test_the_cli_builds_the_quiet_client_only_from_its_variable(monkeypatch: pyt
     assert cli.build_edit_client() is None
     monkeypatch.setenv(cli.EDIT_TOKEN_ENV, "t")
     assert cli.build_edit_client() is not None
+
+
+def failed_view(suite: str = "vmaas", **more: Any) -> manual_run.SuiteView:
+    return manual_run.SuiteView(suite, f"E2E / {suite}", "failed", "https://x/run/1", **more)
+
+
+def test_a_failed_suite_says_in_the_status_row_how_to_run_it_again_whatever_the_check_says() -> None:
+    views = (failed_view("vmaas"), failed_view("caas"), manual_run.SuiteView("bmaas", "E2E / bmaas", "passed"))
+    for e2e in (manual_run.CheckView("active", running=True, title="Running: vmaas, caas, bmaas"),
+                manual_run.CheckView("failed", title="Failed: vmaas, caas")):  # fmt: skip
+        block = block_of(manual_run.render_comment(HEAD, views, "", full_status(e2e=e2e)))
+        assert "`vmaas`, `caas` failed: comment `/test vmaas caas` to run again" in block
+
+
+def test_no_hint_without_a_failed_suite_or_for_a_version_the_line_does_not_show_now() -> None:
+    passed_view = manual_run.SuiteView("vmaas", "E2E / vmaas", "passed")
+    assert "to run again" not in block_of(manual_run.render_comment(HEAD, (passed_view,), "", full_status()))
+    old = failed_view("caas-full", variant=True, current=False)
+    assert "to run again" not in block_of(manual_run.render_comment(HEAD, (old,), "", full_status()))
+    own = failed_view("caas-full", variant=True)
+    assert "comment `/test caas-full` to run again" in block_of(
+        manual_run.render_comment(HEAD, (own,), "", full_status())
+    )
+
+
+def test_the_box_of_a_failed_suite_says_to_tick_it_to_run_it_again() -> None:
+    body = manual_run.render_comment(HEAD, (failed_view("vmaas"),), "", None)
+    assert "failed ([run](https://x/run/1)) · tick the box to run it again" in body
+    ok = manual_run.SuiteView("vmaas", "E2E / vmaas", "passed", "https://x/run/1")
+    assert "tick the box" not in manual_run.render_comment(HEAD, (ok,), "", None)
+
+
+def test_a_pull_request_that_is_over_gets_no_hint() -> None:
+    done = full_status(closed="merged", e2e=manual_run.CheckView("failed", title="Failed: vmaas"))
+    assert "to run again" not in block_of(manual_run.render_comment(HEAD, (failed_view("vmaas"),), "", done))
