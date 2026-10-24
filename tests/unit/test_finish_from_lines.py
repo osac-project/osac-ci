@@ -88,9 +88,7 @@ def test_a_suite_that_is_being_run_again_makes_the_check_wait_for_that_run() -> 
         [failed(LINES["vmaas"], run=10), running(LINES["vmaas"], run=20), passed(LINES["caas"])], {20: "in_progress"}
     )
     assert finish(fake) == "waiting"
-    assert written(fake) == ("queued", "Waiting: vmaas running again"), (
-        "a waiting check: the run that ends writes the answer"
-    )
+    assert written(fake) == ("in_progress", "Waiting: vmaas running again"), "in progress: the retest is going"
 
 
 def test_a_line_that_says_running_in_a_run_that_is_gone_is_not_waited_for() -> None:
@@ -152,3 +150,75 @@ def test_the_action_hands_the_suites_to_the_program_only_for_a_run_that_was_not_
     assert '[ "${MANUAL:-false}" != "true" ] && [ -n "${SUITE_CHECKS:-}" ]' in text
     assert 'args+=("--suite-checks=$SUITE_CHECKS")' in text
     assert json.loads('{"vmaas": "E2E / VMaaS Full Install"}')  # the value is JSON
+
+
+def e2e_check_line(title: str, status: str = "queued", run: int = 10) -> dict:
+    return {**line("E2E", status, None, run, title, at="10:50"), "id": 100}  # the E2E check is read by its newest id
+
+
+def by_hand(fake: Fake, run: int = 30) -> str:
+    return e2e_check.finish_by_hand(  # type: ignore[arg-type]
+        fake, REPO, HEAD, LINES, f"https://github.com/o/r/actions/runs/{run}", "checks"
+    )
+
+
+def test_a_line_of_the_run_itself_that_still_says_running_was_not_completed_and_is_not_a_retest() -> None:
+    """The lines are completed first, but if that failed the line of this run's own suite still says it is going; the
+    run is alive (it is the one writing), and the check must not wait for it, nor count it as passed."""
+    fake = Fake([running(LINES["vmaas"], run=10), passed(LINES["caas"])], {10: "in_progress"})
+    said = e2e_check.finish_from_lines(  # type: ignore[arg-type]
+        fake, REPO, HEAD, "failure", "https://github.com/o/r/actions/runs/10", "vmaas, caas", LINES, "checks"
+    )
+    assert said == "failure" and written(fake) == ("failure", "Failed: vmaas, caas")
+
+
+def test_when_the_retest_that_the_check_waited_for_fails_the_check_says_failed() -> None:
+    fake = Fake(
+        [
+            e2e_check_line("Waiting: vmaas running again"),
+            failed(LINES["vmaas"], run=20, at="10:40"),
+            passed(LINES["caas"]),
+        ]
+    )
+    assert "none is being run again" in by_hand(fake)
+    assert written(fake) == ("failure", "Failed: vmaas")
+
+
+def test_the_check_keeps_waiting_while_another_retest_is_going_and_names_it() -> None:
+    fake = Fake(
+        [
+            e2e_check_line("Waiting: vmaas, caas running again", "in_progress"),
+            failed(LINES["vmaas"], run=20, at="10:40"),
+            running(LINES["caas"], run=21),
+        ],
+        {21: "in_progress"},
+    )
+    assert "still being run again" in by_hand(fake)
+    assert written(fake) == ("in_progress", "Waiting: caas running again")
+
+
+def test_a_wait_that_is_about_something_else_is_not_turned_into_a_failure() -> None:
+    fake = Fake([e2e_check_line("Waiting for an approval"), failed(LINES["vmaas"], run=20), passed(LINES["caas"])])
+    assert "not turned green" in by_hand(fake) and not [p for p in fake.posted if p.get("conclusion") == "failure"]
+
+
+def test_a_retest_that_passes_still_turns_a_waiting_check_green() -> None:
+    fake = Fake(
+        [
+            e2e_check_line("Waiting: vmaas running again"),
+            passed(LINES["vmaas"], run=20, at="10:40"),
+            passed(LINES["caas"]),
+        ]
+    )
+    assert by_hand(fake) == "every suite passed: the E2E check is green" and written(fake)[0] == "success"
+
+
+def test_the_result_job_goes_on_when_the_lines_could_not_be_completed_and_runs_one_at_a_time_for_a_commit() -> None:
+    job = load(".github/workflows/e2e-pr-finish.yml")["jobs"]["finish"]
+    settle = next(s for s in job["steps"] if s.get("uses") == "$/.github/actions/e2e-suites-settle")
+    assert settle["continue-on-error"] is True, "a failure here must not keep the result from being written"
+    assert job["concurrency"] == {
+        "group": "e2e-finish-${{ inputs.sha }}",
+        "queue": "max",
+        "cancel-in-progress": False,
+    }, "the check is written from the lines: two runs of this job must not read them at once, and none may be dropped"

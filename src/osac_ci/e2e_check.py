@@ -559,6 +559,28 @@ def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, 
     return suite_readings(client, repo, sha, lines)[0]
 
 
+AGAIN_SUFFIX = " running again"  # the end of the text of a check that waits for a suite that is being run again
+
+
+def _running_again(
+    client: GitHubClient,
+    repo: str,
+    latest: Mapping[str, CheckRun],
+    lines: Mapping[str, str],
+    skip_run: int | None,
+) -> list[str]:
+    """The suites whose line says it is going in a run that is alive, other than ``skip_run`` (the run that is writing:
+    a line of its own that still says it is going was not completed, it is not a retest)."""
+    return [
+        suite
+        for suite, line in lines.items()
+        if line_state(latest, line) == "active"
+        and (run := run_of_url(latest[line].url)) is not None
+        and run != skip_run
+        and run_is_alive(client, repo, run)
+    ]
+
+
 def finish_from_lines(
     client: GitHubClient,
     repo: str,
@@ -580,16 +602,11 @@ def finish_from_lines(
         return result
     latest = _latest_lines(client, repo, sha, lines)
     states = {suite: line_state(latest, line) for suite, line in lines.items()}
-    again = [
-        suite
-        for suite, state in states.items()
-        if state == "active"
-        and (run := run_of_url(latest[lines[suite]].url)) is not None
-        and run_is_alive(client, repo, run)
-    ]
+    again = _running_again(client, repo, latest, lines, run_of_url(run_url))
     if again:
-        text = f"Waiting: {', '.join(again)} running again"
-        write_status(client, repo, sha, Write("waiting", describe(text)), run_url, kind)
+        text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+        # in progress, not queued: a retest is going, so the check shows it (it still counts as a wait: existing_from)
+        write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
         return "waiting"
     if all(state == "passed" for state in states.values()):
         named = ", ".join(
@@ -616,6 +633,21 @@ def finish_by_hand(
     existing = latest_check(client, repo, sha, kind)
     if any(state != "passed" for state in states.values()):
         left = ", ".join(s for s, state in states.items() if state != "passed")
+        if (
+            existing is not None
+            and existing.phase is Phase.WAITING
+            and waiting_part(existing.description).endswith(AGAIN_SUFFIX)
+        ):
+            # the run that failed ended and left the check waiting for a suite that was being run again: that retest has
+            # ended too (or another is going), so the check says how it stands now
+            again = _running_again(client, repo, _latest_lines(client, repo, sha, lines), lines, run_of_url(run_url))
+            if again:
+                text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+                if text != waiting_part(existing.description):
+                    write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
+                return f"{', '.join(again)} is still being run again: the E2E check keeps waiting"
+            write_status(client, repo, sha, Write("failure", describe(f"Failed: {left}")), run_url, kind)
+            return f"not every suite has passed ({left}), none is being run again: the E2E check is failed"
         if existing is not None and existing.phase is Phase.WAITING:
             text = with_by_hand(states, waiting_part(existing.description))
             if text != existing.description:
