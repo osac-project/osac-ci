@@ -221,8 +221,9 @@ is still the sum of the lines of the suites the change needs. To make a suite on
 - the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
   the suite's job from `finish`'s `needs`, and passes `dispatched-runs` to `track` and `dispatched` and `all-suite-checks` to
   `finish` (without them a dispatched suite is started but not followed);
-- `decide` already has `actions: write`; the workflow's own token starts the runs (a `workflow_dispatch` is the one
-  event that token may start) and the app writes the lines.
+- nothing to add to `decide`'s permissions: the runs are started with a token of the app (actions write, nothing else), not
+  the workflow's own, because GitHub sends no `workflow_run` event for the end of a run that the workflow's own token
+  started (its actor is `github-actions[bot]`), not even for a re-run of it by a person.
 While a dispatched suite goes, the `E2E` check says `Waiting: <suite> running`; whoever sees the last suite end (the run that
 started them, or the end of the suite's run, heard by the `suite-ended` job of the decision workflow) writes the answer, and
 a suite that could not be started has a failed line saying so. A newer commit stops the dispatched runs of the older one.

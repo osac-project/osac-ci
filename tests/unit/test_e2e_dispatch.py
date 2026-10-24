@@ -233,7 +233,7 @@ def test_the_action_refuses_a_number_or_commit_that_is_not_what_it_should_be_and
     assert 'osac-ci e2e-dispatch --repo "$REPO"' in script and "--json-file" in script
 
 
-def test_the_decision_starts_them_after_the_code_is_found_and_with_the_workflows_own_token_for_the_dispatch() -> None:
+def test_the_decision_starts_them_after_the_code_is_found_and_with_a_token_of_the_app_for_the_dispatch() -> None:
     steps = load(DECIDE)["jobs"]["decide"]["steps"]
     ids = [s.get("id") for s in steps]
     assert ids.index("code") < ids.index("dispatch")
@@ -241,7 +241,13 @@ def test_the_decision_starts_them_after_the_code_is_found_and_with_the_workflows
     assert step["uses"] == "$/.github/actions/e2e-dispatch"
     assert step["if"] == "steps.report.outputs.start == 'true' && steps.report.outputs.dispatched != '[]'"
     given = step["with"]
-    assert given["github-token"] == "${{ github.token }}", "a workflow_dispatch is what the workflow's token may start"
+    # a run started by the workflow's own token has the actor github-actions[bot] and GitHub sends no workflow_run event
+    # for its end (not for a re-run either), so a suite run again would never be added up
+    assert given["github-token"] == "${{ steps.dispatch-token.outputs.token }}"
+    token = steps[ids.index("dispatch-token")]
+    assert token["with"]["permission-actions"] == "write"
+    assert [k for k in token["with"] if k.startswith("permission-")] == ["permission-actions"], "nothing else"
+    assert token["if"] == step["if"] and ids.index("dispatch-token") < ids.index("dispatch")
     assert given["lines-token"] == "${{ steps.app-token.outputs.token }}"
     assert given["head-repo"] == "${{ steps.code.outputs.repo }}"
     assert given["dispatched"] == "${{ steps.report.outputs.dispatched }}"

@@ -6,8 +6,10 @@ again the moment it ends, by GitHub's own button (which waits for the whole run 
 ``/test``, and no suite waits for another.
 
 What is verified on GitHub (see docs/RULES.md): the dispatch answers with the id of the run it started when it is
-asked to (``return_run_details``), the run starts within seconds, the workflow's own token may start it, and
-``workflow_run`` fires for it when it is requested and when it completes (also for a re-run and a cancel). The
+asked to (``return_run_details``), the run starts within seconds, and ``workflow_run`` fires for it when it is
+requested and when it completes (also for a re-run and a cancel) *provided the run was not started by the workflow's
+own token*: the actor of such a run is github-actions[bot] and GitHub sends no event for its end, so the decision starts
+the suites with a token of the OSAC CI app. The
 workflow runs from the default branch, like the suites called by the decision, with the inputs the decision gives: the
 commit that was approved, nothing else.
 
