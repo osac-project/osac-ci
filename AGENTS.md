@@ -37,9 +37,11 @@ Two systems share the repository:
 
 ## Rules that do not bend
 
-1. **Decisions are pure.** `e2e_start.decide`, `planner.py`, `rules/`, `policy.py` and `bot_approve` do no I/O and read
-   no clock, environment or randomness. GitHub access belongs in the adapters (`github/`, the `fetch_*` helpers and the
-   CLI). Add an input to the `Inputs` dataclass and fill it where the inputs are fetched; never reach out from a rule.
+1. **Decisions are pure.** `e2e_start.decide`, `planner.py`, `rules/` and `bot_approve` do no I/O and read no clock,
+   environment or randomness. GitHub access belongs in the adapters (`github/`, the `fetch_*` helpers and the CLI). Add
+   an input to the `Inputs` dataclass and fill it where the inputs are fetched; never reach out from a rule. Reading
+   files is the loaders' job, not the rules': `policy.load_policy` reads the policy file and `parse_policy` may read the
+   `path_filters.file` it names (relative to the policy, and not outside its directory).
 2. **Fail closed.** An unreadable list, an unknown key in a policy file, a value that does not parse: a visible failure
    or a waiting state, never a pass. Policy files reject unknown keys on purpose.
 3. **Rules are data, and pinned.** The values in `policy/flow.yml` (who counts as an approver, trusted bots, write
@@ -47,8 +49,9 @@ Two systems share the repository:
    repository cannot loosen them from its own files; only the keys under `repository_may_extend` can be added to.
    Changing one is a deliberate act: say who it affects in the PR, and regenerate the page
    (`uv run osac-ci explain-rules --output docs/RULES.md`; a freshness test fails when it is stale).
-4. **Never put pull-request text into a shell command or a workflow expression.** Titles, branch names, comment bodies,
-   file names and logins reach programs through `env:`, then are validated (a login, a 40-hex sha, a number) before use.
+4. **Never interpolate pull-request text into a shell command** (a `run:` script) **or into an expression that builds
+   one.** Titles, branch names, comment bodies, file names and logins reach programs through `env:`, then are validated
+   (a login, a 40-hex sha, a number) before use. Comparing an event field with a fixed string in an `if:` is fine.
    Never run pull request code in a job that holds a secret; the suites run the approved commit, the decision runs from
    the default branch and checks out none of the pull request.
 5. **Secrets are mapped explicitly.** A caller passes `OSAC_CI_APP_PRIVATE_KEY` by name, never `secrets: inherit`. A
@@ -82,8 +85,10 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
   restore with `git diff`, and run the whole suite once more. A same-length edit restored within a second can leave a
   stale `.pyc` that keeps the old behavior. After a `ruff format`, re-read a test you edited by string replace: an edit
   that silently did nothing looks like a pass.
-- Workflow files: pin every action by full SHA with the version in a comment; `permissions: {}` at the top and per-job
-  grants; `.github/actionlint.yaml` ignores exactly the message about `uses: $/...`.
+- Workflow files: pin every action by full SHA with the version in a comment. Give each job only the permissions it
+  needs: the shared workflows have `permissions: {}` at the top and grant per job; a narrow top-level grant
+  (`contents: read`) is acceptable where every job needs it. `.github/actionlint.yaml` ignores exactly the message about
+  `uses: $/...`.
 - Docs that describe how the repository works for its users belong here (`README.md`, `docs/`). Our own design notes,
   plans and experiment findings do not: keep them out of the repository.
 
@@ -113,9 +118,9 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
 
 ## Facts that are easy to get wrong
 
-- **`github.token` events start no workflows.** Auto-merge, queueing, approvals and comment edits that must wake other
-  workflows use a token of the OSAC CI GitHub App (minted per job from the organization secrets). A skipped or
-  never-created queue run is often this.
+- **Events made with `github.token` start no workflows**, except `workflow_dispatch` and `repository_dispatch`.
+  Auto-merge, queueing, approvals and comment edits that must wake other workflows use a token of the OSAC CI GitHub
+  App (minted per job from the organization secrets). A skipped or never-created queue run is often this.
 - **The app, not a workflow, writes the required checks.** `E2E` is required from the OSAC CI app only (its integration
   id is in the ruleset), as a check run. The per-suite lines are commit statuses on purpose (`lines-kind: statuses`):
   the name of a status row opens the job, the name of a check-run row opens the Checks tab, and a status can only show a
