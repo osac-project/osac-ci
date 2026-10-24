@@ -37,8 +37,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # the rehearsal repository first; osac and osac-test-infra join once a sweep has been seen to work
-        repo: [osac-ci-rehearsal]
+        repo: [osac-ci-rehearsal, osac, osac-test-infra]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
