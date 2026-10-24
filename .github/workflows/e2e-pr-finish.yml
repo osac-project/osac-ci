@@ -76,6 +76,13 @@ jobs:
     name: Record the result
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # One at a time for a commit: the check is written from the lines, and two runs of this job (the run that started the
+    # suites, and a run that started one again) must each read the lines the other has left. `queue: max` keeps every one
+    # waiting (by default a waiting job is replaced by a newer one).
+    concurrency:
+      group: e2e-finish-${{ inputs.sha }}
+      queue: max
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write  # edit the control comment quietly (see edit-token below)
@@ -119,7 +126,10 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-members: read
+      # A failure here must not keep the result from being written below: the lines of this run's suites that it could not
+      # complete still say they are going, and the result then does not count them as passed.
       - uses: $/.github/actions/e2e-suites-settle
+        continue-on-error: true
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           kind: ${{ inputs.lines-kind }}
