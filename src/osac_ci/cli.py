@@ -54,6 +54,7 @@ TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
 APPROVE_TOKEN_ENV = "OSAC_CI_APPROVE_TOKEN"  # the bot's own credential, used only to submit an approval
 ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
+EDIT_TOKEN_ENV = "OSAC_CI_EDIT_TOKEN"  # optional: the workflow's own token, to edit the control comment quietly
 STATUSES_TOKEN_ENV = "OSAC_CI_STATUSES_TOKEN"  # optional: a token that can read commit statuses (the suite lines)
 
 
@@ -114,6 +115,14 @@ def build_org_client(*, required: bool = False) -> GitHubClient | None:
     if token:
         return HttpClient(token)
     return _NoOrgToken() if required else None
+
+
+def build_edit_client() -> GitHubClient | None:
+    """A client that edits the control comment quietly, when ``OSAC_CI_EDIT_TOKEN`` is set: an edit made with the
+    workflow's own token starts no workflow, so it does not wake an ``issue_comment`` run in the repository. None
+    otherwise: the main client edits, as it always did."""
+    token = os.environ.get(EDIT_TOKEN_ENV)
+    return HttpClient(token) if token else None
 
 
 def build_approve_client() -> GitHubClient:
@@ -754,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "manual-status":
         try:
-            result = manual_run.refresh_status(build_client(), args.repo, args.number)
+            result = manual_run.refresh_status(build_client(), args.repo, args.number, edit_client=build_edit_client())
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-status failed: {exc}", file=sys.stderr)
             return 3
@@ -979,7 +988,13 @@ def main(argv: list[str] | None = None) -> int:
                         [(str(n["suite"]), str(n["note"])) for n in found], args.by, args.run_url
                     )
             result = manual_run.refresh(
-                build_client(), policy, args.repo, args.number, notes=notes, org_client=build_org_client()
+                build_client(),
+                policy,
+                args.repo,
+                args.number,
+                notes=notes,
+                org_client=build_org_client(),
+                edit_client=build_edit_client(),
             )
         except (OSError, GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-comment failed: {exc}", file=sys.stderr)

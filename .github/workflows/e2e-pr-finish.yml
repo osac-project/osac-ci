@@ -1,7 +1,9 @@
 ---
 # Shared workflow: records the result of the E2E on the pull request, whatever happened (including a cancel), so the
 # `E2E` check and the suite lines never stay "running". The caller runs it after the decision, the tracker and every
-# suite job, with `if: always() && needs.decide.outputs.start == 'true'`, and gives the calling job `contents: read`.
+# suite job, with `if: always() && needs.decide.outputs.start == 'true'`, and gives the calling job `contents: read` and
+# `issues: write` (the latter so that the control comment is edited with the workflow's own token, which wakes no
+# `issue_comment` run; an edit by the app does).
 #
 # `results` is the caller's `toJSON(needs)`. Every job in it that is not listed in `non-suite-jobs` is a suite: a suite
 # that ran and failed makes the result `failure`, one that was cancelled makes it `cancelled`, and a decision to start with
@@ -76,6 +78,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      issues: write  # edit the control comment quietly (see edit-token below)
     steps:
       - name: Add up the suites
         id: result
@@ -161,6 +164,7 @@ jobs:
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           org-token: ${{ steps.app-token.outputs.token }}
+          edit-token: ${{ github.token }}
           repo: ${{ github.repository }}
           number: ${{ inputs.number }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}

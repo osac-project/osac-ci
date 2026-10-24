@@ -42,7 +42,7 @@ from osac_ci.e2e_start import (
     tier_of,
     unqualified_approvers,
 )
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, Response, check_repo, get, paginate
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
@@ -858,7 +858,28 @@ def status_of(
     return replace(status, queue=queue)
 
 
-def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN) -> str:
+# What a refused quiet edit answers (the caller did not grant the job `issues: write`): not an error, the app edits.
+QUIET_FALLBACK = (401, 403, 404)
+
+
+def edit_comment(
+    client: GitHubClient, edit_client: GitHubClient | None, repo: str, comment_id: object, body: str
+) -> Response:
+    """Edit a comment. With ``edit_client`` (the workflow's own token) the edit is quiet: GitHub starts no workflow for
+    what that token causes, so it wakes no ``issue_comment`` run in the repository, which every edit by the app does.
+    When the quiet token is refused (the caller gave the job no ``issues: write``) the edit is made with the main
+    client, as before, so a caller that has not changed loses nothing but the quiet."""
+    path = f"/repos/{repo}/issues/comments/{comment_id}"
+    if edit_client is not None:
+        quiet = edit_client.request("PATCH", path, body={"body": body})
+        if quiet.status not in QUIET_FALLBACK:
+            return quiet
+    return client.request("PATCH", path, body={"body": body})
+
+
+def refresh_status(
+    client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN, edit_client: GitHubClient | None = None
+) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
     the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
     block then says so). It needs no policy, creates nothing and leaves the suites and the last answer alone. On an open
@@ -883,7 +904,7 @@ def refresh_status(client: GitHubClient, repo: str, number: int, *, bot: str = B
     new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
     if new == body:
         return "unchanged"
-    response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": new})
+    response = edit_comment(client, edit_client, repo, existing["id"], new)
     if response.status != 200:
         raise GitHubError(response.status, "updating the status block")
     return "updated"
@@ -898,6 +919,7 @@ def refresh(
     notes: str | None = None,
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
+    edit_client: GitHubClient | None = None,
 ) -> str:
     """Create or update the control comment of the pull request from the state of its head commit. Nothing is written
     when the pull request is closed or its author is not a member of the organization, or when the text is the same
@@ -907,7 +929,7 @@ def refresh(
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     if str(pr.get("state")) != "open":
         # Nothing to list or start any more; a comment that is there still shows where the pull request ended.
-        return refresh_status(client, repo, number, bot=bot)
+        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client)
     suites = suites_of(policy)
     if not suites:
         return "skipped: the policy has no E2E suite"
@@ -947,13 +969,13 @@ def refresh(
         existing = oldest
         if str(existing.get("body", "")) == body:
             return "created (kept the older comment)"
-        response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": body})
+        response = edit_comment(client, edit_client, repo, existing["id"], body)
         if response.status != 200:
             raise GitHubError(response.status, "updating the control comment")
         return "created (kept the older comment)"
     if str(existing.get("body", "")) == body:
         return "unchanged"
-    response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": body})
+    response = edit_comment(client, edit_client, repo, existing["id"], body)
     if response.status != 200:
         raise GitHubError(response.status, "updating the control comment")
     return "updated"

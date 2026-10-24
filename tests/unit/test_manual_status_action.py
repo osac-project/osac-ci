@@ -49,3 +49,22 @@ def test_the_auto_merge_job_refreshes_the_status_after_it_has_enabled_auto_merge
     assert token["permission-checks"] == "read" and token["permission-issues"] == "write"
     assert token["permission-pull-requests"] == "write"
     assert job["permissions"] == {}
+
+
+def test_both_actions_take_the_quiet_edit_token_and_drop_it_when_empty() -> None:
+    comment = ROOT / ".github" / "actions" / "manual-comment" / "action.yml"
+    for path in (ACTION, comment):
+        text = path.read_text(encoding="utf-8")
+        assert load(path)["inputs"]["edit-token"]["default"] == ""
+        assert "OSAC_CI_EDIT_TOKEN: ${{ inputs.edit-token }}" in text
+        assert 'if [ -z "$OSAC_CI_EDIT_TOKEN" ]; then unset OSAC_CI_EDIT_TOKEN; fi' in text
+
+
+def test_the_decision_and_the_result_edit_the_comment_with_the_workflows_own_token_and_have_the_permission() -> None:
+    decide, finish = DECIDE, ROOT / ".github" / "workflows" / "e2e-pr-finish.yml"
+    for path, job in ((decide, "decide"), (finish, "finish")):
+        wf = load(path)
+        assert wf["jobs"][job]["permissions"]["issues"] == "write"
+        step = next(s for s in wf["jobs"][job]["steps"] if s.get("uses") == "$/.github/actions/manual-comment")
+        assert step["with"]["edit-token"] == "${{ github.token }}"
+        assert step["with"]["github-token"] == "${{ steps.app-token.outputs.token }}", "the app still creates it"
