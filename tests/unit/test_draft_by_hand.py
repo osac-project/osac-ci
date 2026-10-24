@@ -75,7 +75,7 @@ def start_entry(**more: object) -> dict[str, Any]:
 def test_a_start_by_hand_rewrites_a_waiting_check_to_say_the_suites_run() -> None:
     out = e2e_check.plan(start_entry(), waiting(), 9, lambda _: False)
     assert out.start and [(w.state, w.description) for w in out.writes] == [
-        ("waiting", f"By hand: vmaas running, caas running · {DRAFT}")
+        ("pending", f"By hand: vmaas running, caas running · {DRAFT}")  # in progress: the page spins
     ]
 
 
@@ -98,6 +98,15 @@ def test_a_check_that_does_not_wait_is_not_touched_by_a_start_by_hand(existing: 
 def test_a_suite_the_change_does_not_need_is_not_counted() -> None:
     entry = start_entry(suites=["netris"], by_hand={"netris": "active"})
     assert e2e_check.plan(entry, waiting(), 9, lambda _: False).writes == ()
+
+
+def test_the_check_spins_only_while_a_suite_started_by_hand_is_going() -> None:
+    assert e2e_check.wait_state({"vmaas": "active", "caas": "passed"}) == "pending"
+    assert e2e_check.wait_state({"vmaas": "passed", "caas": "failed"}) == "waiting"
+    assert e2e_check.wait_state({}) == "waiting"
+    going = e2e_check.plan({"action": "skip-draft", "by_hand": {"vmaas": "active"}}, None, 9, lambda _: False)
+    idle = e2e_check.plan({"action": "skip-draft", "by_hand": {"vmaas": "passed"}}, None, 9, lambda _: False)
+    assert going.writes[0].state == "pending" and idle.writes[0].state == "waiting"
 
 
 def test_the_front_is_taken_off_to_find_the_wait() -> None:
