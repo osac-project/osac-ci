@@ -214,7 +214,8 @@ the whole run. It is opt-in per suite, the other suites stay jobs of the caller,
 is still the sum of the lines of the suites the change needs. To make a suite one:
 - its workflow takes the inputs `repo`, `sha`, `pr-number`, `fork-pr-author` and `fork-pr-author-association` (and `tier`
   when it has a variant) on `workflow_dispatch` (it may keep its other inputs, which have defaults), keeps its authorization
-  of a fork pull request, and names its run `run-name: E2E suite · <suite id> · #<pr-number> · <sha>` (the run is
+  of a fork pull request, and names its run `run-name: "E2E suite · <suite id> · #<pr-number> · <sha>"` (quoted: an
+  unquoted ` #` starts a YAML comment; the run is
   recognised by that name when it ends, so the format is exact: the suite id of the policy, the number, the 40 digit
   commit);
 - the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
