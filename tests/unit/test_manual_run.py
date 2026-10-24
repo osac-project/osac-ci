@@ -1605,3 +1605,89 @@ def test_a_suite_line_spins_in_the_box_and_the_history_only_once_its_run_started
         assert manual_run.history_for(SUITES, runs)[0].running is spins
         box = manual_run.render_comment(HEAD, manual_run.views_for(SUITES, runs), "", None)
         assert (manual_run.icon("running") in box) is spins
+
+
+class Quiet:
+    """The workflow's own token: it edits comments quietly. ``status`` is what GitHub answers to an edit."""
+
+    def __init__(self, status: int = 200, fake: Fake | None = None) -> None:
+        self.status = status
+        self.fake = fake
+        self.calls: list[tuple[str, str, Any]] = []
+
+    def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
+        self.calls.append((method, path, body))
+        if self.status == 200 and self.fake is not None:
+            wanted = int(path.rsplit("/", 1)[1])
+            next(c for c in self.fake.comments if c["id"] == wanted)["body"] = body["body"]  # type: ignore[index]
+        return Response(self.status, {}, {})
+
+
+def patches(fake: Fake) -> list[tuple[str, str, Any]]:
+    return [p for p in fake.posted if p[0] == "PATCH"]
+
+
+def test_an_edit_is_made_with_the_quiet_token_and_not_with_the_app() -> None:
+    fake = Fake([])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    fake.runs.append(passed("E2E / VMaaS Full Install"))
+    quiet = Quiet(fake=fake)
+    assert manual_run.refresh(fake, POLICY, REPO, 7, edit_client=quiet) == "updated"  # type: ignore[arg-type]
+    assert len(quiet.calls) == 1 and quiet.calls[0][0] == "PATCH"
+    assert patches(fake) == [], "the app made no edit: that is what wakes the workflow"
+    assert f"VMaaS Full Install** · {PASSED} passed" in fake.comments[0]["body"]
+
+
+def test_the_comment_is_created_by_the_app_whatever_the_quiet_token() -> None:
+    fake = Fake([])
+    quiet = Quiet(fake=fake)
+    assert manual_run.refresh(fake, POLICY, REPO, 7, edit_client=quiet) == "created"  # type: ignore[arg-type]
+    assert quiet.calls == [], "a comment made with the workflow's token would have another author"
+    assert [p for p in fake.posted if p[0] == "POST" and p[1].endswith("/comments")]
+
+
+@pytest.mark.parametrize("refused", [401, 403, 404])
+def test_a_quiet_token_that_is_refused_falls_back_to_the_app(refused: int) -> None:
+    fake = Fake([])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    fake.runs.append(passed("E2E / VMaaS Full Install"))
+    quiet = Quiet(refused)
+    assert manual_run.refresh(fake, POLICY, REPO, 7, edit_client=quiet) == "updated"  # type: ignore[arg-type]
+    assert len(quiet.calls) == 1 and len(patches(fake)) == 1, "tried quietly, then edited as before"
+
+
+def test_any_other_failure_of_the_quiet_edit_is_an_error_and_is_not_retried_with_the_app() -> None:
+    fake = Fake([])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    fake.runs.append(passed("E2E / VMaaS Full Install"))
+    with pytest.raises(GitHubError):
+        manual_run.refresh(fake, POLICY, REPO, 7, edit_client=Quiet(502))  # type: ignore[arg-type]
+    assert patches(fake) == []
+
+
+def test_without_a_quiet_token_the_app_edits_as_it_always_did() -> None:
+    fake = Fake([])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    fake.runs.append(passed("E2E / VMaaS Full Install"))
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert len(patches(fake)) == 1
+
+
+def test_the_status_block_is_refreshed_quietly_too() -> None:
+    fake = Fake([])
+    manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    fake.pr = {**fake.pr, "draft": True, "mergeable": True}
+    quiet = Quiet(fake=fake)
+    result = manual_run.refresh_status(fake, REPO, 7, edit_client=quiet)  # type: ignore[arg-type]
+    assert result in ("updated", "unchanged")
+    if result == "updated":
+        assert len(quiet.calls) == 1 and patches(fake) == []
+
+
+def test_the_cli_builds_the_quiet_client_only_from_its_variable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from osac_ci import cli
+
+    monkeypatch.delenv(cli.EDIT_TOKEN_ENV, raising=False)
+    assert cli.build_edit_client() is None
+    monkeypatch.setenv(cli.EDIT_TOKEN_ENV, "t")
+    assert cli.build_edit_client() is not None

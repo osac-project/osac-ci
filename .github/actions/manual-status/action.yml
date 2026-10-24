@@ -13,6 +13,11 @@ inputs:
   github-token:
     description: Token of the OSAC CI app (pull requests write, issues write, checks read)
     required: true
+  edit-token:
+    description: >-
+      The workflow's own token (`github.token`, with issues write), to edit the comment quietly (it wakes no
+      issue_comment run); empty, or refused, edits with github-token
+    default: ""
   repo:
     description: Repository, owner/name
     required: true
@@ -30,6 +35,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
+        OSAC_CI_EDIT_TOKEN: ${{ inputs.edit-token }}
         REPO: ${{ inputs.repo }}
         NUMBER: ${{ inputs.number }}
         ACTION_PATH: ${{ github.action_path }}
@@ -39,6 +45,7 @@ runs:
         case "$NUMBER" in
           "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
         esac
+        if [ -z "$OSAC_CI_EDIT_TOKEN" ]; then unset OSAC_CI_EDIT_TOKEN; fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci manual-status --repo "$REPO" --number "$NUMBER" \
           | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -17,6 +17,12 @@ inputs:
   org-token:
     description: Token that can read the members of the organization (members read); empty uses github-token
     default: ""
+  edit-token:
+    description: >-
+      The workflow's own token (`github.token`, with issues write), to edit the comment quietly: an edit made with it
+      starts no workflow, so it wakes no issue_comment run, which every edit by the app does. Empty (or a token that is
+      refused) edits with github-token, as before.
+    default: ""
   repo:
     description: Repository, owner/name
     required: true
@@ -47,6 +53,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
+        OSAC_CI_EDIT_TOKEN: ${{ inputs.edit-token }}
         REPO: ${{ inputs.repo }}
         NUMBER: ${{ inputs.number }}
         POLICY_FILE: ${{ inputs.policy-file }}
@@ -65,5 +72,6 @@ runs:
         if [ -n "$BY" ]; then args+=(--by="$BY"); fi
         # An empty org token must not reach the program as an empty variable: it then uses the main token.
         if [ -z "$OSAC_CI_ORG_TOKEN" ]; then unset OSAC_CI_ORG_TOKEN; fi
+        if [ -z "$OSAC_CI_EDIT_TOKEN" ]; then unset OSAC_CI_EDIT_TOKEN; fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci manual-comment "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
