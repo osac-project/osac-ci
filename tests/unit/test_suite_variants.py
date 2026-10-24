@@ -424,13 +424,13 @@ def test_the_decision_gets_the_text_of_the_edited_comment_from_the_event_never_t
 def test_a_newer_plain_run_does_not_take_the_result_of_the_full_run_from_its_box() -> None:
     got = boxes([run_line("Passed · regression", "success", "10:00", 1), run_line("Running", None, "11:00", 2)])
     assert got["caas-regression"] == f" · {manual_run.icon('passed')} passed ([run](https://x/run/1))"
-    assert got["caas"] == f" · {manual_run.icon('pending')} running ([run](https://x/run/2))"
+    assert got["caas"] == f" · {manual_run.icon('running')} running ([run](https://x/run/2))"
 
 
 def test_a_newer_full_run_does_not_take_the_result_of_the_plain_run_from_its_box() -> None:
     got = boxes([run_line("Failed", "failure", "10:00", 1), run_line("Running · regression", None, "11:00", 2)])
     assert got["caas"] == f" · {manual_run.icon('error')} failed ([run](https://x/run/1))"
-    assert got["caas-regression"] == f" · {manual_run.icon('pending')} running ([run](https://x/run/2))"
+    assert got["caas-regression"] == f" · {manual_run.icon('running')} running ([run](https://x/run/2))"
 
 
 def test_a_run_the_other_version_replaced_says_it_was_stopped_instead_of_running_for_ever() -> None:
@@ -543,7 +543,7 @@ def test_a_replaced_run_that_ended_cancelled_is_stopped_not_failed_in_the_histor
 
 
 def test_the_summary_counts_the_version_the_shared_line_shows_now() -> None:
-    passed, running = manual_run.icon("passed"), manual_run.icon("pending")
+    passed, running = manual_run.icon("passed"), manual_run.icon("running")
     none = manual_run.icon("neutral")
     base_then_variant = [run_line("Passed", "success", "10:00", 1), run_line("Running · regression", None, "11:00", 2)]
     assert (

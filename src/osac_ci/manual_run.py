@@ -66,6 +66,7 @@ ICON_ALT = {
     "error": "Error",
     "warning": "Warning",
     "pending": "Pending",
+    "running": "Running",
     "neutral": "Not applicable",
     "closed": "Closed",
     "merged": "Merged",
@@ -90,12 +91,21 @@ def lead(name: str) -> str:
 # What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
 STATE_TEXT = {
     "none": f"{icon('neutral')} not run on this commit",
-    "active": f"{icon('pending')} running",
+    "active": f"{icon('pending')} waiting",  # its line exists but nothing runs yet (it waits for a runner)
+    "running": f"{icon('running')} running",
     "passed": f"{icon('passed')} passed",
     "failed": f"{icon('error')} failed",
     "stopped": f"{icon('closed')} stopped, replaced by another run",
 }
 RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
+
+
+def state_text(state: str, running: bool) -> str:
+    """What a state says in the comment; a state that is active and running spins, one that is only waiting does not."""
+    key = "running" if state == "active" and running else state
+    return STATE_TEXT.get(key, key)
+
+
 # The checks the status block shows. CI and the Jira reference are jobs of the repository's own workflows (GitHub
 # Actions), whose names every repository of the flow shares because they are required checks; the E2E check is written
 # by this app. Only the app of that name counts: another app can create a check with the same name.
@@ -163,6 +173,7 @@ class SuiteView:
     title: str = ""
     covered_by: str = ""  # the tier of the variant whose run is on the suite's line
     current: bool = True  # the box of the version the shared line shows now: the one the summary counts
+    running: bool = False  # active, and its run has started (else it waits for a runner)
 
     @property
     def label(self) -> str:
@@ -178,6 +189,7 @@ class CheckView:
     url: str = ""
     title: str = ""
     failed: tuple[str, ...] = ()
+    running: bool = False  # active, and in progress (else it is queued: the icon does not spin)
 
 
 @dataclass(frozen=True)
@@ -221,8 +233,9 @@ def _alert(kind: str, lines: Sequence[str]) -> list[str]:
 
 
 def _check_row(name: str, view: CheckView) -> str:
-    mark = lead(CHECK_ICON.get(view.state, "neutral"))
-    text = view.title or CHECK_WORD.get(view.state, view.state)
+    mark = lead("running" if view.state == "active" and view.running else CHECK_ICON.get(view.state, "neutral"))
+    word = "waiting" if view.state == "active" and not view.running else CHECK_WORD.get(view.state, view.state)
+    text = view.title or word
     text = f"[{text}]({view.url})" if view.url else text
     row = f"{mark}**{name}:** {text}"
     if view.failed:
@@ -309,13 +322,18 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
     return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
 
 
+def _shown_as(view: SuiteView) -> str:
+    return "running" if view.state == "active" and view.running else view.state
+
+
 def suites_summary(views: Sequence[SuiteView]) -> str:
     """What the suites say, as counts in the fixed order failed, running, passed, not run: the E2E section's title."""
     counts = [
-        (state, mark, word, sum(v.state == state and v.current for v in views))
+        (state, mark, word, sum(_shown_as(v) == state and v.current for v in views))
         for state, mark, word in (
             ("failed", icon("error"), "failed"),
-            ("active", icon("pending"), "running"),
+            ("running", icon("running"), "running"),
+            ("active", icon("pending"), "waiting"),
             ("passed", icon("passed"), "passed"),
             ("none", icon("neutral"), "not run"),
         )
@@ -336,6 +354,7 @@ class HistoryRow:
     state: str  # active | passed | failed | stopped
     url: str = ""
     versioned: bool = False  # the suite has variants, so the row says which version ran
+    running: bool = False  # active, and its run has started
 
 
 def history_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> tuple[HistoryRow, ...]:
@@ -365,7 +384,15 @@ def history_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -
             state = "stopped"  # a newer run of the suite began: this one was replaced, however it was left
         link = str(r.get("details_url") or r.get("html_url") or "")
         rows.append(
-            HistoryRow(first[key], _label_of(suite.check), tier_of(_title(r)), state, link, suite.name in versioned)
+            HistoryRow(
+                first[key],
+                _label_of(suite.check),
+                tier_of(_title(r)),
+                state,
+                link,
+                suite.name in versioned,
+                _is_running(r),
+            )  # fmt: skip
         )
     rows.sort(key=lambda h: h.at, reverse=True)
     return tuple(rows[:HISTORY_MAX])
@@ -380,7 +407,7 @@ def history_lines(history: Sequence[HistoryRow]) -> list[str]:
         when = h.at.replace("T", " ")[:16] + " UTC" if h.at else "earlier"
         version = f" · {h.version or 'default'}" if h.versioned else ""
         link = f" ([run]({h.url}))" if h.url else ""
-        lines.append(f"- {when} · **{h.suite}**{version} · {STATE_TEXT.get(h.state, h.state)}{link}")
+        lines.append(f"- {when} · **{h.suite}**{version} · {state_text(h.state, h.running)}{link}")
     lines += ["", "</details>", ""]
     return lines
 
@@ -420,7 +447,7 @@ def render_comment(
         link = f" ([run]({view.url}))" if view.url else ""
         via = f" (in the {view.covered_by} run)" if view.covered_by and view.state != "none" else ""
         lines.append(
-            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{via}{link}"
+            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {state_text(view.state, view.running)}{via}{link}"
         )
     lines += ["", *history_lines(history), "</details>", "", NOTES_START]
     if notes.strip():
@@ -598,42 +625,58 @@ def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> 
         newest[(str(r["name"]), tier)] = r
         last_tier[str(r["name"])] = tier
 
-    def own(check: str, tier: str) -> tuple[str, str] | None:
+    def own(check: str, tier: str) -> tuple[str, str, bool] | None:
         run = newest.get((check, tier))
         if run is None:
             return None
         state = _line_state_of(run)
         if _unfinished(run) and last_tier[check] != tier:
             state = "stopped"  # the other version replaced this run: it never got to say how it ended
-        return state, str(run.get("details_url") or run.get("html_url") or "")
+        return state, str(run.get("details_url") or run.get("html_url") or ""), _is_running(run)
 
     variants = {s.variant_of for s in suites if s.variant_of}
     views: list[SuiteView] = []
     for s in suites:
         if not s.variant_of and s.name not in variants:
-            views.append(SuiteView(s.name, s.check, line_state(latest, s.check), urls.get(s.check, ""), False, s.label))
+            line = latest.get(s.check)
+            views.append(
+                SuiteView(
+                    s.name,
+                    s.check,
+                    line_state(latest, s.check),
+                    urls.get(s.check, ""),
+                    False,
+                    s.label,
+                    running=line is not None and line.status == "in_progress",
+                )  # fmt: skip
+            )
             continue
         # the shared line shows the newest run of any version: that box is the one the summary counts
         current = last_tier.get(s.check) == (s.tier if s.variant_of else "") or (
             s.check not in last_tier and not s.variant_of
         )
-        state, url, covered = "none", "", ""
+        state, url, covered, running = "none", "", "", False
         got = own(s.check, s.tier if s.variant_of else "")
         if got is not None:
-            state, url = got
+            state, url, running = got
         elif not s.variant_of:
             for v in (v for v in suites if v.variant_of == s.name):  # the run of a variant includes this suite
                 other = own(s.check, v.tier)
                 if other is not None and other[0] != "stopped":
-                    state, url = other
+                    state, url, running = other
                     covered = v.tier
-        views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered, current))
+        views.append(SuiteView(s.name, s.check, state, url, bool(s.variant_of), s.label, covered, current, running))
     return tuple(views)
 
 
 def _unfinished(run: Mapping[str, object]) -> bool:
     """A run that never said how it ended: still waiting or running, or cancelled (stopped by a newer run)."""
     return str(run.get("status")) != "completed" or _conclusion(run) == "cancelled"
+
+
+def _is_running(run: Mapping[str, object]) -> bool:
+    """A line whose run has started (a queued one waits for a runner)."""
+    return str(run.get("status")) == "in_progress"
 
 
 def _line_state_of(run: Mapping[str, object]) -> str:
@@ -695,7 +738,7 @@ def check_view(
     output = run.get("output")
     title = str(output.get("title") or "") if isinstance(output, Mapping) else ""
     url = str(run.get("details_url") or run.get("html_url") or "")
-    return CheckView(state, url, title if keep_other else "", failed)
+    return CheckView(state, url, title if keep_other else "", failed, run.get("status") == "in_progress")
 
 
 def approval_of(

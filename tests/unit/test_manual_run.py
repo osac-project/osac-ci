@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
+from helpers import ROOT
 
 from osac_ci import e2e_check, manual_run
 from osac_ci.compare import Requirement
@@ -16,8 +17,8 @@ from osac_ci.model import CheckRun
 
 pytestmark = pytest.mark.unit
 lead = manual_run.lead
-PASSED, ERROR, WARNING, PENDING, NEUTRAL, CLOSED, MERGED = (
-    manual_run.icon(n) for n in ("passed", "error", "warning", "pending", "neutral", "closed", "merged")
+PASSED, ERROR, WARNING, PENDING, NEUTRAL, CLOSED, MERGED, RUNNING = (
+    manual_run.icon(n) for n in ("passed", "error", "warning", "pending", "neutral", "closed", "merged", "running")
 )
 HEAD = "a" * 40
 APP = 15368
@@ -987,7 +988,10 @@ def test_each_state_of_the_pull_request_has_its_own_row() -> None:
     )
     assert f"{lead('pending')}**Approval:** waiting for an approval" in rows(approval="unchecked", approvers=())
     assert f"{lead('error')}**CI:** [failed](https://x/CI)" in rows(ci=manual_run.CheckView("failed", "https://x/CI"))
-    assert f"{lead('pending')}**CI:** running" in rows(ci=manual_run.CheckView("active"))
+    assert f"{lead('running')}**CI:** running" in rows(ci=manual_run.CheckView("active", running=True))
+    assert f"{lead('pending')}**CI:** waiting" in rows(ci=manual_run.CheckView("active")), (
+        "queued: the icon does not spin"
+    )
     assert f"{lead('closed')}**CI:** cancelled" in rows(ci=manual_run.CheckView("cancelled"))
     assert "Jira" not in rows(jira=None) and "**CI:**" not in rows(ci=None) and "**E2E:**" not in rows(e2e=None)
     assert "Draft" not in rows() and "Merge conflict" not in rows()
@@ -1004,12 +1008,20 @@ def test_a_failed_ci_names_the_failed_checks_and_says_how_many_more_there_are() 
 
 def test_the_suites_summary_counts_every_state_in_a_fixed_order() -> None:
     many = tuple(
-        manual_run.SuiteView(f"s{i}", f"E2E / S{i}", st)
-        for i, st in enumerate(["none", "passed", "active", "failed", "failed"])
+        manual_run.SuiteView(f"s{i}", f"E2E / S{i}", st, running=run)
+        for i, (st, run) in enumerate(
+            [
+                ("none", False),
+                ("passed", False),
+                ("active", True),
+                ("active", False),
+                ("failed", False),
+                ("failed", False),
+            ]
+        )
     )
-    assert (
-        manual_run.suites_summary(many)
-        == f"{ERROR} 2 failed · {PENDING} 1 running · {PASSED} 1 passed · {NEUTRAL} 1 not run"
+    assert manual_run.suites_summary(many) == (
+        f"{ERROR} 2 failed · {RUNNING} 1 running · {PENDING} 1 waiting · {PASSED} 1 passed · {NEUTRAL} 1 not run"
     )
     assert manual_run.suites_summary(()) == ""
 
@@ -1560,3 +1572,36 @@ def test_every_icon_of_the_comment_is_an_image_that_exists_and_no_emoji_is_left_
         HEAD, views(), "", full_status(blocked_by=(CODERABBIT,), queue=manual_run.QueueView("none"))
     )
     assert not any(e in body for e in "✅❌⏳➖🔄❔🟣⚫🚫"), "the status and the suite lines use the images, not emoji"
+
+
+def test_a_running_job_gets_the_spinning_icon_and_a_queued_one_the_clock() -> None:
+    def run(name: str, status: str) -> dict[str, object]:
+        return {"name": name, "status": status, "conclusion": None, "started_at": "2026-10-10T10:00:00Z",
+                "app": {"slug": "github-actions"}}  # fmt: skip
+
+    running = manual_run.check_view([run("CI", "in_progress")], "CI", "github-actions")
+    queued = manual_run.check_view([run("CI", "queued")], "CI", "github-actions")
+    assert running is not None and running.state == "active" and running.running
+    assert queued is not None and queued.state == "active" and not queued.running
+    assert manual_run.state_text("active", True) == f"{RUNNING} running"
+    assert manual_run.state_text("active", False) == f"{PENDING} waiting"
+    assert manual_run.state_text("passed", True) == f"{PASSED} passed", "only an active state can spin"
+
+
+def test_the_spinning_icon_file_is_there_and_turns() -> None:
+    svg = (ROOT / "docs" / "icons" / "running.svg").read_text(encoding="utf-8")
+    assert "animateTransform" in svg and 'repeatCount="indefinite"' in svg and "<script" not in svg
+
+
+def test_a_suite_line_spins_in_the_box_and_the_history_only_once_its_run_started() -> None:
+    def raw(name: str, status: str, at: str) -> dict[str, object]:
+        return {"name": name, "status": status, "conclusion": None, "started_at": at, "app": {"slug": "osac-ci"},
+                "output": {"title": "x"}, "details_url": "https://github.com/o/r/actions/runs/5/job/1"}  # fmt: skip
+
+    for status, spins in (("in_progress", True), ("queued", False)):
+        runs = [raw("E2E / VMaaS Full Install", status, "2026-10-10T10:00:00Z")]
+        (vm, _caas, _netris) = manual_run.views_for(SUITES, runs)
+        assert vm.state == "active" and vm.running is spins
+        assert manual_run.history_for(SUITES, runs)[0].running is spins
+        box = manual_run.render_comment(HEAD, manual_run.views_for(SUITES, runs), "", None)
+        assert (manual_run.icon("running") in box) is spins
