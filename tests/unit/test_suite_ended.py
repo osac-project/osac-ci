@@ -308,3 +308,22 @@ def test_a_final_failure_is_not_turned_into_a_wait_by_a_suite_that_is_run_again(
     gh.add(VM, "in_progress", None, RUN_VM, "Running")
     ended(gh)
     assert gh.check() == ("failure", "Failed: caas")
+
+
+def test_a_suite_with_no_line_is_not_a_failure_the_check_is_left_as_it_is() -> None:
+    gh = Gh()
+    claim(gh)
+    gh.runs[DECISION] = ("completed", "success")
+    gh.add(VM, "in_progress", None, RUN_VM, "Running")  # caas has no line at all
+    said = ended(gh)
+    assert gh.check() == ("in_progress", "Running: vmaas, caas") and "no line yet" in said
+
+
+def test_a_failed_suite_fails_the_check_naming_only_the_failed_one_even_if_another_has_no_line() -> None:
+    gh = Gh()
+    claim(gh)
+    gh.runs[DECISION] = ("completed", "success")
+    gh.runs[RUN_VM] = ("completed", "failure")
+    gh.add(VM, "in_progress", None, RUN_VM, "Running")
+    ended(gh)
+    assert gh.check() == ("failure", "Failed: vmaas")
