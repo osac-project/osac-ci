@@ -858,7 +858,7 @@ def status_of(
     return replace(status, queue=queue)
 
 
-# What a refused quiet edit answers (the caller did not grant the job `pull-requests: write`): not an error, the app edits.
+# What a refused quiet edit answers (no `pull-requests: write` for the job): not an error, the app edits.
 QUIET_FALLBACK = (401, 403, 404)
 
 
