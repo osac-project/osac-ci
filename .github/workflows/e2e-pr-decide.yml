@@ -379,13 +379,24 @@ jobs:
             echo "fork-association=$(jq -r '.author_association' <<<"${pull}")" >> "$GITHUB_OUTPUT"
           fi
       # The suites that run as a run of their own (their job in the policy names a workflow) are started here, not as jobs
-      # of the caller's run: each is its own run, so a failed one can be run again the moment it ends. The workflow's own
-      # token starts them (a workflow_dispatch is the one thing that token may start); the lines are written by the app.
+      # of the caller's run: each is its own run, so a failed one can be run again the moment it ends. They are started with
+      # a token of the app of their own (actions write and nothing else), not the workflow's own: a run that the
+      # workflow's own token starts has the actor github-actions[bot], and GitHub sends no workflow_run event for the end
+      # of such a run, not even for a native re-run of it (verified on the rehearsal repository), so nothing would add the
+      # suite up when it was run again. The lines are written by the app with the other token.
+      - name: Token of the OSAC CI app, to start the suites
+        id: dispatch-token
+        if: steps.report.outputs.start == 'true' && steps.report.outputs.dispatched != '[]'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-actions: write
       - uses: $/.github/actions/e2e-dispatch
         id: dispatch
         if: steps.report.outputs.start == 'true' && steps.report.outputs.dispatched != '[]'
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.dispatch-token.outputs.token }}
           lines-token: ${{ steps.app-token.outputs.token }}
           repo: ${{ github.repository }}
           sha: ${{ steps.report.outputs.sha }}

@@ -124,6 +124,8 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
 - **Events made with `github.token` start no workflows**, except `workflow_dispatch` and `repository_dispatch`.
   Auto-merge, queueing, approvals and comment edits that must wake other workflows use a token of the OSAC CI GitHub
   App (minted per job from the organization secrets). A skipped or never-created queue run is often this.
+  A run that `github.token` starts with `workflow_dispatch` has the actor `github-actions[bot]`, and GitHub sends no
+  `workflow_run` event for its end (not for a re-run either): the dispatched E2E suites are started with an app token.
 - **The app, not a workflow, writes the required checks.** `E2E` is required from the OSAC CI app only (its integration
   id is in the ruleset), as a check run. The per-suite lines are commit statuses on purpose (`lines-kind: statuses`):
   the name of a status row opens the job, the name of a check-run row opens the Checks tab, and a status can only show a

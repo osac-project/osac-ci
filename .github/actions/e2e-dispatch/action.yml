@@ -5,14 +5,15 @@ description: >-
   ends, by GitHub's own button or by /test, without waiting for the other suites. Called from the decision workflow of
   osac-ci, pinned to a commit, like the other actions.
 
-# The calling workflow decides when this runs and what tokens it holds: github-token starts the runs (the workflow's own
-# token, with actions write: events made with it start no workflow, but a workflow_dispatch is the exception), lines-token
+# The calling workflow decides when this runs and what tokens it holds: github-token starts the runs (a token of the OSAC
+# CI app with actions write, not the workflow's own: a run started by the workflow's own token gets no workflow_run event
+# when it ends, so nothing would add it up when it was run again), lines-token
 # writes the lines of the suites (the app's token). This action never checks out the calling repository, so it cannot run
 # pull request code; the suites it starts run the commit that was approved, from the default branch's workflow files.
 # Every input reaches the shell through an environment variable, never through the script text.
 inputs:
   github-token:
-    description: The workflow's own token, with actions write
+    description: A token that starts workflows (the OSAC CI app's, with actions write; not the workflow's own, see above)
     required: true
   lines-token:
     description: Token that writes the lines of the suites (the OSAC CI app); empty uses github-token
