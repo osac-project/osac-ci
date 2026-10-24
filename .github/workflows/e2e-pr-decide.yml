@@ -95,10 +95,22 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
       number:
         value: ${{ jobs.decide.outputs.number }}
       suites:
-        description: JSON list of the suite ids to run
+        description: >-
+          JSON list of the suite ids that run as jobs of the caller's own run. A suite whose job in the policy names a
+          `workflow` is not in it: the decision starts it as a run of its own (see `dispatched`)
         value: ${{ jobs.decide.outputs.suites }}
       suite-checks:
+        description: JSON object, suite id -> line name, of those suites
         value: ${{ jobs.decide.outputs.suite-checks }}
+      dispatched:
+        description: JSON list of the suites started as runs of their own, each {suite, workflow, check, tier}; `[]` when none
+        value: ${{ jobs.decide.outputs.dispatched }}
+      dispatched-runs:
+        description: JSON object, suite id -> id of the run that was started, for the tracking of those suites; `{}` when none
+        value: ${{ jobs.decide.outputs.dispatched-runs }}
+      all-suite-checks:
+        description: JSON object, suite id -> line name, of every suite the decision starts, the dispatched ones too
+        value: ${{ jobs.decide.outputs.all-suite-checks }}
       tiers:
         description: >-
           JSON object, suite id -> tier, for a suite started through a variant of it (for example {"caas":"regression"});
@@ -193,6 +205,9 @@ jobs:
       number: ${{ steps.report.outputs.number }}
       suites: ${{ steps.report.outputs.suites }}
       suite-checks: ${{ steps.report.outputs.suite-checks }}
+      dispatched: ${{ steps.report.outputs.dispatched }}
+      dispatched-runs: ${{ steps.dispatch.outputs.runs || '{}' }}
+      all-suite-checks: ${{ steps.report.outputs.all-suite-checks }}
       tiers: ${{ steps.report.outputs.tiers }}
       head-repo: ${{ steps.code.outputs.repo }}
       fork-author: ${{ steps.code.outputs.fork-author }}
@@ -363,6 +378,23 @@ jobs:
             echo "fork-author=$(jq -r '.user.login' <<<"${pull}")" >> "$GITHUB_OUTPUT"
             echo "fork-association=$(jq -r '.author_association' <<<"${pull}")" >> "$GITHUB_OUTPUT"
           fi
+      # The suites that run as a run of their own (their job in the policy names a workflow) are started here, not as jobs
+      # of the caller's run: each is its own run, so a failed one can be run again the moment it ends. The workflow's own
+      # token starts them (a workflow_dispatch is the one thing that token may start); the lines are written by the app.
+      - uses: $/.github/actions/e2e-dispatch
+        id: dispatch
+        if: steps.report.outputs.start == 'true' && steps.report.outputs.dispatched != '[]'
+        with:
+          github-token: ${{ github.token }}
+          lines-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ steps.report.outputs.sha }}
+          number: ${{ steps.report.outputs.number }}
+          head-repo: ${{ steps.code.outputs.repo }}
+          fork-author: ${{ steps.code.outputs.fork-author }}
+          fork-association: ${{ steps.code.outputs.fork-association }}
+          dispatched: ${{ steps.report.outputs.dispatched }}
+          lines-kind: ${{ inputs.lines-kind }}
       # The E2E of an older commit of this pull request is of no use any more, and it holds a runner. Only a decision
       # that found the pull request still at this commit gets here, so a late event for an old commit cancels nothing.
       # The run is found by the E2E line of the older commit, which links the run that started it.
