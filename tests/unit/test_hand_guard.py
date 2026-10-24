@@ -86,6 +86,18 @@ def test_the_run_that_claimed_the_e2e_is_the_automatic_one_and_its_lines_are_not
     assert other.suites == ("vmaas",) and other.manual, "another run than the claim's is a run by hand"
 
 
+def test_a_waiting_check_that_names_the_suites_run_by_hand_is_not_the_claim_of_their_run() -> None:
+    """The check a hand start writes links to the run of the suites (it is the run that writes it): taken as a claim, it
+    would excuse that run's own suites and start them a second time."""
+    waiting = line("E2E", run=50, title="By hand: vmaas running, caas running · Waiting: the pull request is a draft")
+    d = decide(
+        inputs(line(VM, run=50, title="Running"), line(CA, run=50, title="Running"), waiting, live=(50,), draft=False)
+    )
+    assert d.action is Action.RUNNING_BY_HAND and d.suites == ()
+    one = decide(inputs(line(CA, run=50, title="Running"), waiting, live=(50,), draft=False))
+    assert one.suites == ("vmaas",) and one.manual and "caas run by hand" in one.reason
+
+
 def test_every_needed_suite_run_by_hand_means_nothing_to_start_and_says_why() -> None:
     d = decide(inputs(line(CA, run=50), line(VM, run=51), live=(50, 51)))
     assert d.action is Action.RUNNING_BY_HAND and d.suites == () and not d.starts
