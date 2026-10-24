@@ -89,9 +89,9 @@ start again as they were.
 
 A suite that failed can be run again at once, while the other suites of the same run are still going: comment
 `/test <suite>` or check its box (the status block names the failed suites and says so). It is a run of its own, so
-GitHub's own "Re-run" button, which waits for the whole run to end, is not needed. The `E2E` check follows the latest line
-of each suite: when a run that failed ends, the check says `Passed` if every suite of it has passed since, waits while one
-is being run again (the run of the retest writes the answer when it ends), and says `Failed` otherwise.
+GitHub's own "Re-run" button, which waits for the whole run to end, is not needed. The `E2E` check follows the latest
+line of each suite: when a run that failed ends, the check says `Passed` if every suite of it has passed since, waits
+while one is being run again (the run of the retest writes the answer when it ends), and says `Failed` otherwise.
 
 While the `E2E` check waits (a draft, an approval, a failed CI) and suites were started by hand, its text says what they
 do in front of the wait (`By hand: vmaas running, caas passed · Waiting: the pull request is a draft`); the check turns
