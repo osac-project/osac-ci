@@ -1,0 +1,65 @@
+---
+# Approves dependency updates (Dependabot, Konflux) for the repositories that osac-ci serves, from here: the schedule that
+# osac and osac-test-infra each had in a `bot-approve.yml` of their own, every 15 minutes, filled their Actions tabs with
+# about 100 runs a day each. The sweep itself is the shared workflow (bot-sweep.yml), unchanged in what it decides (the
+# rules are in docs/RULES.md); it is only given `repo`, the repository to sweep, and makes its tokens of the OSAC CI app
+# for that repository.
+#
+# It runs from the default branch of osac-ci (a schedule always does), at this commit's own copy of bot-sweep.yml, so a
+# change to the rules or to this file needs the review of @osac-project/wg-infra and reaches every repository at once.
+# Rollback of one repository: put a `bot-approve.yml` back in it (the schedule there is independent of this one) and
+# take its job out of this file.
+name: Bot approval sweep of the OSAC repositories
+
+on:
+  schedule:
+    - cron: '3,18,33,48 * * * *'
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: The repository to sweep
+        type: choice
+        options: [all, osac, osac-test-infra]
+        default: all
+      number:
+        description: One pull request number (empty means every open dependency update; a number needs one repository)
+        required: false
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: sweep-bots
+  cancel-in-progress: false
+
+jobs:
+  osac:
+    name: osac
+    if: >-
+      github.repository == 'osac-project/osac-ci' && (github.event_name == 'schedule' || inputs.repository == 'osac' ||
+      (inputs.repository == 'all' && inputs.number == ''))
+    uses: ./.github/workflows/bot-sweep.yml  # zizmor: ignore[self-repository] -- this workflow's own repository, run here, not called
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      repo: osac-project/osac
+      number: ${{ inputs.number }}
+      konflux-prep: true
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+
+  osac-test-infra:
+    name: osac-test-infra
+    if: >-
+      github.repository == 'osac-project/osac-ci' && (github.event_name == 'schedule' || inputs.repository == 'osac-test-infra' ||
+      (inputs.repository == 'all' && inputs.number == ''))
+    uses: ./.github/workflows/bot-sweep.yml  # zizmor: ignore[self-repository] -- this workflow's own repository, run here, not called
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      repo: osac-project/osac-test-infra
+      number: ${{ inputs.number }}
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
