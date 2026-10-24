@@ -26,6 +26,7 @@ from typing import Any
 from osac_ci import (
     bot_approve,
     cancel_older,
+    clean_runs,
     e2e_check,
     e2e_start,
     e2e_suites_check,
@@ -460,6 +461,17 @@ def _parser() -> argparse.ArgumentParser:
     cold.add_argument("--number", type=int, required=True, help="the pull request")
     cold.add_argument("--head-sha", required=True, help="the head commit that was decided on: its run is left alone")
 
+    crun = sub.add_parser(
+        "clean-runs",
+        help="delete the finished runs of service workflows that ended skipped (they only fill the Actions tab)",
+    )
+    crun.add_argument("--repo", required=True, help="owner/name of the repository whose runs are deleted")
+    crun.add_argument(
+        "--workflow", action="append", required=True, help="a workflow file name, such as e2e-pr.yml (repeatable)"
+    )
+    crun.add_argument("--min-age-minutes", type=int, default=clean_runs.MIN_AGE_MINUTES, help="only runs this old")
+    crun.add_argument("--dry-run", action="store_true", help="list what would be deleted; delete nothing")
+
     mstat = sub.add_parser(
         "manual-status",
         help="rewrite only the status block of the control comment (for what changed after the comment was written)",
@@ -760,6 +772,17 @@ def main(argv: list[str] | None = None) -> int:
         if not done:
             print("No older commit has an E2E running.")
         return 0
+
+    if args.command == "clean-runs":
+        try:
+            results = clean_runs.clean(
+                build_client(), args.repo, args.workflow, min_age_minutes=args.min_age_minutes, dry_run=args.dry_run
+            )
+        except (GitHubError, ValueError) as exc:
+            print(f"error: clean-runs failed: {exc}", file=sys.stderr)
+            return 3
+        print(clean_runs.render(results, dry_run=args.dry_run), end="")
+        return 3 if any(r.failed for r in results) else 0
 
     if args.command == "manual-status":
         try:
