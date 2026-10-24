@@ -37,8 +37,9 @@ Two systems share the repository:
 
 ## Rules that do not bend
 
-1. **Decisions are pure.** `e2e_start.decide`, `planner.py`, `rules/` and `bot_approve` do no I/O and read no clock,
-   environment or randomness. GitHub access belongs in the adapters (`github/`, the `fetch_*` helpers and the CLI). Add
+1. **Decisions are pure.** `e2e_start.decide`, `bot_approve.decide`, `planner.py` and `rules/` do no I/O and read no
+   clock, environment or randomness. GitHub access belongs in the adapters (`github/`, the `fetch_*` helpers, the
+   other functions of `bot_approve.py` that call GitHub such as `list_bot_pulls`, and the CLI). Add
    an input to the `Inputs` dataclass and fill it where the inputs are fetched; never reach out from a rule. Reading
    files is the loaders' job, not the rules': `policy.load_policy` reads the policy file and `parse_policy` may read the
    `path_filters.file` it names (relative to the policy, and not outside its directory).
@@ -85,10 +86,12 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
   restore with `git diff`, and run the whole suite once more. A same-length edit restored within a second can leave a
   stale `.pyc` that keeps the old behavior. After a `ruff format`, re-read a test you edited by string replace: an edit
   that silently did nothing looks like a pass.
-- Workflow files: pin every action by full SHA with the version in a comment. Give each job only the permissions it
-  needs: the shared workflows have `permissions: {}` at the top and grant per job; a narrow top-level grant
-  (`contents: read`) is acceptable where every job needs it. `.github/actionlint.yaml` ignores exactly the message about
-  `uses: $/...`.
+- Workflow files: pin every external action by full SHA with the version in a comment. The actions of this repository
+  that a shared workflow reaches as `uses: $/.github/actions/<name>` are not pinned separately: they come at the
+  commit the caller pinned. Give each job only the permissions it needs: the shared workflows have `permissions: {}`
+  at the top and grant per job; a narrow top-level grant (`contents: read`) is acceptable where every job needs it.
+  `.github/actionlint.yaml` ignores exactly two messages: the `uses: $/...` format, and the `queue` key of
+  `concurrency` (`queue: max`), which actionlint does not know yet.
 - Docs that describe how the repository works for its users belong here (`README.md`, `docs/`). Our own design notes,
   plans and experiment findings do not: keep them out of the repository.
 
@@ -140,7 +143,8 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
   must keep the shape the monitoring expects (`e2e-<suite>-full-install`), so a tier is a workflow input, not a new job
   name.
 - **Forks:** only a person with write access counts as an approver on a fork pull request; CodeRabbit and `osac-ci[bot]`
-  do not. A suite on a fork runs only on the approved commit.
+  do not. The automatic start runs a suite of a fork only on the approved commit; an organization member can also start
+  suites of a fork pull request by hand, whatever its approval state (on its head commit).
 - **GitHub strips `style` and scripts from comments.** The status panel uses `<img>` icons from `docs/icons` (SVG; the
   running icon animates itself) and plain markdown. Keep an `alt` text.
 - **The merge queue:** the pull request decision does not run for queue entries. The repository's `e2e-queue.yml` (a
