@@ -190,7 +190,8 @@ def test_the_command_writes_the_runs_started_and_fails_when_a_suite_could_not_be
     out = tmp_path / "runs.json"
     argv = ["e2e-dispatch", "--repo", "o/r", "--sha", HEAD, "--number", "7", "--head-repo", "o/r"]
     code = cli.main([*argv, "--dispatch", json.dumps(ITEMS), "--json-file", str(out)])
-    assert code == 3 and json.loads(out.read_text()) == {"runs": {"vmaas": 111}, "failed": ["caas"]}
+    assert code == 3
+    assert json.loads(out.read_text()) == {"runs": {"vmaas": {"run": 111, "check": VM}}, "failed": ["caas"]}
     assert "Started vmaas as run 111" in capsys.readouterr().out
 
 

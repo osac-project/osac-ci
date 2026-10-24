@@ -24,6 +24,11 @@ inputs:
       JSON object, suite id -> line name, of the suites that run (the suite-checks output of e2e-report; the names are
       the "check" of each suite in the repository's E2E policy)
     required: true
+  runs:
+    description: >-
+      JSON object, suite id -> {run, check}, of the suites that run as a run of their own (the runs output of
+      e2e-dispatch): their lines follow that run. `{}` when there is none
+    default: "{}"
   run-id:
     description: The workflow run that holds the suite jobs
     default: ${{ github.run_id }}
@@ -57,6 +62,7 @@ runs:
         REPO: ${{ inputs.repo }}
         SHA: ${{ inputs.sha }}
         SUITE_CHECKS: ${{ inputs.suite-checks }}
+        RUNS: ${{ inputs.runs }}
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         TIMEOUT: ${{ inputs.timeout }}
@@ -75,5 +81,5 @@ runs:
         follow=()
         if [ "${FOLLOW:-false}" = "true" ]; then follow=(--follow); fi
         uv run --locked --project "$root" osac-ci e2e-suites-track --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
-          --run-url="$RUN_URL" --suite-checks "$SUITE_CHECKS" --timeout "$TIMEOUT" --kind "$KIND" \
+          --run-url="$RUN_URL" --suite-checks "$SUITE_CHECKS" --runs "${RUNS:-{\}}" --timeout "$TIMEOUT" --kind "$KIND" \
           ${follow[@]+"${follow[@]}"}

@@ -34,7 +34,7 @@ from osac_ci.e2e_check import (
     tiered,
     validate_lines,
 )
-from osac_ci.github.api import GitHubClient, check_repo, paginate
+from osac_ci.github.api import GitHubClient, check_repo, get, paginate
 
 
 @dataclass(frozen=True)
@@ -42,6 +42,24 @@ class Job:
     url: str
     status: str  # queued | in_progress | completed
     conclusion: str = ""  # "" until completed
+
+
+def parse_runs(text: str) -> dict[str, tuple[int, str]]:
+    """The suites that run as a run of their own, as the command line gives them: a JSON object, suite id ->
+    {run, check} (what ``e2e-dispatch`` wrote). Each part is checked: it ends up in an API path and in a line name."""
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"the runs must be a JSON object: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("the runs must be an object of suite id to {run, check}")
+    out: dict[str, tuple[int, str]] = {}
+    for suite, item in raw.items():
+        run = item.get("run") if isinstance(item, dict) else None
+        if not isinstance(run, int) or isinstance(run, bool) or run < 1:
+            raise ValueError(f"invalid run for {suite!r}: {item!r}")
+        out[suite] = (run, validate_lines({suite: str(item.get("check", ""))})[suite])
+    return out
 
 
 def parse_lines(text: str) -> dict[str, str]:
@@ -125,6 +143,32 @@ def _result(job: Job | None) -> str:
     return {"success": "success", "cancelled": "cancelled"}.get(job.conclusion, "failure")
 
 
+def run_state(client: GitHubClient, repo: str, run_id: int) -> tuple[str, str, str, bool]:
+    """Where a suite that is a run of its own stands: (what its line says, the state of the line, where the line links,
+    whether the run is over). Waiting for a runner until a job of it runs, running until it ends, then its result by how
+    the run ended (a cancel and a crash count: the run is over and the suite did not pass)."""
+    repo = check_repo(repo)
+    run = get(client, f"/repos/{repo}/actions/runs/{int(run_id)}")
+    run_url = f"https://github.com/{repo}/actions/runs/{int(run_id)}"
+    jobs = [
+        j
+        for j in paginate(
+            client, f"/repos/{repo}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
+        )
+        if isinstance(j, Mapping)
+    ]
+    # the deepest job that ran, the one a person wants the logs of; the run when none is there yet
+    ran = [j for j in jobs if j.get("conclusion") != "skipped"]
+    best = max(ran, key=lambda j: (str(j.get("name", "")).count(" / "), str(j.get("started_at") or "")), default=None)
+    url = str(best.get("html_url") or run_url) if best else run_url
+    if run.get("status") == "completed":
+        result = {"success": "success", "cancelled": "cancelled"}.get(str(run.get("conclusion")), "failure")
+        return RESULT_TITLES[result], RESULT_STATES[result], url, True
+    if any(j.get("status") == "in_progress" for j in jobs):
+        return "Running", "pending", url, False
+    return "Waiting for a runner", "waiting", url, False
+
+
 def track(
     client: GitHubClient,
     repo: str,
@@ -137,13 +181,18 @@ def track(
     interval: float = 30,
     kind: str = "statuses",
     follow: bool = False,
+    runs: Mapping[str, tuple[int, str]] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> list[str]:
     """Write a line for each suite and update it until every suite's job is running (or the time is up). Returns the
     suites it wrote a line for. With ``follow`` it goes on until every job has ended, and each suite's line gets its
-    result as soon as that suite's job ends, so a suite that passed shows as passed while the others still run."""
+    result as soon as that suite's job ends, so a suite that passed shows as passed while the others still run.
+
+    ``runs`` (suite -> (run id, line name)) are the suites that run as a run of their own: their lines follow that run
+    instead of a job of this one, in the same loop, and end as the jobs do: running, or over with ``follow``."""
     sha = check_sha(sha)
+    own = {suite: (rid, validate_lines({suite: line})[suite]) for suite, (rid, line) in (runs or {}).items()}
     lines = validate_lines(lines)
     suites = list(lines)
     shown: dict[str, tuple[str, str]] = {}
@@ -165,11 +214,25 @@ def track(
             says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
             post_status(client, repo, sha, lines[suite], state, says, url, kind)
             shown[suite] = (description, url)
+        over = True
+        for suite, (rid, line) in own.items():
+            description, state, url, done = run_state(client, repo, rid)
+            over = over and (done if follow else state != "waiting")  # like the jobs of this run: running, or over
+            if suite in newer or shown.get(suite) == (description, url):
+                continue
+            current = newest_status(client, repo, sha, line, kind)
+            owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
+            if owner is not None and owner != rid:
+                newer.add(suite)  # a newer run of the suite has the line (it was run again): this run leaves it alone
+                continue
+            says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
+            post_status(client, repo, sha, line, state, says, url, kind)
+            shown[suite] = (description, url)
         if follow:
             finished = all(s in jobs and jobs[s].status == "completed" for s in suites)
         else:
             finished = all(s in jobs and jobs[s].status != "queued" for s in suites)
-        if finished or clock() >= deadline:
+        if (finished and over) or clock() >= deadline:
             return list(shown)
         sleep(interval)
 
