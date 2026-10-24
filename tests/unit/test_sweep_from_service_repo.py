@@ -169,3 +169,8 @@ def test_the_cleaner_runs_the_command_with_the_service_workflows_and_nothing_fro
         assert f"--workflow {workflow}" in script
     assert "${{" not in script, "nothing is expanded into the script"
     assert not [s for s in steps if "repository" in str(s.get("with", {})) and "checkout" in str(s.get("uses", ""))]
+
+
+def test_the_cleaner_serves_the_rehearsal_repository_osac_and_osac_test_infra() -> None:
+    matrix = load(CLEAN)["jobs"]["clean"]["strategy"]["matrix"]
+    assert matrix["repo"] == ["osac-ci-rehearsal", "osac", "osac-test-infra"]
