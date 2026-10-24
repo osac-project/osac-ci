@@ -225,6 +225,7 @@ class PrStatus:
     closed: str = ""  # "" while open | merged | closed (without merging)
     base: str = ""  # the branch it was or would be merged into
     blocked_by: tuple[str, ...] = ()
+    rerun: tuple[str, ...] = ()  # the suites (box ids) whose line says failed: the E2E row says how to run them again
 
 
 def _alert(kind: str, lines: Sequence[str]) -> list[str]:
@@ -304,7 +305,13 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
             )
         for name, view in (("CI", status.ci), ("Jira reference", status.jira), ("E2E", status.e2e)):
             if view is not None:
-                rows.append(_check_row(name, view))
+                row = _check_row(name, view)
+                if name == "E2E" and status.rerun and not over:
+                    # a failed suite can be run again at once, whatever the other suites are doing (it is a run of its
+                    # own); GitHub's own button waits for the whole run
+                    names = ", ".join(f"`{n}`" for n in status.rerun)
+                    row += f" · {names} failed: comment `/test {' '.join(status.rerun)}` to run again"
+                rows.append(row)
         if not over:
             queued = status.queue is not None and status.queue.state == "queued"
             if status.auto_merge:
@@ -423,6 +430,8 @@ def render_comment(
     with a checkbox each, collapsed) and the answer to the last request. Every box is unchecked: a box that was checked
     is cleared when the request has been answered."""
     summary = suites_summary(views)
+    if status is not None:
+        status = replace(status, rerun=tuple(v.suite for v in views if v.state == "failed" and v.current))
     lines = [
         MARKER,
         f"<!-- head:{sha} -->",
@@ -446,9 +455,9 @@ def render_comment(
     for view in views:
         link = f" ([run]({view.url}))" if view.url else ""
         via = f" (in the {view.covered_by} run)" if view.covered_by and view.state != "none" else ""
-        lines.append(
-            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {state_text(view.state, view.running)}{via}{link}"
-        )
+        again = " · tick the box to run it again" if view.state == "failed" and view.current else ""
+        shown = state_text(view.state, view.running)
+        lines.append(f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {shown}{via}{link}{again}")
     lines += ["", *history_lines(history), "</details>", "", NOTES_START]
     if notes.strip():
         lines += _alert("NOTE", notes.strip().splitlines())

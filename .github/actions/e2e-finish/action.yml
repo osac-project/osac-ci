@@ -34,6 +34,12 @@ inputs:
   selected-checks:
     description: JSON object, suite id -> line name, of every suite the change needs (the selected-checks output of decide)
     default: "{}"
+  suite-checks:
+    description: >-
+      JSON object, suite id -> line name, of the suites the run started (the suite-checks output of decide). When the run
+      failed, the lines of these suites decide what the E2E check says: a suite that was run again since, by hand, in a
+      run of its own, may have passed. Empty or {} keeps the result of the run as it is
+    default: "{}"
   kind:
     description: >-
       Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
@@ -58,6 +64,7 @@ runs:
         KIND: ${{ inputs.kind }}
         MANUAL: ${{ inputs.manual }}
         SELECTED: ${{ inputs.selected-checks }}
+        SUITE_CHECKS: ${{ inputs.suite-checks }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -76,6 +83,9 @@ runs:
         if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
         args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-url="$RUN_URL" --kind "$KIND")
         if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
+        if [ "${MANUAL:-false}" != "true" ] && [ -n "${SUITE_CHECKS:-}" ] && [ "${SUITE_CHECKS}" != "{}" ]; then
+          args+=("--suite-checks=$SUITE_CHECKS")
+        fi
         if [ "${MANUAL:-false}" = "true" ]; then
           selected="${SELECTED:-}"
           if [ -z "$selected" ]; then selected='{}'; fi
