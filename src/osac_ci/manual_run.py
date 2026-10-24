@@ -858,7 +858,7 @@ def status_of(
     return replace(status, queue=queue)
 
 
-# What a refused quiet edit answers (the caller did not grant the job `issues: write`): not an error, the app edits.
+# What a refused quiet edit answers (the caller did not grant the job `pull-requests: write`): not an error, the app edits.
 QUIET_FALLBACK = (401, 403, 404)
 
 
@@ -867,7 +867,7 @@ def edit_comment(
 ) -> Response:
     """Edit a comment. With ``edit_client`` (the workflow's own token) the edit is quiet: GitHub starts no workflow for
     what that token causes, so it wakes no ``issue_comment`` run in the repository, which every edit by the app does.
-    When the quiet token is refused (the caller gave the job no ``issues: write``) the edit is made with the main
+    When the quiet token is refused (the caller gave the job no ``pull-requests: write``) the edit is made with the main
     client, as before, so a caller that has not changed loses nothing but the quiet."""
     path = f"/repos/{repo}/issues/comments/{comment_id}"
     if edit_client is not None:

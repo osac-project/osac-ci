@@ -63,10 +63,9 @@ jobs:
     uses: osac-project/osac-ci/.github/workflows/e2e-pr-decide.yml@<sha>  # <tag>
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write  # v1.2.16: read, and the control comment is edited with the workflow's own token (see below)
       checks: read
       actions: write
-      issues: write  # v1.2.16: the control comment is edited with the workflow's own token (see below)
     secrets:
       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
 
@@ -103,7 +102,7 @@ jobs:
     uses: osac-project/osac-ci/.github/workflows/e2e-pr-finish.yml@<sha>  # <tag>
     permissions:
       contents: read
-      issues: write  # v1.2.16, as for decide
+      pull-requests: write  # v1.2.16, as for decide
     with:
       sha: ${{ needs.decide.outputs.sha }}
       suites: ${{ needs.decide.outputs.suites }}
@@ -262,10 +261,13 @@ ends as cancelled when it stops the run (it stops itself with the rest); that is
 Every edit of the control comment by the OSAC CI app starts an `issue_comment` run in the repository, which the decision
 then skips: on a busy day about half of the `issue_comment` runs of osac were the app's own edits. From v1.2.16 the
 decision and the result job create the comment with the app (so its author stays `osac-ci[bot]`) and edit it with the
-workflow's own token, which starts no workflow. For that the caller gives the `decide` and the `finish` job
-`issues: write` (a called job cannot have more permissions than its caller gives it, so a caller that moves to v1.2.16
-without it does not start the workflow: change the pin and the permissions in one pull request). A token that is refused
-makes the edit fall back to the app's, as before, so nothing is lost but the quiet.
+workflow's own token, which starts no workflow. For that the caller gives the `decide` job `pull-requests: write` (it
+had `read`) and the `finish` job `pull-requests: write` (a comment on a pull request needs it: tried on the rehearsal
+repository, `issues: write` alone is refused with 403 and `pull-requests: write` alone works). A called job cannot have
+more permissions than its caller gives it, so a caller that moves to v1.2.16 without it does not start the workflow:
+change the pin and the permissions in one pull request. Both jobs run code of the default branch only and put no pull
+request text in a shell, so the wider token is not reachable from a pull request. A token that is refused makes the edit
+fall back to the app's, as before, so nothing is lost but the quiet.
 
 ## Running service jobs from osac-ci for another repository
 

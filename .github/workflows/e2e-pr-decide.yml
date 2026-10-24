@@ -37,9 +37,10 @@
 #   * set `run-name` to something short a person can look for, such as `E2E #<pull request number> · <branch>` (see
 #     docs/CALLERS.md): the decision does not read it (the run of an older commit is found by the E2E line of that
 #     commit);
-#   * give the calling job at least these permissions: contents read, pull-requests read, checks read, actions write,
-#     issues write (the last one so that the control comment is edited with the workflow's own token: an edit made with
-#     that token starts no workflow, while every edit by the app wakes an `issue_comment` run that is then skipped);
+#   * give the calling job at least these permissions: contents read, pull-requests write, checks read, actions write
+#     (pull-requests write so that the control comment is edited with the workflow's own token: an edit made with that
+#     token starts no workflow, while every edit by the app wakes an `issue_comment` run that is then skipped; a comment
+#     on a pull request needs it, `issues: write` alone is refused);
 #   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`).
 name: E2E pull request decision
 
@@ -183,10 +184,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read  # check out the policy and the path filters of the default branch, and osac-ci itself
-      pull-requests: read  # the pull request, its reviews and files
+      pull-requests: write  # the pull request, its reviews and files; and the quiet edit of the control comment (edit-token)
       checks: read  # the check runs of the head commit, for the decision
       actions: write  # cancel the E2E of an older commit of the same pull request
-      issues: write  # edit the control comment quietly (see edit-token below)
     outputs:
       start: ${{ steps.report.outputs.start }}
       sha: ${{ steps.report.outputs.sha }}

@@ -64,7 +64,8 @@ def test_the_decision_and_the_result_edit_the_comment_with_the_workflows_own_tok
     decide, finish = DECIDE, ROOT / ".github" / "workflows" / "e2e-pr-finish.yml"
     for path, job in ((decide, "decide"), (finish, "finish")):
         wf = load(path)
-        assert wf["jobs"][job]["permissions"]["issues"] == "write"
+        assert wf["jobs"][job]["permissions"]["pull-requests"] == "write", "a comment on a pull request needs it"
+        assert "issues" not in wf["jobs"][job]["permissions"]
         step = next(s for s in wf["jobs"][job]["steps"] if s.get("uses") == "$/.github/actions/manual-comment")
         assert step["with"]["edit-token"] == "${{ github.token }}"
         assert step["with"]["github-token"] == "${{ steps.app-token.outputs.token }}", "the app still creates it"
