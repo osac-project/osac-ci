@@ -303,7 +303,7 @@ def statuses_permissions(name: str) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    ("name", "tokens"), [("e2e-pr-decide.yml", 1), ("e2e-pr-track.yml", 3), ("e2e-pr-finish.yml", 1)]
+    ("name", "tokens"), [("e2e-pr-decide.yml", 2), ("e2e-pr-track.yml", 3), ("e2e-pr-finish.yml", 1)]
 )
 def test_the_app_token_asks_for_statuses_write_only_when_the_lines_are_statuses(name: str, tokens: int) -> None:
     found = statuses_permissions(name)

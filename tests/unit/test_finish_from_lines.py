@@ -140,7 +140,10 @@ def test_the_result_job_settles_the_lines_before_the_check_is_written_and_passes
         if s.get("uses") == "$/.github/actions/e2e-finish" and s.get("if") == "inputs.manual != 'true'"
     )
     assert settle < plain, "the check is written from the lines, so the lines come first"
-    assert steps[plain]["with"]["suite-checks"] == "${{ inputs.suite-checks }}"
+    # with suites that run as runs of their own, the lines of every suite decide
+    with_ = steps[plain]["with"]
+    assert with_["suite-checks"] == "${{ inputs.dispatched != '[]' && inputs.all-suite-checks || inputs.suite-checks }}"
+    assert with_["dispatched"] == "${{ inputs.dispatched }}"
 
 
 def test_the_action_hands_the_suites_to_the_program_only_for_a_run_that_was_not_started_by_hand() -> None:
@@ -222,3 +225,25 @@ def test_the_result_job_goes_on_when_the_lines_could_not_be_completed_and_runs_o
         "queue": "max",
         "cancel-in-progress": False,
     }, "the check is written from the lines: two runs of this job must not read them at once, and none may be dropped"
+
+
+def test_the_action_passes_the_dispatched_suites_only_with_the_lines() -> None:
+    text = (ROOT / ".github/actions/e2e-finish/action.yml").read_text(encoding="utf-8")
+    assert load(".github/actions/e2e-finish/action.yml")["inputs"]["dispatched"]["default"] == "[]"
+    assert 'args+=("--dispatched=$DISPATCHED")' in text
+
+
+@pytest.fixture
+def seen(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    called: dict[str, str] = {}
+    monkeypatch.setattr(cli, "build_client", lambda: object())
+    for name in ("finish_from_lines", "finish_with_dispatched"):
+        monkeypatch.setattr(e2e_check, name, lambda *a, _n=name, **k: called.setdefault("by", _n) and "ok")
+    return called
+
+
+def test_the_command_adds_up_from_all_the_lines_when_suites_were_dispatched(seen: dict[str, str]) -> None:
+    args = ["e2e-finish", "--repo", REPO, "--sha", HEAD, "--result", "success", "--suite-checks", json.dumps(LINES)]
+    assert cli.main([*args, "--dispatched", '["vmaas"]']) == 0 and seen == {"by": "finish_with_dispatched"}
+    seen.clear()
+    assert cli.main(args) == 0 and seen == {"by": "finish_from_lines"}

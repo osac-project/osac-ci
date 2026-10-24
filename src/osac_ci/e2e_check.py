@@ -659,6 +659,85 @@ def finish_from_lines(
     return result
 
 
+RUNNING_SUFFIX = " running"  # the end of the text of a check that waits for suites that run as runs of their own
+
+
+def _waits_for_suites(existing: Existing | None) -> bool:
+    """Whether the check is the wait ``sum_from_lines`` writes (or the wait for a suite run again)."""
+    if existing is None or existing.phase is not Phase.WAITING:
+        return False
+    part = waiting_part(existing.description)
+    return part.startswith("Waiting: ") and part.endswith((RUNNING_SUFFIX, AGAIN_SUFFIX))
+
+
+def sum_from_lines(
+    client: GitHubClient, repo: str, sha: str, suite_checks: Mapping[str, str], run_url: str, kind: str = "checks"
+) -> str:
+    """The E2E check as the sum of the lines of the suites the change needs, for suites that run as runs of their own:
+    whoever sees one of them end (the run that started them, or the handler of the run that ended) adds them up.
+
+    A suite that is still going keeps the check waiting (it names the suites); when none is going, every suite passed is
+    ``Passed`` and anything less is ``Failed``. Only the claim of the run that started the suites, the wait this writes
+    and (for a pass) what ``replaceable`` allows are written over: a result that is already there stays."""
+    lines = validate_lines(suite_checks)
+    if not lines:
+        return "nothing to add up: the E2E check is left as it is"
+    latest = _latest_lines(client, repo, sha, lines)
+    states = {suite: line_state(latest, line) for suite, line in lines.items()}
+    existing = latest_check(client, repo, sha, kind)
+    own = run_of_url(run_url)
+    mine = (
+        existing is None
+        or _waits_for_suites(existing)
+        # the claim of the run that is writing, or of a run that ended without answering (a claim of a run that goes
+        # writes its own answer: this one would be a partial sum)
+        or (
+            existing.phase is Phase.RUNNING
+            and (existing.run_id == own or existing.run_id is None or not run_is_alive(client, repo, existing.run_id))
+        )
+    )
+    going = _running_again(client, repo, latest, lines, own)
+    if going:
+        if not mine:
+            return f"{', '.join(going)} still running, the E2E check is left as it is"
+        text = f"Waiting: {', '.join(going)}{RUNNING_SUFFIX}"
+        if existing is None or existing.description != text:
+            write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
+        return "waiting"
+    if all(state == "passed" for state in states.values()):
+        if not (mine or replaceable(existing)):
+            return "the E2E check already has its answer"
+        named = ", ".join(
+            f"{suite} ({tier})" if (tier := tier_of(latest[line].title)) else suite for suite, line in lines.items()
+        )
+        write_status(client, repo, sha, Write("success", describe(f"Passed: {named}")), run_url, kind)
+        return "passed"
+    if not mine:
+        return "the E2E check already has its answer"
+    left = ", ".join(suite for suite, state in states.items() if state != "passed")
+    write_status(client, repo, sha, Write("failure", describe(f"Failed: {left}")), run_url, kind)
+    return "failure"
+
+
+def finish_with_dispatched(
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    result: str,
+    run_url: str,
+    detail: str,
+    suite_checks: Mapping[str, str],
+    kind: str = "checks",
+) -> str:
+    """After the run that started the suites, when some of them run as runs of their own: ``suite_checks`` are all the
+    lines of the suites it started, ``result`` is how its own jobs ended. A pass of its own jobs is only part of the
+    answer, so the lines decide (``sum_from_lines``: waiting while a suite goes); a failure or a cancel is handled as
+    for a run of jobs only (``finish_from_lines``)."""
+    if result == "success":
+        return sum_from_lines(client, repo, sha, suite_checks, run_url, kind)
+    return finish_from_lines(client, repo, sha, result, run_url, detail, suite_checks, kind)
+
+
 def finish_by_hand(
     client: GitHubClient, repo: str, sha: str, selected: Mapping[str, str], run_url: str, kind: str = "checks"
 ) -> str:

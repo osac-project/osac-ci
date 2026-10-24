@@ -34,6 +34,7 @@ class Hub:
         self.pulls: dict[str, list[dict[str, Any]]] = {}  # commit -> pull requests that have it
         self.cancel_answer: dict[int, int] = {}
         self.cancelled: list[str] = []
+        self.dispatched: list[dict[str, Any]] = []  # runs started by workflow_dispatch: id, title, status
 
     def line(self, sha: str, run: int | None, description: str = "Running: vmaas", status: str = "in_progress",
              app: str = "osac-ci") -> None:  # fmt: skip
@@ -59,6 +60,10 @@ class Hub:
             return Response(200, {"check_runs": self.lines.get(m.group(1), [])})
         if method == "GET" and (m := re.fullmatch(rf"{BASE}/commits/([0-9a-f]{{40}})/pulls", path)):
             return Response(200, self.pulls.get(m.group(1), []))
+        if method == "GET" and path == f"{BASE}/actions/runs":
+            assert (params or {}).get("event") == "workflow_dispatch"
+            mine = [r for r in self.dispatched if r["status"] == (params or {}).get("status")]
+            return Response(200, {"workflow_runs": mine[(page - 1) * per : page * per]})
         if method == "POST" and (m := re.fullmatch(rf"{BASE}/actions/runs/(\d+)/cancel", path)):
             run = int(m.group(1))
             self.cancelled.append(m.group(1))
@@ -236,3 +241,39 @@ def test_a_head_that_is_no_longer_a_commit_of_the_pull_request_cancels_nothing()
     hub.line(C1, 11)
     hub.line(C3, 13)
     assert go(hub) == [] and hub.cancelled == []
+
+
+def suite_run(hub: Hub, run: int, sha: str, number: int = 7, suite: str = "vmaas", status: str = "in_progress") -> None:
+    hub.dispatched.append(
+        {"id": run, "display_title": f"E2E suite · {suite} · #{number} · {sha}", "status": status}
+    )  # fmt: skip
+
+
+def test_the_suites_started_as_runs_of_their_own_for_an_older_commit_are_cancelled_while_they_have_not_ended() -> None:
+    hub = Hub([C1, C2, HEAD])
+    suite_run(hub, 31, C1)
+    suite_run(hub, 32, C2, suite="caas", status="queued")
+    suite_run(hub, 33, HEAD)  # the head's own suite is never looked at
+    assert sorted(go(hub)) == sorted([(C1, 31), (C2, 32)]) and sorted(hub.cancelled) == ["31", "32"]
+
+
+def test_a_suite_run_of_another_pull_request_or_another_title_is_left_alone() -> None:
+    hub = Hub([C1, HEAD])
+    suite_run(hub, 41, C1, number=8)  # the same commit but another pull request's run
+    hub.dispatched.append({"id": 42, "display_title": f"Some run · {C1}", "status": "in_progress"})
+    hub.dispatched.append({"id": 43, "display_title": f"E2E suite · vmaas · #7 · {'f' * 40}", "status": "in_progress"})
+    assert go(hub) == [] and hub.cancelled == []
+
+
+def test_a_suite_run_of_a_commit_that_belongs_to_another_open_pull_request_is_not_cancelled() -> None:
+    hub = Hub([C1, HEAD])
+    suite_run(hub, 51, C1)
+    hub.pulls[C1] = [{"number": 7, "state": "open"}, {"number": 8, "state": "open"}]
+    assert go(hub) == [] and hub.cancelled == []
+
+
+def test_a_suite_run_that_finished_by_the_time_it_is_cancelled_is_not_an_error() -> None:
+    hub = Hub([C1, HEAD])
+    suite_run(hub, 61, C1)
+    hub.cancel_answer[61] = 409
+    assert go(hub) == [(C1, 61)]
