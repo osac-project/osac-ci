@@ -93,6 +93,14 @@ GitHub's own "Re-run" button, which waits for the whole run to end, is not neede
 line of each suite: when a run that failed ends, the check says `Passed` if every suite of it has passed since, waits
 while one is being run again (the run of the retest writes the answer when it ends), and says `Failed` otherwise.
 
+A suite whose job in the repository's policy names a `workflow` is started by the decision as a run of its own (a
+`workflow_dispatch` of that workflow, for the commit that was approved): its line links to that run, GitHub's own
+"Re-run" button of that run works at once, and the `E2E` check is still the sum of the lines of the suites the change
+needs. While one of them goes the check says `Waiting: <suite> running`; the end of the last one writes `Passed`
+(every line passed) or `Failed`. The end of a suite's run is believed only when the run is named the way the suite's
+workflow names it, belongs to the workflow the policy names for that suite, and its commit is still the head of the
+pull request. A new commit stops the runs of the older one.
+
 While the `E2E` check waits (a draft, an approval, a failed CI) and suites were started by hand, its text says what they
 do in front of the wait (`By hand: vmaas running, caas passed · Waiting: the pull request is a draft`); the check turns
 green only when every suite the change needs has passed.

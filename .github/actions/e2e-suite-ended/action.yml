@@ -1,0 +1,66 @@
+name: Add up a suite that ran as a run of its own
+description: >-
+  A suite that was started as a run of its own has ended: complete its line on the pull request with how the run ended,
+  then write the `E2E` check from the lines of the suites the pull request needs (waiting while one still goes, `Passed`
+  when every one passed, `Failed` otherwise). Called from the decision workflow of osac-ci on the `workflow_run` event of
+  the suite's workflow, pinned to a commit, like the other actions.
+
+# The event is not believed on its own: a person with write access can start a suite's workflow with any inputs. The
+# program checks that the name of the run is the one the suite's workflow gives it, that the workflow is the one the
+# policy names for that suite, and that the commit is still the head of the pull request (see
+# src/osac_ci/e2e_dispatch.py). This action never checks out the calling repository, so it cannot run pull request code.
+# Every input reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (checks write, actions read, pull requests read; statuses write for lines-kind statuses)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  policy-file:
+    description: The repository's E2E policy, read from its default branch (a path of the workspace)
+    required: true
+  run-id:
+    description: The id of the run that ended (github.event.workflow_run.id)
+    required: true
+  title:
+    description: The name of that run (github.event.workflow_run.display_title)
+    required: true
+  workflow-path:
+    description: The workflow file of that run (github.event.workflow_run.path)
+    required: true
+  lines-kind:
+    description: Where the lines are written, "statuses" or "checks" (the same as the other workflows of the flow)
+    default: checks
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Add up the suites
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        POLICY: ${{ inputs.policy-file }}
+        RUN_ID: ${{ inputs.run-id }}
+        TITLE: ${{ inputs.title }}
+        WORKFLOW_PATH: ${{ inputs.workflow-path }}
+        LINES_KIND: ${{ inputs.lines-kind }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$RUN_ID" in
+          "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
+        esac
+        case "$LINES_KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci e2e-suite-ended --policy "$POLICY" --repo "$REPO" --run-id "$RUN_ID" \
+          --title "$TITLE" --workflow-path "$WORKFLOW_PATH" --lines-kind "$LINES_KIND" \
+          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

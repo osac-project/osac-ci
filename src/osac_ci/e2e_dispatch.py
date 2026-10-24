@@ -22,9 +22,22 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from osac_ci.e2e_check import SUITE_ID, WORKFLOW_FILE, check_sha, describe, post_status, validate_lines
-from osac_ci.e2e_start import TIER, tiered
-from osac_ci.github.api import GitHubClient, check_repo, get
+from osac_ci.e2e_check import (
+    SUITE_ID,
+    WORKFLOW_FILE,
+    check_sha,
+    describe,
+    newest_status,
+    post_status,
+    run_of_url,
+    sum_from_lines,
+    tier_of,
+    validate_lines,
+)
+from osac_ci.e2e_start import TIER, suite_checks_for_files, suites_of, tiered
+from osac_ci.e2e_suites_check import run_state
+from osac_ci.github.api import GitHubClient, check_repo, get, paginate
+from osac_ci.policy import Policy
 
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")  # a branch name
 LOGIN = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?")
@@ -132,3 +145,52 @@ def dispatch_suites(
         post_status(writer, repo, sha, lines[suite], "waiting", tiered("Waiting for a runner", tier), url, lines_kind)
         started.append(Started(suite, run, url, lines[suite]))
     return started, failed
+
+
+def suite_ended(
+    client: GitHubClient,
+    repo: str,
+    run_id: int,
+    title: str,
+    workflow_path: str,
+    policy: Policy,
+    *,
+    lines_kind: str = "statuses",
+) -> str:
+    """A suite that ran as a run of its own has ended (the ``workflow_run`` event of its workflow): its line gets the
+    result, then the E2E check is added up from the lines of the suites the pull request needs (see ``sum_from_lines``).
+
+    What the event says is not believed on its own, since a person with write access can start the workflow with any
+    inputs: the title must be the one the suite's workflow gives its run, the workflow must be the one the policy names
+    for that suite, and the commit must still be the head of the pull request. A line that a newer run of the suite
+    owns is left alone."""
+    repo = check_repo(repo)
+    found = read_run_name(title)
+    if found is None:
+        return "not the run of a suite: nothing to do"
+    suite, number, sha = found
+    file = workflow_path.rsplit("/", 1)[-1]
+    mine = next((s for s in suites_of(policy) if s.name == suite and s.workflow == file), None)
+    if mine is None:
+        return f"{file} is not the workflow of the suite {suite} in the policy: nothing to do"
+    base = f"/repos/{repo}/pulls/{number}"
+    pr = get(client, base)
+    if str((pr.get("head") or {}).get("sha", "")) != sha:
+        return "the pull request has moved on to another commit: nothing to do"
+    description, state, url, over = run_state(client, repo, run_id)
+    if not over:
+        return "the run has not ended: nothing to do"
+    current = newest_status(client, repo, sha, mine.check, lines_kind)
+    owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
+    if owner is not None and owner != run_id:
+        return "a newer run of the suite owns its line: nothing to do"
+    says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
+    post_status(client, repo, sha, mine.check, state, says, url, lines_kind)
+    files: list[str] = []
+    for raw in paginate(client, f"{base}/files"):
+        files.append(str(raw["filename"]))
+        if raw.get("previous_filename"):
+            files.append(str(raw["previous_filename"]))
+    needed = dict(suite_checks_for_files(policy, files))
+    needed.setdefault(mine.name, mine.check)
+    return sum_from_lines(client, repo, sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")

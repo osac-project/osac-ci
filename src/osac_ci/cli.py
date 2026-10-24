@@ -451,6 +451,17 @@ def _parser() -> argparse.ArgumentParser:
     edis.add_argument("--run-url", default="", help="link of the workflow run that dispatches, shown on a failed line")
     edis.add_argument("--json-file", type=Path, help="write the runs started here, as JSON")
 
+    eend = sub.add_parser(
+        "e2e-suite-ended",
+        help="a suite that ran as a run of its own has ended: complete its line and add up the E2E check",
+    )
+    eend.add_argument("--policy", type=Path, required=True)
+    eend.add_argument("--repo", required=True, help="owner/name")
+    eend.add_argument("--run-id", type=int, required=True, help="the run of the suite that ended")
+    eend.add_argument("--title", required=True, help="the name of that run (its display title)")
+    eend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
+    eend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -464,6 +475,12 @@ def _parser() -> argparse.ArgumentParser:
         "--manual",
         action="store_true",
         help="the run was started by hand: write the E2E check only when every suite in --selected-checks has passed",
+    )
+    efin.add_argument(
+        "--dispatched",
+        default="[]",
+        metavar="JSON",
+        help="JSON list of the suite ids that run as runs of their own: the check is then added up from all the lines",
     )
     efin.add_argument(
         "--selected-checks", default="{}", metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
@@ -779,6 +796,23 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 3 if failed else 0
 
+    if args.command == "e2e-suite-ended":
+        try:
+            said = e2e_dispatch.suite_ended(
+                build_client(),
+                args.repo,
+                args.run_id,
+                args.title,
+                args.workflow_path,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"E2E suite: {said}")
+        return 0
+
     if args.command == "e2e-finish":
         try:
             if args.manual:
@@ -793,7 +827,11 @@ def main(argv: list[str] | None = None) -> int:
             suite_checks = json.loads(args.suite_checks)
             if not isinstance(suite_checks, dict):
                 raise ValueError("--suite-checks must be a JSON object")
-            said = e2e_check.finish_from_lines(
+            dispatched = json.loads(args.dispatched)
+            if not isinstance(dispatched, list):
+                raise ValueError("--dispatched must be a JSON list")
+            finisher = e2e_check.finish_with_dispatched if dispatched else e2e_check.finish_from_lines
+            said = finisher(
                 build_client(), args.repo, args.sha, args.result, args.run_url, args.detail, suite_checks, args.kind
             )
         except (GitHubError, KeyError, ValueError) as exc:

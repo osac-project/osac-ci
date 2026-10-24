@@ -18,13 +18,24 @@ on:
         type: string
         required: true
       suites:
-        description: The decision's `suites` (JSON list)
+        description: The decision's `suites` (JSON list; the suites that run as jobs of the caller's run)
         type: string
         required: true
       suite-checks:
         description: The decision's `suite-checks`
         type: string
         required: true
+      dispatched:
+        description: >-
+          The decision's `dispatched` (JSON list of the suites that run as runs of their own). When it is not empty the
+          `E2E` check is added up from the lines of every suite (`all-suite-checks`), and waits while a dispatched suite
+          goes: whoever sees the last one end writes the answer (the `suite-ended` job of the decision workflow)
+        type: string
+        default: "[]"
+      all-suite-checks:
+        description: The decision's `all-suite-checks` (the lines of the dispatched suites too); used with `dispatched`
+        type: string
+        default: "{}"
       results:
         description: The caller's toJSON(needs)
         type: string
@@ -93,6 +104,7 @@ jobs:
           RESULTS: ${{ inputs.results }}
           SUITES: ${{ inputs.suites }}
           NON_SUITE: ${{ inputs.non-suite-jobs }}
+          DISPATCHED: ${{ inputs.dispatched }}
         run: |
           set -euo pipefail
           # the suites that ran are the jobs that were not skipped; the decision and the tracker are not suites
@@ -102,8 +114,9 @@ jobs:
             result=failure
           elif jq -e --arg non "${NON_SUITE}" "${ran} | any(. == \"cancelled\")" <<<"${RESULTS}" >/dev/null; then
             result=cancelled
-          elif jq -e --arg non "${NON_SUITE}" "${ran} | length == 0" <<<"${RESULTS}" >/dev/null; then
-            # the decision said start but no suite ran: do not report a pass
+          elif jq -e --arg non "${NON_SUITE}" "${ran} | length == 0" <<<"${RESULTS}" >/dev/null &&
+            jq -e 'length == 0' <<<"${DISPATCHED}" >/dev/null; then
+            # the decision said start but no suite ran (and none was started as a run of its own): do not report a pass
             result=failure
           elif jq -e --argjson suites "${SUITES}" '. as $r | any($suites[]; ($r[.].result // "missing") != "success")' \
             <<<"${RESULTS}" >/dev/null; then
@@ -148,7 +161,9 @@ jobs:
           sha: ${{ inputs.sha }}
           result: ${{ steps.result.outputs.result }}
           detail: ${{ steps.result.outputs.suites }}
-          suite-checks: ${{ inputs.suite-checks }}
+          # with suites that run as runs of their own, the lines of all of them decide (see `dispatched`)
+          suite-checks: ${{ inputs.dispatched != '[]' && inputs.all-suite-checks || inputs.suite-checks }}
+          dispatched: ${{ inputs.dispatched }}
       - uses: $/.github/actions/e2e-finish
         if: inputs.manual == 'true'
         with:

@@ -45,7 +45,7 @@ run-name: >-
 
 on:
   workflow_run:
-    workflows: ["CI", "E2E review relay", "E2E comment"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name, comment-workflow-name)
+    workflows: ["CI", "E2E review relay", "E2E comment"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name, comment-workflow-name); add the name of each suite workflow that runs as a run of its own (see below)
     types: [requested, completed]
     branches-ignore: ["gh-readonly-queue/**"]  # the CI run of a merge queue entry is no pull request: no run for it
   issue_comment:
@@ -78,6 +78,7 @@ jobs:
     with:
       sha: ${{ needs.decide.outputs.sha }}
       suite-checks: ${{ needs.decide.outputs.suite-checks }}
+      dispatched-runs: ${{ needs.decide.outputs.dispatched-runs }}   # only with suites that run as runs of their own
     secrets:
       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
 
@@ -107,6 +108,8 @@ jobs:
       sha: ${{ needs.decide.outputs.sha }}
       suites: ${{ needs.decide.outputs.suites }}
       suite-checks: ${{ needs.decide.outputs.suite-checks }}
+      dispatched: ${{ needs.decide.outputs.dispatched }}                     # only with suites that run as runs of their own
+      all-suite-checks: ${{ needs.decide.outputs.all-suite-checks }}         # (the same)
       number: ${{ needs.decide.outputs.number }}
       manual: ${{ needs.decide.outputs.manual }}
       selected-checks: ${{ needs.decide.outputs.selected-checks }}
@@ -203,6 +206,26 @@ one: `tier: ${{ fromJSON(needs.decide.outputs.tiers).caas || '' }}`. The line of
 ("Running · regression"). A request for a suite that is running with another tier stops that run (the decision workflow
 does it, with its own token: nothing to add to the caller) and starts the one asked for; a request is read from the
 event, so a rewrite of the comment between the click and the decision does not take it away.
+A suite can also **run as a run of its own**: its policy job names the file of its workflow (`workflow:
+e2e-vmaas-full-install.yml`; not for a variant), and the decision starts that workflow with `workflow_dispatch` instead
+of the caller having a job for it. Each suite is then a run that can be run again the moment it ends (GitHub's own
+"Re-run" button of that run, or `/test <suite>`) whatever the other suites are doing; without it, GitHub's button waits for
+the whole run. It is opt-in per suite, the other suites stay jobs of the caller, and nothing else changes: the `E2E` check
+is still the sum of the lines of the suites the change needs. To make a suite one:
+- its workflow takes the inputs `repo`, `sha`, `pr-number`, `fork-pr-author` and `fork-pr-author-association` (and `tier`
+  when it has a variant) on `workflow_dispatch` (it may keep its other inputs, which have defaults), keeps its authorization
+  of a fork pull request, and names its run `run-name: E2E suite · <suite id> · #<pr-number> · <sha>` (the run is
+  recognised by that name when it ends, so the format is exact: the suite id of the policy, the number, the 40 digit
+  commit);
+- the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
+  the suite's job from `finish`'s `needs`, and passes `dispatched-runs` to `track` and `dispatched` and `all-suite-checks` to
+  `finish` (without them a dispatched suite is started but not followed);
+- `decide` already has `actions: write`; the workflow's own token starts the runs (a `workflow_dispatch` is the one
+  event that token may start) and the app writes the lines.
+While a dispatched suite goes, the `E2E` check says `Waiting: <suite> running`; whoever sees the last suite end (the run that
+started them, or the end of the suite's run, heard by the `suite-ended` job of the decision workflow) writes the answer, and
+a suite that could not be started has a failed line saying so. A newer commit stops the dispatched runs of the older one.
+
 The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
 on the head commit (and by whom), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
 request is in the merge queue (in it, with its place; taken out, with why; or not queued); a draft and a merge conflict get

@@ -40,6 +40,12 @@ inputs:
       failed, the lines of these suites decide what the E2E check says: a suite that was run again since, by hand, in a
       run of its own, may have passed. Empty or {} keeps the result of the run as it is
     default: "{}"
+  dispatched:
+    description: >-
+      JSON list of the suites that run as runs of their own (the dispatched output of decide). When it is not empty,
+      suite-checks must hold the lines of every suite the decision started, and the E2E check is added up from them: it
+      waits while a dispatched suite goes, and is written by whoever sees the last one end
+    default: "[]"
   kind:
     description: >-
       Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
@@ -65,6 +71,7 @@ runs:
         MANUAL: ${{ inputs.manual }}
         SELECTED: ${{ inputs.selected-checks }}
         SUITE_CHECKS: ${{ inputs.suite-checks }}
+        DISPATCHED: ${{ inputs.dispatched }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -85,6 +92,7 @@ runs:
         if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
         if [ "${MANUAL:-false}" != "true" ] && [ -n "${SUITE_CHECKS:-}" ] && [ "${SUITE_CHECKS}" != "{}" ]; then
           args+=("--suite-checks=$SUITE_CHECKS")
+          if [ -n "${DISPATCHED:-}" ] && [ "${DISPATCHED}" != "[]" ]; then args+=("--dispatched=$DISPATCHED"); fi
         fi
         if [ "${MANUAL:-false}" = "true" ]; then
           selected="${SELECTED:-}"
