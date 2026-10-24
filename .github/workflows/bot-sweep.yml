@@ -210,6 +210,12 @@ jobs:
             echo "PR #${NUMBER} is not a Konflux pull request; nothing to do"
             exit 0
           fi
+          # The list leaves out what is closed or a draft, but a number given by hand, or a pull request that changed since
+          # the list was made, can be either: a closed or draft pull request gets no title, label or approval from here.
+          if [[ "$(jq -r '.state == "open" and (.draft | not)' <<<"${pull}")" != "true" ]]; then
+            echo "PR #${NUMBER} is closed or a draft; nothing to do"
+            exit 0
+          fi
           # held runs are approved only for a branch of this repository, never for a fork
           if [[ "$(jq -r '.head.repo.full_name == .base.repo.full_name' <<<"${pull}")" != "true" ]]; then
             echo "PR #${NUMBER} is from a fork; nothing to do"
