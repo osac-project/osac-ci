@@ -263,6 +263,9 @@ def tier_of(description: str) -> str:
     return tail if head and sep and TIER.fullmatch(tail) else ""
 
 
+CLAIM_TITLE = "Running"  # what the E2E check of a run that claimed it says (see e2e_check.RUNNING_PREFIX)
+
+
 def _running_by_hand(
     suite: Suite, latest: Mapping[str, CheckRun], live_runs: frozenset[int], claim_run: int | None
 ) -> bool:
@@ -360,7 +363,13 @@ def decide(inputs: Inputs) -> Decision:
     # A suite whose line waits or runs in a run that is alive, and that is not the run that claimed the E2E, is being
     # run by hand: starting it again would run it twice (and the line follows the newer run). The automatic start
     # leaves it alone and starts the others; the sum of the suites is then written when every one of them has passed.
-    claim_run = run_of_url(answer.url) if answer is not None and answer.status != "completed" else None
+    # Only a check that says "Running" is the claim of its run: a waiting one ("By hand: ... · Waiting: ...") links to
+    # the run of the suites that were started by hand, and must not excuse them.
+    claim_run = (
+        run_of_url(answer.url)
+        if answer is not None and answer.status != "completed" and answer.title.startswith(CLAIM_TITLE)
+        else None
+    )
     held = tuple(s for s in todo if _running_by_hand(s, latest, inputs.live_runs, claim_run))
     todo = tuple(s for s in todo if s not in held)
     if not todo and held:
