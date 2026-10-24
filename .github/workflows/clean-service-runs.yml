@@ -1,0 +1,73 @@
+---
+# Deletes, from here, the runs of the service workflows of the repositories that osac-ci serves that ended *skipped*.
+# The E2E decision, the early comment and the review relay wake up on every comment, review and CI event of a
+# repository, and most wake-ups have nothing to do: they would fill the Actions tab of a repository whose people never
+# asked for them (on a busy day about half of the runs of osac were of that kind). Running the cleaner from the service
+# repository keeps the product repository's list to the runs that did something.
+#
+# Only a run that ended skipped is deleted, and only a few minutes after it ended: a run that failed, was cancelled or
+# passed is evidence and stays. The rule is in src/osac_ci/clean_runs.py (and its tests). The token is the OSAC CI app's,
+# made for the one repository and with the one permission it needs (actions: write); nothing of the repository is checked
+# out or run here, only osac-ci itself.
+#
+# This workflow is not pinned by a caller: it runs from the default branch of osac-ci (a schedule always does), so a
+# change to it needs the review of @osac-project/wg-infra like any other. To add a repository, add it to the matrix.
+name: Clean service runs
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: List what would be deleted and delete nothing
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: clean-service-runs
+  cancel-in-progress: false
+
+jobs:
+  clean:
+    name: Clean ${{ matrix.repo }}
+    if: github.repository == 'osac-project/osac-ci'
+    strategy:
+      fail-fast: false
+      matrix:
+        # the rehearsal repository first; osac and osac-test-infra join once a sweep has been seen to work
+        repo: [osac-ci-rehearsal]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read  # check out osac-ci itself
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Token of the OSAC CI app, for the runs of one repository
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: "4966101"
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          owner: osac-project
+          repositories: ${{ matrix.repo }}
+          permission-actions: write  # list the runs of a workflow and delete one
+      - name: Install uv
+        run: pipx install uv==0.11.21
+      - name: Install dependencies
+        run: uv sync --locked
+      - name: Delete the skipped runs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ matrix.repo }}
+          DRY_RUN: ${{ inputs.dry-run && '--dry-run' || '' }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086  # DRY_RUN is empty or one flag
+          uv run osac-ci clean-runs --repo "osac-project/${REPO}" \
+            --workflow e2e-pr.yml --workflow e2e-comment.yml --workflow e2e-review-relay.yml ${DRY_RUN} \
+            | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
