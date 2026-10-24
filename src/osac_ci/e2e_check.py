@@ -714,8 +714,12 @@ def sum_from_lines(
         return "passed"
     if not mine:
         return "the E2E check already has its answer"
-    left = ", ".join(suite for suite, state in states.items() if state != "passed")
-    write_status(client, repo, sha, Write("failure", describe(f"Failed: {left}")), run_url, kind)
+    failed = [suite for suite, state in states.items() if state == "failed"]
+    if not failed:
+        # a suite with no line has reported nothing (it did not start, or its line is not written yet): that is not a
+        # failure of it, so the check is left as it is (a later decision or retest settles it)
+        return "a suite has no line yet and none failed: the E2E check is left as it is"
+    write_status(client, repo, sha, Write("failure", describe(f"Failed: {', '.join(failed)}")), run_url, kind)
     return "failure"
 
 
