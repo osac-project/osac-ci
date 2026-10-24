@@ -45,10 +45,11 @@ def test_the_auto_merge_job_refreshes_the_status_after_it_has_enabled_auto_merge
     assert last["continue-on-error"] is True, "a failed refresh must not fail the job"
     assert last["with"]["number"] == "${{ needs.decide.outputs.approved-number }}"
     assert last["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"
+    assert last["with"]["edit-token"] == "${{ github.token }}", "the refresh is quiet: it wakes no issue_comment run"
     token = steps[0]["with"]
     assert token["permission-checks"] == "read" and token["permission-issues"] == "write"
     assert token["permission-pull-requests"] == "write"
-    assert job["permissions"] == {}
+    assert job["permissions"] == {"pull-requests": "write"}, "only for the quiet edit; auto-merge uses the app token"
 
 
 def test_both_actions_take_the_quiet_edit_token_and_drop_it_when_empty() -> None:

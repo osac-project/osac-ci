@@ -227,4 +227,4 @@ def test_the_decision_workflow_uses_the_action_right_after_the_app_token() -> No
         "number": "${{ needs.decide.outputs.approved-number }}",
         "head-sha": "${{ needs.decide.outputs.approved-sha }}",
     }
-    assert job["permissions"] == {}
+    assert job["permissions"] == {"pull-requests": "write"}, "only for the quiet edit of the comment"

@@ -444,7 +444,8 @@ jobs:
     if: needs.decide.outputs.approved == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      pull-requests: write  # only to edit the control comment quietly (edit-token below); auto-merge uses the app's token
     steps:
       # The token of the OSAC CI app, not the workflow's: a pull request queued with the workflow's token starts no
       # workflow for the queue (GitHub does not run workflows for what that token causes), so it would wait for its
@@ -473,5 +474,6 @@ jobs:
         continue-on-error: true
         with:
           github-token: ${{ steps.app-token.outputs.token }}
+          edit-token: ${{ github.token }}  # an edit with it starts no workflow
           repo: ${{ github.repository }}
           number: ${{ needs.decide.outputs.approved-number }}
