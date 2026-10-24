@@ -85,6 +85,12 @@ def waiting_part(description: str) -> str:
     return description
 
 
+def wait_state(states: Mapping[str, str]) -> str:
+    """The state of a waiting check: ``pending`` (in progress, the page spins) while a suite started by hand is going,
+    else ``waiting`` (queued)."""
+    return "pending" if "active" in states.values() else "waiting"
+
+
 def with_by_hand(states: Mapping[str, str], waiting: str) -> str:
     front = by_hand_text(states)
     return describe(f"{front} · {waiting}" if front else waiting)
@@ -222,7 +228,7 @@ def _by_hand(entry: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callable[[int], bool]) -> Outcome:
-    write = Write("waiting", waiting_description(entry))
+    write = Write(wait_state(_by_hand(entry)), waiting_description(entry))
     if existing is None:
         return Outcome("waiting", False, (write,))
     if existing.phase is Phase.WAITING:
@@ -243,7 +249,7 @@ def _hand_writes(entry: Mapping[str, Any], existing: Existing | None) -> tuple[W
     states = {s: st for s, st in _by_hand(entry).items() if s in counted}
     states.update({s: "active" for s in _suites(entry) if s in counted})
     text = with_by_hand(states, waiting_part(existing.description))
-    return () if text == existing.description else (Write("waiting", text),)
+    return () if text == existing.description else (Write(wait_state(states), text),)
 
 
 def _claim(entry: Mapping[str, Any]) -> Write:
@@ -565,7 +571,7 @@ def finish_by_hand(
         if existing is not None and existing.phase is Phase.WAITING:
             text = with_by_hand(states, waiting_part(existing.description))
             if text != existing.description:
-                write_status(client, repo, sha, Write("waiting", text), run_url, kind)
+                write_status(client, repo, sha, Write(wait_state(states), text), run_url, kind)
         return f"not every suite has passed yet ({left}): the E2E check is not turned green"
     if not replaceable(existing):
         return "the E2E check already passed or a run is running it"
