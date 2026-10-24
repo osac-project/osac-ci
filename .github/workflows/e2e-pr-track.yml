@@ -20,6 +20,12 @@ on:
         description: The decision's `suite-checks`
         type: string
         required: true
+      dispatched-runs:
+        description: >-
+          The decision's `dispatched-runs`: JSON object, suite id -> {run, check}, of the suites started as runs of their
+          own, whose lines follow those runs. `{}` when none
+        type: string
+        default: "{}"
       timeout:
         description: Seconds to track before stopping, kept below the one hour life of the app token
         type: string
@@ -72,6 +78,7 @@ jobs:
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
+          runs: ${{ inputs.dispatched-runs }}
           follow: "true"
           timeout: ${{ inputs.timeout }}
       - name: Token of the OSAC CI app, for the E2E lines (round 2)
@@ -91,6 +98,7 @@ jobs:
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
+          runs: ${{ inputs.dispatched-runs }}
           follow: "true"
           timeout: ${{ inputs.timeout }}
       - name: Token of the OSAC CI app, for the E2E lines (round 3)
@@ -110,5 +118,6 @@ jobs:
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
+          runs: ${{ inputs.dispatched-runs }}
           follow: "true"
           timeout: ${{ inputs.timeout }}

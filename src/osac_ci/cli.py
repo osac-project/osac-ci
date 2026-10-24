@@ -526,6 +526,12 @@ def _parser() -> argparse.ArgumentParser:
     strack.add_argument(
         "--suite-checks", required=True, metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
     )
+    strack.add_argument(
+        "--runs",
+        default="{}",
+        metavar="JSON",
+        help="JSON object: suite id -> {run, check} of the suites that run as a run of their own (from e2e-dispatch)",
+    )
     strack.add_argument("--timeout", type=float, default=7200, help="seconds to wait for the jobs to get a runner")
     strack.add_argument("--interval", type=float, default=30, help="seconds between looks")
     strack.add_argument(
@@ -645,6 +651,7 @@ def _e2e_suites(args: argparse.Namespace) -> int:
                 build_client(), args.repo, args.sha, args.run_id, args.run_url,
                 e2e_suites_check.parse_lines(args.suite_checks),
                 timeout=args.timeout, interval=args.interval, kind=args.kind, follow=args.follow,
+                runs=e2e_suites_check.parse_runs(args.runs),
             )  # fmt: skip
         else:
             ids = e2e_suites_check.settle(
@@ -767,7 +774,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {suite} could not be started", file=sys.stderr)
         if args.json_file is not None:
             args.json_file.write_text(
-                json.dumps({"runs": {s.suite: s.run for s in started}, "failed": failed}), encoding="utf-8"
+                json.dumps({"runs": {s.suite: {"run": s.run, "check": s.check} for s in started}, "failed": failed}),
+                encoding="utf-8",
             )
         return 3 if failed else 0
 

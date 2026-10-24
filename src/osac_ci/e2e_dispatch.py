@@ -40,6 +40,7 @@ class Started:
     suite: str
     run: int
     url: str
+    check: str = ""  # the line of the suite
 
 
 def run_name(suite: str, number: int, sha: str) -> str:
@@ -129,5 +130,5 @@ def dispatch_suites(
             continue
         url = f"https://github.com/{repo}/actions/runs/{run}"
         post_status(writer, repo, sha, lines[suite], "waiting", tiered("Waiting for a runner", tier), url, lines_kind)
-        started.append(Started(suite, run, url))
+        started.append(Started(suite, run, url, lines[suite]))
     return started, failed
