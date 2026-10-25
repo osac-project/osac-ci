@@ -220,6 +220,7 @@ def verify_suite_inputs(client: GitHubClient, repo: str, number: int, sha: str, 
         return "", ""
     author = str((pull.get("user") or {}).get("login") or "")
     association = str(pull.get("author_association") or "")
-    if not LOGIN.fullmatch(author) or not ASSOCIATION.fullmatch(association):
+    # a fork's association is never empty on GitHub: an empty one here is a read that failed, so it does not pass
+    if not LOGIN.fullmatch(author) or not association or not ASSOCIATION.fullmatch(association):
         raise ValueError("the author of the pull request could not be read")
     return author, association
