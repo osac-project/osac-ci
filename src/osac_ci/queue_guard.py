@@ -69,13 +69,14 @@ def required_failures(
     quiet: set[int] | None = None,
 ) -> list[str]:
     """The failed jobs of the other runs on the commit that belong to a workflow providing a required check (a run with
-    a job named like a required check: ``CI``, ``jira-reference``). A failed job of such a run settles the entry
-    whether or not the job is itself the required one, since the check is the sum of the run's jobs, and so does a
-    run that has ended without passing (GitHub's jobs list can lag behind it). Runs of workflows that provide no
-    required check (CodeQL, say) are left alone, so an optional failure does not stop the entry.
+    a workflow or a job named like a required check: ``CI``, ``jira-reference``). A failed job of such a run settles
+    the entry whether or not the job is itself the required one, since the check is the sum of the run's jobs, and so
+    does a run that has ended without passing (GitHub's jobs list can lag behind it). Runs of workflows that provide
+    no required check (CodeQL, say) are left alone, so an optional failure does not stop the entry.
 
-    ``quiet`` (kept by the caller between looks) holds the runs that need no more reading: the ones that provide no
-    required check, and the ones that have ended without failing. The jobs of the other runs are read once per look."""
+    ``quiet`` (kept by the caller between looks) holds the runs that need no more reading: the ones that ended
+    providing no required check, and the ones that have ended without failing. The jobs of the other runs are read once
+    per look."""
     found: list[str] = []
     for run in _runs_of(client, repo, sha):
         run_id = int(str(run.get("id")))
@@ -87,9 +88,15 @@ def required_failures(
                 quiet.add(run_id)  # it ended without failing: its jobs need not be read
             continue
         jobs = _jobs_of(client, repo, run_id)
-        # A run that provides a required check has a job named like it. A list with no job at all is no evidence
-        # that it does not (GitHub fills the list late): only a list with other jobs says it provides none.
-        if jobs and not any(str(j.get("name")) in required for j in jobs):
+        # A run provides a required check when its workflow is named like one (the run `CI` provides `CI`) or it has a
+        # job named like one. Neither is certain early: the job that is the check (the last job of `CI`, which waits
+        # for every other) is only created when the others have ended, so a failed job is counted as soon as the
+        # workflow is known to provide a check, and a run that still goes is never set aside for good by its job list.
+        # A list with no job at all is no evidence either (GitHub fills the list late).
+        provides = str(run.get("name")) in required or any(str(j.get("name")) in required for j in jobs)
+        if jobs and not provides:
+            if not ended:
+                continue  # may still get the job that is the check: look again at the next look
             if quiet is not None:
                 quiet.add(run_id)
             continue
