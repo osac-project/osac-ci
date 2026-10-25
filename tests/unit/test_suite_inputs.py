@@ -73,6 +73,13 @@ def test_an_author_that_is_not_a_login_is_refused(login: str) -> None:
         verify(Gh(head_repo="alice/r", login=login), head_repo="alice/r")
 
 
+@pytest.mark.parametrize("assoc", ["", None])
+def test_a_fork_with_no_association_is_refused_a_commit_of_the_repository_needs_none(assoc: str | None) -> None:
+    with pytest.raises(ValueError, match="could not be read"):
+        verify(Gh(head_repo="alice/r", assoc=assoc), head_repo="alice/r")  # type: ignore[arg-type]
+    assert verify(Gh(assoc=assoc)) == ("", "")  # type: ignore[arg-type]
+
+
 def test_an_association_that_is_not_one_is_refused() -> None:
     with pytest.raises(ValueError, match="could not be read"):
         verify(Gh(head_repo="alice/r", assoc="member; id"), head_repo="alice/r")
