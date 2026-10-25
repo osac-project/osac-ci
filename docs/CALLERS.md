@@ -219,10 +219,31 @@ is still the sum of the lines of the suites the change needs. To make a suite on
   recognised by that name when it ends, so the format is exact: the suite id of the policy, the number, the 40 digit
   commit);
 - anyone with write access can start the workflow with any inputs, so its first job must check them against the pull
-  request: `verify: uses: osac-project/osac-ci/.github/workflows/suite-inputs.yml@<sha>` with `repo`, `sha` and
-  `pr-number` (the job `permissions: contents: read, pull-requests: read`). It fails when the commit is not the head of the
-  pull request or the repository does not hold it, and its outputs `fork-author` and `fork-association` (read from the
-  pull request) replace the two dispatch inputs of the same name, which the suite must not use;
+  request, and the suite's job must `needs` it (it then runs only when the check passed):
+  ```yaml
+  jobs:
+    verify:
+      permissions: {contents: read, pull-requests: read}
+      uses: osac-project/osac-ci/.github/workflows/suite-inputs.yml@<sha>  # <tag>
+      with:
+        repo: ${{ inputs.repo }}
+        sha: ${{ inputs.sha }}
+        pr-number: ${{ inputs.pr-number }}
+    vmaas:
+      needs: verify
+      uses: ./.github/workflows/e2e-vmaas-full-install.yml
+      with:
+        test-infra-repository: ${{ inputs.repo }}      # checked by `verify`: the repository that holds the head
+        test-infra-ref: ${{ inputs.sha }}              # checked by `verify`: the head of the pull request
+        pr-number: ${{ inputs.pr-number }}
+        fork-pr-author: ${{ needs.verify.outputs.fork-author }}                  # read from the pull request
+        fork-pr-author-association: ${{ needs.verify.outputs.fork-association }} # read from the pull request
+  ```
+  `verify` fails when the commit is not the head of the pull request or the repository does not hold it, so `repo`, `sha`
+  and `pr-number` may be used as they are in the jobs that need it. The fork author and association are not inputs to
+  trust: the dispatch inputs `fork-pr-author` and `fork-pr-author-association` (the decision sends them, so the workflow
+  must declare them) are ignored, and the suite gets the verified outputs `fork-author` and `fork-association` instead
+  (empty for a commit of the repository itself);
 - the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
   the suite's job from `finish`'s `needs`, and passes `dispatched-runs` to `track` and `dispatched` and `all-suite-checks` to
   `finish` (without them a dispatched suite is started but not followed);
