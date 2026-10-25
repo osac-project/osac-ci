@@ -415,7 +415,11 @@ def test_one_job_watches_then_always_tells_the_check_and_stops_what_runs_after_t
     assert (
         finish["with"]["kind"] == "checks" and finish["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"
     )
-    assert stop["if"] == "always() && steps.verdict.outputs.stop == 'true'" and stop["with"]["phase"] == "stop"
+    # off unless the caller turns it on: a cancelled suite can leave its cluster behind on the CI host
+    assert stop["if"] == "always() && steps.verdict.outputs.stop == 'true' && inputs.cancel-runs"
+    assert stop["with"]["phase"] == "stop"
+    switch = load(WORKFLOW)[True]["workflow_call"]["inputs"]["cancel-runs"]
+    assert switch["type"] == "boolean" and switch["default"] is False
 
 
 def test_the_app_token_is_made_after_the_watch_and_the_watch_holds_only_the_built_in_token() -> None:

@@ -49,6 +49,13 @@ on:
         description: The suites the plan selected (`needs.plan.outputs.suites`, a JSON list)
         type: string
         default: "[]"
+      cancel-runs:
+        description: >-
+          Stop the other runs of the commit when the entry's check fails (the CI run and the other suites). Off by
+          default: a suite that is cancelled can leave its cluster behind on the CI host (a cancel may cut the teardown
+          short), so the suites run to their end and only the `E2E` check is written at once.
+        type: boolean
+        default: false
       timeout:
         description: Seconds to watch before giving up
         type: string
@@ -122,7 +129,7 @@ jobs:
           detail: ${{ steps.verdict.outputs.detail }}
       # After the check is written: stop what still runs for the commit (the other suites, CI), this run last.
       - name: Stop what still runs
-        if: always() && steps.verdict.outputs.stop == 'true'
+        if: always() && steps.verdict.outputs.stop == 'true' && inputs.cancel-runs
         uses: $/.github/actions/e2e-queue-guard
         with:
           phase: stop

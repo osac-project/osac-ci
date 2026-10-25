@@ -265,6 +265,13 @@ auto-merge events are heard by the `E2E comment` workflow (above), which rewrite
 pull request, for a pull request with a merge conflict too (GitHub starts no `pull_request` workflow for one).
 The rules are in [`RULES.md`](RULES.md).
 
+**Cancels are off by default (v1.3.4).** The decision no longer stops the E2E runs of an older commit when a newer one is
+decided on (`cancel-older-runs`, input of `e2e-pr-decide.yml`, default `false`), and the queue result no longer stops the
+other runs of a failed entry (`cancel-runs`, input of `e2e-queue-result.yml`, default `false`; the `E2E` check is still
+written at once). A cancelled suite can leave its cluster behind on the CI host (a cancel may cut the teardown short), so
+the suites run to their end. A request by hand that replaces a suite running with another tier still stops that run. Pass
+`true` to turn a cancel back on once the teardown is known to survive one.
+
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)
 
 `plan: uses: ...e2e-queue-plan.yml@<sha>` (job permissions: contents read, actions write), one suite job per suite with

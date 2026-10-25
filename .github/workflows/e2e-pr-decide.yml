@@ -75,6 +75,14 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         description: Id of the OSAC CI app
         type: string
         default: "4966101"
+      cancel-older-runs:
+        description: >-
+          Stop the E2E runs of an older commit of the pull request when a newer commit is decided on (the suites and the
+          dispatched suite runs). Off by default: a suite that is cancelled can leave its cluster behind on the CI host (a
+          cancel may cut the teardown short), so an older commit's suites run to their end. A request by hand that replaces
+          a suite running with another tier still stops that run: a person asked for it.
+        type: boolean
+        default: false
       lines-kind:
         description: >-
           Where the lines of the suites (`E2E / VMaaS Full Install`) are written: `checks` (check runs of the app, with a
@@ -410,7 +418,7 @@ jobs:
       # that found the pull request still at this commit gets here, so a late event for an old commit cancels nothing.
       # The run is found by the E2E line of the older commit, which links the run that started it.
       - uses: $/.github/actions/cancel-older
-        if: steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'
+        if: inputs.cancel-older-runs && steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'
         with:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}

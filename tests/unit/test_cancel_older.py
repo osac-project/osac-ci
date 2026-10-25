@@ -220,7 +220,12 @@ def test_the_action_runs_the_locked_project_of_the_pinned_commit_with_a_number_o
 def test_the_decision_calls_it_with_the_head_commit_it_decided_on() -> None:
     steps = load(DECIDE)["jobs"]["decide"]["steps"]
     step = next(s for s in steps if s.get("uses") == "$/.github/actions/cancel-older")
-    assert step["if"] == "steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'"
+    # off unless the caller turns it on: a cancelled suite can leave its cluster behind on the CI host
+    assert step["if"] == (
+        "inputs.cancel-older-runs && steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'"
+    )
+    switch = load(DECIDE)[True]["workflow_call"]["inputs"]["cancel-older-runs"]
+    assert switch["type"] == "boolean" and switch["default"] is False
     assert step["with"] == {
         "github-token": "${{ github.token }}",
         "repo": "${{ github.repository }}",
