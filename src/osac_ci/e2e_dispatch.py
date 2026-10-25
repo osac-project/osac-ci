@@ -196,3 +196,30 @@ def suite_ended(
     needed = dict(suite_checks_for_files(policy, files))
     needed.setdefault(mine.name, mine.check)
     return sum_from_lines(client, repo, sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
+
+
+def verify_suite_inputs(client: GitHubClient, repo: str, number: int, sha: str, head_repo: str) -> tuple[str, str]:
+    """What a suite that runs as a run of its own may believe of its dispatch inputs. Anyone with write access can start
+    the suite's workflow with any inputs, so the commit and the repository are checked against the pull request (the
+    commit must be its head now, in the repository that holds the head) and the fork author and association, which
+    decide whether a fork's code may run with secrets, are read from it. Returns (fork author, fork association): both
+    empty for a commit of ``repo`` itself. Raises ValueError for anything that does not match."""
+    repo = check_repo(repo)
+    sha = check_sha(sha)
+    head_repo = check_repo(head_repo)
+    if number < 1:
+        raise ValueError("the pull request number must be positive")
+    pull = get(client, f"/repos/{repo}/pulls/{number}")
+    head = pull.get("head") or {}
+    if str(head.get("sha", "")) != sha:
+        raise ValueError(f"the commit is not the head of pull request {number} any more: nothing to test")
+    actual = str((head.get("repo") or {}).get("full_name") or "")
+    if not actual or actual.lower() != head_repo.lower():
+        raise ValueError(f"the repository is not the one that holds the head of pull request {number}")
+    if actual.lower() == repo.lower():
+        return "", ""
+    author = str((pull.get("user") or {}).get("login") or "")
+    association = str(pull.get("author_association") or "")
+    if not LOGIN.fullmatch(author) or not ASSOCIATION.fullmatch(association):
+        raise ValueError("the author of the pull request could not be read")
+    return author, association

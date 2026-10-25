@@ -451,6 +451,15 @@ def _parser() -> argparse.ArgumentParser:
     edis.add_argument("--run-url", default="", help="link of the workflow run that dispatches, shown on a failed line")
     edis.add_argument("--json-file", type=Path, help="write the runs started here, as JSON")
 
+    sin = sub.add_parser(
+        "suite-inputs",
+        help="check the dispatch inputs of a suite against its pull request and print the fork author and association",
+    )
+    sin.add_argument("--repo", required=True, help="owner/name of the repository of the pull request")
+    sin.add_argument("--number", type=int, required=True)
+    sin.add_argument("--sha", required=True, help="the commit the suite was started for")
+    sin.add_argument("--head-repo", required=True, help="the repository the suite was told holds the commit")
+
     eend = sub.add_parser(
         "e2e-suite-ended",
         help="a suite that ran as a run of its own has ended: complete its line and add up the E2E check",
@@ -795,6 +804,18 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
         return 3 if failed else 0
+
+    if args.command == "suite-inputs":
+        try:
+            author, association = e2e_dispatch.verify_suite_inputs(
+                build_client(), args.repo, args.number, args.sha, args.head_repo
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: suite-inputs failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"fork-author={author}")
+        print(f"fork-association={association}")
+        return 0
 
     if args.command == "e2e-suite-ended":
         try:

@@ -1,0 +1,55 @@
+---
+# Shared workflow: the first job of a suite that runs as a run of its own. The suite's workflow is started with
+# workflow_dispatch by the decision (policy `workflow:`), and anyone with write access can start it with any inputs, so
+# none of them is believed: this checks the commit and the repository against the pull request and gives back the fork
+# author and association read from it (see docs/CALLERS.md, "A suite as a run of its own"). The suite's job then
+# `needs` this one and passes the outputs on, instead of the dispatch inputs of the same name.
+#
+# The calling job gives `contents: read` and `pull-requests: read`.
+name: Verify the inputs of a suite
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: The repository that holds the commit, as the suite was told (its `repo` input)
+        type: string
+        required: true
+      sha:
+        description: The commit the suite was started for (its `sha` input)
+        type: string
+        required: true
+      pr-number:
+        description: The pull request number (its `pr-number` input)
+        type: string
+        required: true
+    outputs:
+      fork-author:
+        description: Login of the author of a fork pull request, empty for a commit of the repository itself
+        value: ${{ jobs.verify.outputs.fork-author }}
+      fork-association:
+        description: Author association of a fork pull request, empty for a commit of the repository itself
+        value: ${{ jobs.verify.outputs.fork-association }}
+
+permissions: {}
+
+jobs:
+  verify:
+    name: Verify the inputs against the pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      fork-author: ${{ steps.inputs.outputs.fork-author }}
+      fork-association: ${{ steps.inputs.outputs.fork-association }}
+    steps:
+      # `$/` is this workflow's own repository at the exact commit the caller pinned.
+      - uses: $/.github/actions/suite-inputs
+        id: inputs
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          number: ${{ inputs.pr-number }}
+          sha: ${{ inputs.sha }}
+          head-repo: ${{ inputs.repo }}
