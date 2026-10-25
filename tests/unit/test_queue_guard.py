@@ -120,8 +120,10 @@ def test_a_failed_job_of_the_ci_run_counts_before_the_job_that_is_the_check_exis
 def test_the_watch_settles_on_that_failure_while_the_other_jobs_and_the_suites_still_run() -> None:
     gh = GitHub()
     running(gh)
+    del gh.runs[CI]["jobs"]["CI"], gh.runs[CI]["jobs"]["unit-tests"]  # as in the entry: no job named `CI` exists yet
     gh.job(CI, "pre-commit / pre-commit", "completed", "failure")
-    gh.job(CI, "Unit tests (osac-ui) / ui-unit", "in_progress")  # no job named CI in the list
+    gh.job(CI, "Unit tests (osac-ui) / ui-unit", "in_progress")
+    assert "CI" not in gh.runs[CI]["jobs"], "only the name of the run can say it provides a required check"
     assert watch(gh, ["vmaas", "caas"], timeout=60) == "failed"
 
 
