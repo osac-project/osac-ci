@@ -1,0 +1,60 @@
+name: Verify the inputs of a suite against its pull request
+description: >-
+  A suite that runs as a run of its own (`workflow:` in the policy) is started with workflow_dispatch, and anyone with
+  write access can start it with any inputs. This checks that the commit is the head of the pull request, in the
+  repository that holds the head, and reads the fork author and association from the pull request. It fails when
+  anything does not match, so the suite never runs a commit that the decision did not approve. Called from the suite's
+  own workflow, pinned to a commit, like the other actions.
+
+# The token only reads the pull request. This action never checks out the calling repository. Every input reaches the
+# shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token that reads the pull request (the job's own, with pull requests read)
+    required: true
+  repo:
+    description: Repository of the pull request, owner/name
+    required: true
+  number:
+    description: The pull request number (the suite's pr-number input)
+    required: true
+  sha:
+    description: The commit the suite was started for (the suite's sha input)
+    required: true
+  head-repo:
+    description: The repository the suite was told holds the commit (the suite's repo input)
+    required: true
+
+outputs:
+  fork-author:
+    description: Login of the author of a fork pull request, empty for a commit of this repository
+    value: ${{ steps.verify.outputs.fork-author }}
+  fork-association:
+    description: Author association of a fork pull request, empty for a commit of this repository
+    value: ${{ steps.verify.outputs.fork-association }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Verify
+      id: verify
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        SHA: ${{ inputs.sha }}
+        HEAD_REPO: ${{ inputs.head-repo }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci suite-inputs --repo "$REPO" --number "$NUMBER" --sha "$SHA" \
+          --head-repo "$HEAD_REPO" >> "$GITHUB_OUTPUT"

@@ -218,6 +218,11 @@ is still the sum of the lines of the suites the change needs. To make a suite on
   unquoted ` #` starts a YAML comment; the run is
   recognised by that name when it ends, so the format is exact: the suite id of the policy, the number, the 40 digit
   commit);
+- anyone with write access can start the workflow with any inputs, so its first job must check them against the pull
+  request: `verify: uses: osac-project/osac-ci/.github/workflows/suite-inputs.yml@<sha>` with `repo`, `sha` and
+  `pr-number` (the job `permissions: contents: read, pull-requests: read`). It fails when the commit is not the head of the
+  pull request or the repository does not hold it, and its outputs `fork-author` and `fork-association` (read from the
+  pull request) replace the two dispatch inputs of the same name, which the suite must not use;
 - the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
   the suite's job from `finish`'s `needs`, and passes `dispatched-runs` to `track` and `dispatched` and `all-suite-checks` to
   `finish` (without them a dispatched suite is started but not followed);
