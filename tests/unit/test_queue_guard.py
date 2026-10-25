@@ -108,6 +108,42 @@ def test_a_failed_job_of_a_workflow_that_provides_a_required_check_counts_not_on
     assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == ["CI / unit-tests"]  # type: ignore[arg-type]
 
 
+def test_a_failed_job_of_the_ci_run_counts_before_the_job_that_is_the_check_exists() -> None:
+    """In ci.yml the job named `CI` waits for every other job, so it is only created when they have ended: in a queue
+    entry it appeared 62 minutes after `pre-commit` had failed. The run is known by its name."""
+    gh = GitHub()
+    gh.job(CI, "pre-commit / pre-commit", "completed", "failure")
+    gh.job(CI, "Unit tests (osac-ui) / ui-unit", "in_progress")
+    assert queue_guard.required_failures(gh, REPO, SHA, THIS, REQUIRED) == ["CI / pre-commit / pre-commit"]  # type: ignore[arg-type]
+
+
+def test_the_watch_settles_on_that_failure_while_the_other_jobs_and_the_suites_still_run() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.job(CI, "pre-commit / pre-commit", "completed", "failure")
+    gh.job(CI, "Unit tests (osac-ui) / ui-unit", "in_progress")  # no job named CI in the list
+    assert watch(gh, ["vmaas", "caas"], timeout=60) == "failed"
+
+
+def test_a_run_named_otherwise_is_not_set_aside_while_it_goes_so_a_late_check_job_still_counts() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.run(502, "Checks")  # a workflow whose name is not a required check; its check job is created last
+    gh.job(502, "lint", "completed", "failure")
+    gh.later = [{"run": 502, "job": "jira-reference", "status": "queued"}]
+    assert watch(gh, ["vmaas", "caas"], timeout=60) == "failed"
+
+
+def test_a_run_that_ended_providing_no_required_check_is_read_once_and_left_alone() -> None:
+    gh = GitHub()
+    running(gh)
+    gh.run(777, "CodeQL", "completed")
+    gh.runs[777]["conclusion"] = "failure"
+    gh.job(777, "analyze", "completed", "failure")
+    assert watch(gh, ["vmaas", "caas"], timeout=6) == "timeout"
+    assert [r for r in gh.requests if r.endswith("/jobs")].count("/actions/runs/777/jobs") == 1
+
+
 def test_a_run_that_ended_failed_settles_the_entry_even_when_the_jobs_list_still_shows_a_job_running() -> None:
     gh = GitHub()
     gh.runs[CI].update(status="completed", conclusion="failure")
@@ -450,7 +486,7 @@ def test_a_look_reads_the_runs_once_the_jobs_of_this_run_once_and_the_jobs_of_ea
     )
 
 
-def test_a_run_that_provides_no_required_check_or_has_ended_well_is_not_read_again() -> None:
+def test_a_run_that_has_ended_well_is_not_read_again_and_one_that_goes_is_read_each_look() -> None:
     gh = GitHub()
     running(gh)
     gh.run(777, "CodeQL")
@@ -460,7 +496,9 @@ def test_a_run_that_provides_no_required_check_or_has_ended_well_is_not_read_aga
     gh.job(502, "jira-reference", "completed", "success")
     watch(gh, ["vmaas", "caas"], timeout=6)
     reads = [r for r in gh.requests if r.endswith("/jobs")]
-    assert reads.count("/actions/runs/777/jobs") == 1, "no required check: read once and left alone"
+    assert reads.count("/actions/runs/777/jobs") > 1, (
+        "no evidence yet while it goes: read each look (it may get the check job)"
+    )
     assert reads.count("/actions/runs/502/jobs") == 0, "ended without failing: never read"
     assert reads.count(f"/actions/runs/{CI}/jobs") > 1, (
         "a run that provides a required check and runs is read each look"

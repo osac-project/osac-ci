@@ -297,8 +297,9 @@ keeps its place in the queue, and everything behind it waits, while the rest of 
 ```
 
 It watches the jobs of the suites and the jobs of the other runs on the commit that belong to a workflow providing a required
-check of the branch (a run with a job named like one: `CI`, `jira-reference`; a workflow that provides none, such as
-CodeQL, is left alone). On the first failure it writes `E2E` at once: `Failed: bmaas` for a suite (the suites that failed
+check of the branch (a run whose workflow or a job is named like one: `CI`, `jira-reference`. The workflow name counts because the job that
+is the check, the last job of `CI`, is only created when the others have ended; a run that is still going is never set aside
+for good on its job list. A workflow that ended providing none, such as CodeQL, is left alone). On the first failure it writes `E2E` at once: `Failed: bmaas` for a suite (the suites that failed
 are named), or `Cancelled: stopped, CI / unit-tests failed` when another workflow caused it (`E2E` did not fail itself),
 and only then cancels every run of the commit that has not ended, this one last. So the entry is removed at once, and
 without waiting for the cancelled suites to shut their clusters down. When every suite passed it writes `E2E` as passed.
