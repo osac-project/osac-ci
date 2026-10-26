@@ -207,10 +207,12 @@ class PrStatus:
     """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
     unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
     ``ignored`` the people whose approval does not count; ``blocked_by`` the bots (CodeRabbit) whose request for changes
-    GitHub still holds against the merge, though the decision to start the E2E ignores it; ``auto_merge`` is the merge
-    method when auto-merge is on, empty when it is off; ``queue`` the merge queue (None when it could not be read: the
-    row is then left out); ``closed`` merged | closed once the pull request is over: the block then says so, and says
-    nothing of auto-merge and the queue, which are no more."""
+    GitHub still holds against the merge, though the decision to start the E2E ignores it; ``reviews_requested`` the
+    teams and people whose review is still asked for (a code owner's team stays there until one of its members has
+    reviewed; the approval that starts the E2E is not theirs), and ``held`` that GitHub holds the merge; ``auto_merge``
+    is the merge method when auto-merge is on, empty when it is off; ``queue`` the merge queue (None when it could not
+    be read: the row is then left out); ``closed`` merged | closed once the pull request is over: the block then says
+    so, and says nothing of auto-merge and the queue, which are no more."""
 
     approval: str
     approvers: tuple[str, ...] = ()
@@ -225,6 +227,8 @@ class PrStatus:
     closed: str = ""  # "" while open | merged | closed (without merging)
     base: str = ""  # the branch it was or would be merged into
     blocked_by: tuple[str, ...] = ()
+    reviews_requested: tuple[str, ...] = ()  # the teams (``@owner/team``) and people whose review is still requested
+    held: bool = False  # GitHub holds the merge (``blocked``): the requested reviews that are required are missing
     rerun: tuple[str, ...] = ()  # the suites (box ids) whose line says failed: the E2E row says how to run them again
 
 
@@ -249,7 +253,10 @@ def _check_row(name: str, view: CheckView) -> str:
 def _approval_row(status: PrStatus, sha: str) -> str:
     who = ", ".join(f"`{login}`" for login in status.approvers)
     if status.approval == "approved":
-        return f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
+        row = f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
+        if status.reviews_requested and status.closed not in ("merged", "closed"):
+            row += " · enough to run the E2E, not to merge: see the reviews requested below"
+        return row
     if status.approval == "older":
         return (
             f"{lead('warning')}**Approval:** approved by {who} on an older commit; needs a new approval on `{sha[:7]}`"
@@ -297,6 +304,10 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
         if status.conflict and not over:
             rows.append(f"{lead('error')}**Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))
+        if status.reviews_requested and not over:
+            names = ", ".join(f"`{name}`" for name in status.reviews_requested)
+            hold = "; GitHub holds the merge until the required ones have approved" if status.held else ""
+            rows.append(f"{lead('pending')}**Reviews requested:** waiting for {names}{hold}")
         if status.blocked_by and not over:
             who = ", ".join(f"`{login}`" for login in status.blocked_by)
             rows.append(
@@ -765,6 +776,24 @@ def approval_of(
     return "waiting", (), ignored
 
 
+def _requested_reviews(pr: Mapping[str, object], owner: str) -> tuple[str, ...]:
+    """The teams (``@owner/team``) and people whose review the pull request still asks for. GitHub requests the code
+    owners of the changed files itself and drops a team's request once one of its members has reviewed."""
+    teams = pr.get("requested_teams")
+    people = pr.get("requested_reviewers")
+    found = (
+        [f"@{owner}/{t['slug']}" for t in teams if isinstance(t, Mapping) and t.get("slug")]
+        if isinstance(teams, list)
+        else []
+    )
+    found += (
+        [f"@{u['login']}" for u in people if isinstance(u, Mapping) and u.get("login")]
+        if isinstance(people, list)
+        else []
+    )
+    return tuple(found)
+
+
 def _closed_of(pr: Mapping[str, object]) -> str:
     if str(pr.get("state", "open")) != "closed":
         return ""
@@ -798,6 +827,7 @@ def pr_status(
     else:
         approval, approvers, ignored = "unchecked", approvals_seen(reviews, sha), ()
     auto = pr.get("auto_merge")
+    owner = repo.partition("/")[0]
     return PrStatus(
         approval=approval,
         approvers=approvers,
@@ -809,6 +839,8 @@ def pr_status(
         auto_merge=str(auto.get("merge_method") or "on") if isinstance(auto, Mapping) else "",
         draft=bool(pr.get("draft")),
         conflict=pr.get("mergeable_state") == "dirty",
+        reviews_requested=_requested_reviews(pr, owner),
+        held=pr.get("mergeable_state") == "blocked",
         closed=_closed_of(pr),
         base=_base_of(pr),
     )

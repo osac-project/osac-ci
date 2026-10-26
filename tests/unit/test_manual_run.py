@@ -961,6 +961,46 @@ def test_the_status_block_is_a_list_of_what_the_pull_request_waits_for() -> None
     ]
 
 
+def test_the_reviews_still_requested_have_a_row_and_the_approval_says_it_does_not_cover_them() -> None:
+    def rows(**changes: Any) -> str:
+        return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
+
+    asked = ("@osac-project/wg-infra", "@osac-project/wg-vmaas")
+    text = rows(reviews_requested=asked, held=True)
+    assert (
+        f"{lead('pending')}**Reviews requested:** waiting for `@osac-project/wg-infra`, `@osac-project/wg-vmaas`; "
+        "GitHub holds the merge until the required ones have approved"
+    ) in text
+    assert "approved by `alice` on `aaaaaaa` · enough to run the E2E, not to merge" in text
+    assert "**Reviews requested:**" not in rows(), "nothing is asked: no row"
+    assert "not to merge" not in rows(), "and the approval stands as it is"
+    assert "GitHub holds the merge" not in rows(reviews_requested=asked, held=False)
+    assert "**Reviews requested:**" not in rows(reviews_requested=asked, closed="merged"), "a finished pull request"
+    assert "**Reviews requested:**" not in rows(reviews_requested=asked, closed="closed")
+
+
+def test_the_requested_teams_and_people_come_from_the_pull_request() -> None:
+    mine = {"full_name": REPO}
+    pr = {
+        "head": {"sha": HEAD, "repo": mine},
+        "mergeable_state": "blocked",
+        "requested_teams": [{"slug": "wg-infra"}, {"slug": "wg-vmaas"}, {"name": "no slug"}],
+        "requested_reviewers": [{"login": "bob"}, {}],
+    }
+    status = manual_run.pr_status(pr, [], [], repo=REPO)
+    owner = REPO.partition("/")[0]
+    assert status.reviews_requested == (f"@{owner}/wg-infra", f"@{owner}/wg-vmaas", "@bob")
+    assert status.held is True
+    assert manual_run.pr_status({**pr, "mergeable_state": "clean"}, [], [], repo=REPO).held is False
+    for odd in (None, "x", [None, 3]):  # whatever else GitHub sent is ignored
+        assert (
+            manual_run.pr_status(
+                {**pr, "requested_teams": odd, "requested_reviewers": odd}, [], [], repo=REPO
+            ).reviews_requested
+            == ()
+        )
+
+
 def test_each_state_of_the_pull_request_has_its_own_row() -> None:
     def rows(**changes: Any) -> str:
         return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
