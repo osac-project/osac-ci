@@ -3,6 +3,7 @@ block, with how to run a failed one again."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -157,7 +158,35 @@ def test_a_check_with_no_run_in_its_link_or_no_id_is_ignored() -> None:
 def test_only_a_failed_or_cancelled_job_of_a_finished_run_can_be_run_again(
     state: str, done: bool, job_id: int, again: bool
 ) -> None:
-    assert CheapJob("x", state, job_id=job_id, run_done=done).can_run_again is again
+    assert CheapJob("x", state, job_id=job_id, run_done=done, command="ci-x").can_run_again is again
+
+
+def test_a_job_with_no_unambiguous_command_cannot_be_run_again() -> None:
+    assert CheapJob("x", "failed", job_id=1, run_done=True).can_run_again is False
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("unit", "ci-unit"),
+        ("Lint / Run linters", "ci-lint-run-linters"),
+        ("test (3.12, ubuntu)", "ci-test-3-12-ubuntu"),
+        ("  --  ", ""),
+        ("ünï", "ci-n"),
+        ("x" * 100, "ci-" + "x" * 37),
+        ("a" * 36 + "-" + "b" * 10, "ci-" + "a" * 36),
+    ],
+)
+def test_a_job_is_asked_for_by_its_name_in_lower_case_with_dashes(name: str, expected: str) -> None:
+    command = cheap_jobs.command_of(name)
+    assert command == expected and len(command) <= cheap_jobs.COMMAND_MAX
+    assert not command or re.fullmatch(manual_run.SUITE_ID, command), "a comment must take it"
+
+
+def test_names_that_give_the_same_command_name_neither_job() -> None:
+    runs = Runs({10: ("CI", 1, "completed")})
+    jobs = read(runs, [check("a.b", 10, 1), check("a b", 10, 2), check("solo", 10, 3)])
+    assert {j.name: j.command for j in jobs} == {"a.b": "", "a b": "", "solo": "ci-solo"}
 
 
 @pytest.mark.parametrize(
@@ -194,18 +223,18 @@ def rows(*jobs: CheapJob, closed: str = "") -> str:
 
 def test_the_jobs_are_listed_in_a_collapsed_section_inside_the_status_markers() -> None:
     text = rows(
-        CheapJob("unit", "failed", "https://x/u", 1, 10, True),
-        CheapJob("build", "active", "https://x/b", 2, 10, False, True),
-        CheapJob("lint", "passed", "https://x/l", 3, 10, True),
+        CheapJob("unit", "failed", "https://x/u", 1, 10, True, command="ci-unit"),
+        CheapJob("build", "active", "https://x/b", 2, 10, False, True, command="ci-build"),
+        CheapJob("lint", "passed", "https://x/l", 3, 10, True, command="ci-lint"),
     )
     assert text.startswith(manual_run.STATUS_START) and text.endswith(manual_run.STATUS_END)
     assert "<details><summary><b>🧰 Checks</b> · 1 failed · 1 running · 1 passed (3 jobs)</summary>" in text
     assert text.index("[!TIP]") < text.index("🧰 Checks") < text.index(manual_run.STATUS_END)
-    assert "**unit** · [failed](https://x/u) · comment `/test unit` to run it again" in text
-    assert "**build** · [running](https://x/b)" in text and "`/test build`" not in text, (
+    assert "**unit** · [failed](https://x/u) · comment `/test ci-unit` to run it again" in text
+    assert "**build** · [running](https://x/b)" in text and "`/test ci-build`" not in text, (
         "a running job cannot be re-run"
     )
-    assert "**lint** · [passed](https://x/l)" in text and "`/test lint`" not in text
+    assert "**lint** · [passed](https://x/l)" in text and "`/test ci-lint`" not in text
 
 
 def test_a_failed_job_of_a_run_that_goes_does_not_offer_a_re_run_and_a_queued_one_says_waiting() -> None:

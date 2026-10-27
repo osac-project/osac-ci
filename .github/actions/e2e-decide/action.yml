@@ -49,6 +49,11 @@ inputs:
   org-token:
     description: Token that can read the members of the organization (members read); used for a request by hand
     default: ""
+  cheap-workflows:
+    description: >-
+      JSON list of the names of the repository's own workflows (`["CI"]`) whose failed jobs a /test comment may run again
+      (`/test ci-<job>`); `[]`: none
+    default: "[]"
   statuses-token:
     description: >-
       Token that can read commit statuses (the suite lines, when they are statuses). The workflow's own token may not;
@@ -95,6 +100,7 @@ runs:
         MANUAL_COMMENT_ID: ${{ inputs.manual-comment-id }}
         MANUAL_BY: ${{ inputs.manual-by }}
         MANUAL_COMMENT_BODY: ${{ inputs.manual-comment-body }}
+        CHEAP_WORKFLOWS: ${{ inputs.cheap-workflows }}
         OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
         OSAC_CI_STATUSES_TOKEN: ${{ inputs.statuses-token }}
         ACTION_PATH: ${{ github.action_path }}
@@ -142,7 +148,7 @@ runs:
           fi
         fi
         uv run --locked --project "$root" osac-ci e2e-decide --policy "$policy_path" --repo "$REPO" "${which[@]}" \
-          ${by_hand[@]+"${by_hand[@]}"} --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          ${by_hand[@]+"${by_hand[@]}"} --json-file "$json" "--cheap-workflows=${CHEAP_WORKFLOWS:-[]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         # The answer for a job that starts from it: ready only for exactly one pull request whose answer is "start".
         count=$(jq 'length' "$json")
         ready=false

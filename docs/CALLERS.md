@@ -208,6 +208,15 @@ Only the newest run of each listed workflow for the head commit counts, and only
 workflows then ask the app token for `actions: read` as well (the job's run is read to learn its workflow). The default
 `[]` lists nothing and changes nothing.
 
+A failed or cancelled job of a run that has ended can be run again by a member of the organization with a comment
+`/test ci-<job>` (the status shows the exact command: the job's name in lower case with dashes, for example `Lint / Run
+linters` is `ci-lint-run-linters`). GitHub then runs that job again, and the jobs that wait for it, in the same run. The
+decision checks the job again before it asks (it must still be a failed job of a finished run of a listed workflow on
+the head commit), and it asks with a token of the app that has `actions: write` and nothing else, made only for that
+step. A job that passed or still runs, or whose run still goes, is not run again and the answer says why. A name two
+jobs share has no command. To have the status refresh when the run ends, list the workflow (as `workflow_run`) in
+`e2e-pr.yml`, like `CI`.
+
 ## Suites started by hand
 
 The decision workflow keeps a comment on the pull request of a member of the organization (written by the OSAC CI app)

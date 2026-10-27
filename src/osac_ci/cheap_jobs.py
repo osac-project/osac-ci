@@ -13,16 +13,19 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 
 ACTIONS_APP = "github-actions"
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 IGNORED_CONCLUSIONS = frozenset({"skipped", "neutral", "stale"})
 NAME_MAX = 100  # the longest name of a workflow the repository may list
+COMMAND_PREFIX = "ci-"  # a job is asked for as ``/test ci-<its name>``: never a suite id of its own
+COMMAND_MAX = 40  # the longest id a ``/test`` comment takes
 
 
 @dataclass(frozen=True)
@@ -38,10 +41,11 @@ class CheapJob:
     run_done: bool = False
     running: bool = False  # active, and started (else it waits for a runner)
     workflow: str = ""
+    command: str = ""  # what follows ``/test`` to run it again; empty when no name of it is unambiguous
 
     @property
     def can_run_again(self) -> bool:
-        return self.run_done and self.state in ("failed", "cancelled") and self.job_id > 0
+        return self.run_done and self.state in ("failed", "cancelled") and self.job_id > 0 and bool(self.command)
 
 
 def parse_workflows(text: str) -> tuple[str, ...]:
@@ -61,6 +65,13 @@ def parse_workflows(text: str) -> tuple[str, ...]:
             raise ValueError(f"invalid workflow name: {item!r}")
         names.append(item)
     return tuple(dict.fromkeys(names))
+
+
+def command_of(name: str) -> str:
+    """The id a ``/test`` comment names the job by (``Lint / Run linters`` -> ``ci-lint-run-linters``): lower case and
+    dashes, within the length a comment takes; empty when nothing of the name is left."""
+    words = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[: COMMAND_MAX - len(COMMAND_PREFIX)].strip("-")
+    return COMMAND_PREFIX + words if words else ""
 
 
 def _state(check: Mapping[str, object]) -> str | None:
@@ -129,5 +140,42 @@ def read_cheap_jobs(
                     workflow=workflow,
                 )
             )
+    # A command that two jobs share (names that differ only in punctuation, or in a long tail) names neither of them.
+    taken = Counter(command_of(j.name) for j in jobs)
+    jobs = [replace(j, command=c) if (c := command_of(j.name)) and taken[c] == 1 else j for j in jobs]
     order = {"failed": 0, "active": 1, "cancelled": 2, "passed": 3}
     return tuple(sorted(jobs, key=lambda j: (order[j.state], j.workflow, j.name)))
+
+
+HEAD_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def rerun_jobs(
+    client: GitHubClient, repo: str, sha: str, job_ids: Sequence[int], workflows: Sequence[str]
+) -> list[tuple[str, bool, str]]:
+    """Run each of ``job_ids`` again (GitHub runs again the job and the jobs that wait for it, in the run it belongs
+    to). Nothing in the request is believed: each id must still be a failed or cancelled job of a finished run of a
+    listed workflow on ``sha``, read now, so an id that is not (or a job somebody has already started again) is
+    refused. Returns (job, started, what happened) for each."""
+    repo = check_repo(repo)
+    if not HEAD_SHA.fullmatch(sha):
+        raise ValueError(f"invalid commit: {sha!r}")
+    if any(isinstance(i, bool) or not isinstance(i, int) or i < 1 for i in job_ids):
+        raise ValueError("the jobs must be a list of ids")
+    checks = list(paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs"))
+    can = {j.job_id: j for j in read_cheap_jobs(client, repo, checks, workflows) if j.can_run_again}
+    out: list[tuple[str, bool, str]] = []
+    for job_id in dict.fromkeys(job_ids):
+        job = can.get(job_id)
+        if job is None:
+            out.append((str(job_id), False, "is not a failed job of a finished run of a listed workflow: left alone"))
+            continue
+        response = client.request("POST", f"/repos/{repo}/actions/jobs/{job_id}/rerun")
+        if 200 <= response.status < 300:
+            out.append((job.name, True, "run again"))
+        else:
+            message = str(response.data.get("message", "")) if isinstance(response.data, Mapping) else ""
+            out.append(
+                (job.name, False, f"could not be run again ({response.status}{': ' + message if message else ''})")
+            )
+    return out

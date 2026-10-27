@@ -1,0 +1,53 @@
+name: Run failed jobs of the repository's workflows again
+description: >-
+  Run again the failed jobs of the repository's own workflows (the legs of CI) that a /test comment asked for. Each job
+  is checked first: it must still be a failed or cancelled job of a finished run of a listed workflow on the commit.
+  Called from the decision workflow of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow decides when this runs and what token it holds: a token of the OSAC CI app with actions write and
+# nothing else, not the workflow's own: a run that is run again by the workflow's own token gets no workflow_run event
+# when it ends, so nothing would refresh the status when it passed. This action never checks out the calling repository,
+# so it cannot run pull request code; it only asks GitHub to run again jobs that already ran. Every input reaches the
+# shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: A token that runs jobs again (the OSAC CI app's, with actions write; not the workflow's own, see above)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The head commit whose jobs they are
+    required: true
+  jobs:
+    description: JSON list of the ids of the jobs (the decision's reruns, `[.[].job]`)
+    required: true
+  cheap-workflows:
+    description: JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs may be run again
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Run the jobs again
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        JOBS: ${{ inputs.jobs }}
+        CHEAP_WORKFLOWS: ${{ inputs.cheap-workflows }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$SHA" in
+          "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+        esac
+        if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci e2e-rerun --repo "$REPO" --sha "$SHA" --jobs "$JOBS" \
+          "--cheap-workflows=$CHEAP_WORKFLOWS" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

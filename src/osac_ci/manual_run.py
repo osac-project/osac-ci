@@ -326,7 +326,7 @@ def _cheap_section(jobs: Sequence[CheapJob]) -> list[str]:
         mark = lead("running" if job.state == "active" and job.running else CHECK_ICON.get(job.state, "neutral"))
         word = "waiting" if job.state == "active" and not job.running else CHECK_WORD.get(job.state, job.state)
         text = f"[{word}]({view.url})" if view.url else word
-        again = f" · comment `/test {job.name}` to run it again" if job.can_run_again else ""
+        again = f" · comment `/test {job.command}` to run it again" if job.can_run_again else ""
         lines.append(f"- {mark}**{job.name}** · {text}{again}")
     if len(jobs) > CHEAP_SHOWN:
         lines.append(f"- and {len(jobs) - CHEAP_SHOWN} more")

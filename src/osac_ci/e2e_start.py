@@ -29,6 +29,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
 
+from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
@@ -136,6 +137,9 @@ class Inputs:
     # The workflow runs that still go among those the suite lines on the commit link to (read by ``fetch_inputs``): a
     # line that waits or runs is only believed when the run it links to is alive.
     live_runs: frozenset[int] = frozenset()
+    # The jobs of the repository's own workflows on the head commit (see cheap_jobs), read only when a comment asks for
+    # a name that is not a suite: ``/test ci-unit`` runs a failed job of CI again.
+    cheap_jobs: tuple[CheapJob, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,6 +174,8 @@ class Decision:
     # (suite, workflow file) of the suites to start that run as a run of their own: the caller does not run them as jobs
     # of its run, the decision dispatches them (see e2e_dispatch)
     workflows: tuple[tuple[str, str], ...] = ()
+    # (job name, job id) of the failed jobs of the repository's own workflows to run again, asked for by a comment
+    reruns: tuple[tuple[str, int], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -473,6 +479,8 @@ def _decide_by_hand(
     tiers: dict[str, str] = {}
     cancel: list[int] = []
     notes: list[tuple[str, str]] = []
+    reruns: list[tuple[str, int]] = []
+    jobs = {j.command: j for j in inputs.cheap_jobs if j.command}
     if inputs.request_refused:
         notes.append(("", inputs.request_refused))
     names: list[str] = []
@@ -493,6 +501,9 @@ def _decide_by_hand(
     ] = {}  # suite -> (the suite, the tier asked of it; a variant wins over the suite)
     for name in dict.fromkeys(names):
         suite = known.get(name)
+        if suite is None and name in jobs:
+            _ask_for_job(jobs[name], inputs.requested_by, reruns, notes)
+            continue
         if suite is None:
             notes.append((name, f"is not a suite of this repository (suites: {', '.join(known)})"))
             continue
@@ -548,6 +559,7 @@ def _decide_by_hand(
             manual=True,
             selected_checks=selected,
             notes=tuple(notes),
+            reruns=tuple(reruns),
             **base,
         )
     return Decision(
@@ -561,8 +573,23 @@ def _decide_by_hand(
         tiers=tuple(tiers.items()),
         cancel=tuple(cancel),
         workflows=_workflows(inputs.suites, starts),
+        reruns=tuple(reruns),
         **base,
     )
+
+
+def _ask_for_job(job: CheapJob, by: str, reruns: list[tuple[str, int]], notes: list[tuple[str, str]]) -> None:
+    """``/test ci-<job>``: a failed or cancelled job of a run that has ended is run again; anything else is told why
+    not, and nothing is started (a job that passed or runs is left alone: the person can see it in the status)."""
+    if job.can_run_again:
+        reruns.append((job.name, job.job_id))
+        notes.append((job.command, f"{job.name} was run again by {by}"))
+    elif job.state == "passed":
+        notes.append((job.command, f"{job.name} already passed on this commit; it was not run again"))
+    elif job.state == "active":
+        notes.append((job.command, f"{job.name} is already running on this commit; it was not started again"))
+    else:
+        notes.append((job.command, f"{job.name} cannot be run again while the rest of its run still goes"))
 
 
 # reading GitHub -------------------------------------------------------------------------------------------------
@@ -640,6 +667,7 @@ def fetch_inputs(
     request_sha: str = "",
     comment_given: bool = False,
     statuses_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -655,6 +683,7 @@ def fetch_inputs(
     cheap = tuple(r for r in required if r.context not in gates and r.context not in not_cheap)
     author = str((pr.get("user") or {}).get("login", ""))
     reviews = reviews_with_roles(client, repo, paginate(client, f"{base}/pulls/{number}/reviews"), author)
+    raw_runs = list(paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs"))
     runs = tuple(
         CheckRun(
             raw["name"],
@@ -666,7 +695,7 @@ def fetch_inputs(
             title=str((raw.get("output") or {}).get("title") or ""),
             url=str(raw.get("details_url") or ""),
         )
-        for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
+        for raw in raw_runs
     )
     # The line of a suite may be a commit status instead of a check run (see ``suite_lines``), read as the same thing.
     # With a client given for it the statuses must be readable (a suite whose line cannot be seen could be started
@@ -698,6 +727,10 @@ def fetch_inputs(
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
     requested, request_refused = refuse_stale_request(requested, request_refused, request_sha, head_sha)
+    # The jobs of the repository's own workflows cost a request per run, so they are read only for a request that names
+    # something that is not a suite.
+    others = [n for n in requested if n != NEEDED and n not in {s.name for s in suites}]
+    jobs = read_cheap_jobs(client, repo, raw_runs, cheap_workflows) if others and cheap_workflows else ()
     # One more request, and only when a requirement exists that a commit status could also satisfy.
     statuses = fetch_statuses(client, repo, head_sha) if any(r.integration_id is None for r in cheap) else {}
     return Inputs(
@@ -720,6 +753,7 @@ def fetch_inputs(
         request_refused=request_refused,
         comment_ignored=comment_given and not requested and not request_refused,
         live_runs=live,
+        cheap_jobs=jobs,
     )
 
 
@@ -847,6 +881,7 @@ def to_json(decision: Decision) -> str:
             "cancel": list(decision.cancel),
             "by_hand": dict(decision.by_hand),
             "workflows": dict(decision.workflows),
+            "reruns": [{"name": n, "job": j} for n, j in decision.reruns],
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

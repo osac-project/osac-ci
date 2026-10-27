@@ -398,6 +398,12 @@ def _parser() -> argparse.ArgumentParser:
         "--manual-by", default="", help="who edited or wrote the comment (a member of the organization may ask)"
     )
     dec.add_argument(
+        "--cheap-workflows",
+        default="",
+        metavar="JSON",
+        help=CHEAP_WORKFLOWS_HELP + "; a /test comment may then run a failed job of them again",
+    )
+    dec.add_argument(
         "--manual-comment-body-file",
         type=Path,
         help=(
@@ -405,6 +411,15 @@ def _parser() -> argparse.ArgumentParser:
             "(the live comment may have been rewritten by the app since)"
         ),
     )
+
+    rerun = sub.add_parser(
+        "e2e-rerun",
+        help="run failed jobs of the repository's own workflows again, as a /test comment asked (each is checked)",
+    )
+    rerun.add_argument("--repo", required=True, help="owner/name")
+    rerun.add_argument("--sha", required=True, help="the head commit whose jobs they are")
+    rerun.add_argument("--jobs", required=True, metavar="JSON", help="JSON list of the ids of the jobs")
+    rerun.add_argument("--cheap-workflows", required=True, metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
 
     suites_cmd = sub.add_parser(
         "e2e-suites",
@@ -814,6 +829,21 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 3 if failed else 0
 
+    if args.command == "e2e-rerun":
+        try:
+            ids = json.loads(args.jobs)
+            if not isinstance(ids, list):
+                raise ValueError("--jobs must be a JSON list of ids")
+            done = cheap_jobs.rerun_jobs(
+                build_client(), args.repo, args.sha, ids, cheap_jobs.parse_workflows(args.cheap_workflows)
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: e2e-rerun failed: {exc}", file=sys.stderr)
+            return 3
+        for name, started, what in done:
+            print(f"{'Ran again' if started else 'error:'} {name}: {what}", file=None if started else sys.stderr)
+        return 0 if all(started for _, started, _ in done) else 3
+
     if args.command == "suite-inputs":
         try:
             author, association = e2e_dispatch.verify_suite_inputs(
@@ -1207,6 +1237,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
                 statuses_client=build_statuses_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
             )  # fmt: skip
 
         return _decide_command(

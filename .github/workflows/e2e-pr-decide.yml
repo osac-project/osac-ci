@@ -266,6 +266,7 @@ jobs:
           manual-comment-id: ${{ github.event_name == 'issue_comment' && github.event.comment.id || '' }}
           manual-by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
           manual-comment-body: ${{ github.event_name == 'issue_comment' && github.event.comment.body || '' }}
+          cheap-workflows: ${{ inputs.cheap-workflows }}
       - uses: $/.github/actions/e2e-report
         id: report
         with:
@@ -316,7 +317,31 @@ jobs:
           {
             echo "manual=$(jq -r '.[0].manual // false' "${DECISION}")"
             echo "selected=$(jq -c '.[0].selected_checks // {}' "${DECISION}")"
+            echo "reruns=$(jq -c '[(.[0].reruns // [])[].job]' "${DECISION}")"
+            echo "head=$(jq -r '.[0].head_sha' "${DECISION}")"
           } >> "$GITHUB_OUTPUT"
+      # Failed jobs of the repository's own workflows that a /test comment asked for (`/test ci-unit`): run again with a
+      # token of the app with actions write and nothing else, not the workflow's own: a run that the workflow's own token
+      # runs again sends no workflow_run event when it ends, so nothing would refresh the status when it passed. Each job
+      # is checked again by the program before anything is asked of GitHub. A failure here must not hold up the rest.
+      - name: Token of the OSAC CI app, to run jobs again
+        id: rerun-token
+        if: steps.by-hand.outputs.reruns != '' && steps.by-hand.outputs.reruns != '[]'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-actions: write
+          permission-checks: read  # the jobs of the head commit
+      - uses: $/.github/actions/e2e-rerun
+        if: steps.by-hand.outputs.reruns != '' && steps.by-hand.outputs.reruns != '[]'
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.rerun-token.outputs.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ steps.by-hand.outputs.head }}
+          jobs: ${{ steps.by-hand.outputs.reruns }}
+          cheap-workflows: ${{ inputs.cheap-workflows }}
       # The control comment: created when the pull request has none, refreshed with what the suite lines say now, and the
       # answer to a request. A failure here must not hold up the E2E.
       - uses: $/.github/actions/manual-comment
@@ -346,7 +371,9 @@ jobs:
           set -euo pipefail
           if [ "$(jq -r '.[0].manual // false' "${DECISION}")" != "true" ]; then exit 0; fi
           reaction=confused
-          if [ "$(jq -r '.[0].action' "${DECISION}")" = "start" ]; then reaction=rocket; fi
+          if [ "$(jq -r '.[0].action' "${DECISION}")" = "start" ] || [ "$(jq '(.[0].reruns // []) | length' "${DECISION}")" -gt 0 ]; then
+            reaction=rocket
+          fi
           gh api -X POST "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" -f content="${reaction}" --silent
       # The pull request has an approval that counts on its head commit: the auto-merge job below turns auto-merge on.
       # Decided from the state, not from the event that woke this run: several runs for one commit replace each other, and
