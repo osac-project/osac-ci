@@ -101,6 +101,10 @@ def check(name: str, run: int, job_id: int, conclusion: str | None = "failure") 
             "app": {"slug": "github-actions"}, "details_url": url, "html_url": url}  # fmt: skip
 
 
+def wf_id(name: str) -> int:
+    return 1000 + sum(map(ord, name))
+
+
 class Github:
     def __init__(self, checks: list[dict[str, Any]], runs: dict[int, tuple[str, str]], post: int = 201) -> None:
         self.checks, self.runs, self.post, self.posted = checks, runs, post, []
@@ -111,11 +115,15 @@ class Github:
             return Response(self.post, {"message": "nope"} if self.post >= 300 else {}, {})
         if path == SHA_URL:
             return Response(200, {"check_runs": self.checks}, {})
+        if path.endswith("/actions/workflows"):
+            return Response(200, {"workflows": [{"id": wf_id(n), "name": n} for n, _ in self.runs.values()]}, {})
         run = int(path.rsplit("/", 1)[1])
         if run not in self.runs:
             return Response(404, {"message": "Not Found"}, {})
         name, status = self.runs[run]
-        return Response(200, {"name": name, "run_number": run, "status": status}, {})
+        return Response(
+            200, {"name": f"{name} · #5", "workflow_id": wf_id(name), "run_number": run, "status": status}, {}
+        )
 
 
 def rerun(github: Github, ids: list[int], workflows: tuple[str, ...] = ("CI",), sha: str = HEAD) -> Any:

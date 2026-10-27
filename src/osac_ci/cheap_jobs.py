@@ -110,12 +110,20 @@ def read_cheap_jobs(
         if run is not None:
             by_run.setdefault(run, []).append(check)
     newest: dict[str, tuple[int, int, bool]] = {}  # workflow name -> (run number, run id, run is done)
+    names: dict[int, str] | None = None  # workflow id -> its name, read once and only when a run is found
     for run in by_run:
         try:
             info = get(client, f"/repos/{repo}/actions/runs/{run}")
+            # The name of a run is its ``run-name`` when the workflow gives one, so the workflow is named by its id.
+            if names is None:
+                names = {
+                    int(w["id"]): str(w["name"])
+                    for w in paginate(client, f"/repos/{repo}/actions/workflows", key="workflows")
+                }
         except GitHubError:
             continue
-        name = str(info.get("name") or "")
+        workflow_id = info.get("workflow_id")
+        name = names.get(workflow_id, "") if isinstance(workflow_id, int) else ""
         number = info.get("run_number")
         if name not in workflows or not isinstance(number, int):
             continue

@@ -33,6 +33,10 @@ def check(
             "details_url": url, "html_url": url}  # fmt: skip
 
 
+def wf_id(name: str) -> int:
+    return 1000 + sum(map(ord, name))
+
+
 class Runs:
     """The workflow runs GitHub knows: id -> (name, run number, status); an id that is absent answers 404."""
 
@@ -41,12 +45,20 @@ class Runs:
 
     def request(self, method: str, path: str, *, params: Any = None, body: Any = None) -> Response:
         assert method == "GET"
+        if path.endswith("/actions/workflows"):
+            workflows = [{"id": wf_id(name), "name": name} for name, _, _ in self.runs.values()]
+            return Response(200, {"workflows": workflows}, {})
         run = int(path.rsplit("/", 1)[1])
         self.asked.append(run)
         if run not in self.runs:
             return Response(404, {"message": "Not Found"}, {})
         name, number, status = self.runs[run]
-        return Response(200, {"name": name, "run_number": number, "status": status}, {})
+        # a run is named by its run-name, never by its workflow: the workflow is told by its id
+        return Response(
+            200,
+            {"name": f"{name} · #5 · branch", "workflow_id": wf_id(name), "run_number": number, "status": status},
+            {},
+        )
 
 
 def read(runs: Runs, checks: list[dict[str, Any]], workflows: tuple[str, ...] = ("CI",)) -> tuple[CheapJob, ...]:
