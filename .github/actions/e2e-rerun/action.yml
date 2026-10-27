@@ -4,8 +4,8 @@ description: >-
   is checked first: it must still be a failed or cancelled job of a finished run of a listed workflow on the commit.
   Called from the decision workflow of osac-ci, pinned to a commit, like the other actions.
 
-# The calling workflow decides when this runs and what token it holds: a token of the OSAC CI app with actions write and
-# nothing else, not the workflow's own: a run that is run again by the workflow's own token gets no workflow_run event
+# The calling workflow decides when this runs and what token it holds: a token of the OSAC CI app with actions write (and
+# the writes of the lines and of the CI check, for a job the controller started), not the workflow's own: a run that is run again by the workflow's own token gets no workflow_run event
 # when it ends, so nothing would refresh the status when it passed. This action never checks out the calling repository,
 # so it cannot run pull request code; it only asks GitHub to run again jobs that already ran. Every input reaches the
 # shell through an environment variable, never through the script text.
@@ -25,6 +25,14 @@ inputs:
   cheap-workflows:
     description: JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs may be run again
     required: true
+  policy-file:
+    description: >-
+      The repository's policy, read from its default branch (a path of the workspace): the cheap jobs the controller
+      started as runs of their own may be run again too, and their lines are written
+    required: true
+  lines-kind:
+    description: Where the lines are written, "statuses" or "checks" (the same as the other workflows of the flow)
+    default: statuses
 
 runs:
   using: composite
@@ -40,6 +48,8 @@ runs:
         SHA: ${{ inputs.sha }}
         JOBS: ${{ inputs.jobs }}
         CHEAP_WORKFLOWS: ${{ inputs.cheap-workflows }}
+        POLICY: ${{ inputs.policy-file }}
+        LINES_KIND: ${{ inputs.lines-kind }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -48,6 +58,10 @@ runs:
           "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
         esac
         if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+        case "$LINES_KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
+        esac
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-rerun --repo "$REPO" --sha "$SHA" --jobs "$JOBS" \
-          "--cheap-workflows=$CHEAP_WORKFLOWS" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          "--cheap-workflows=$CHEAP_WORKFLOWS" --policy "$POLICY" --lines-kind "$LINES_KIND" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

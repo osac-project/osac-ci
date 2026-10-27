@@ -29,7 +29,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
 
-from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs
+from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
@@ -730,7 +730,12 @@ def fetch_inputs(
     # The jobs of the repository's own workflows cost a request per run, so they are read only for a request that names
     # something that is not a suite.
     others = [n for n in requested if n != NEEDED and n not in {s.name for s in suites}]
-    jobs = read_cheap_jobs(client, repo, raw_runs, cheap_workflows) if others and cheap_workflows else ()
+    jobs = (
+        read_cheap_jobs(client, repo, raw_runs, cheap_workflows)
+        + read_dispatched_jobs(client, repo, head_sha, raw_runs)
+        if others
+        else ()
+    )
     # One more request, and only when a requirement exists that a commit status could also satisfy.
     statuses = fetch_statuses(client, repo, head_sha) if any(r.integration_id is None for r in cheap) else {}
     return Inputs(

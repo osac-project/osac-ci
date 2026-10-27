@@ -26,7 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs
+from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.e2e_start import (
     CHECK_APP,
     NEEDED,
@@ -1006,7 +1006,14 @@ def status_of(
             owners, checked = code_owner_groups(client, repo, number, pr, approvers)
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
-    cheap = read_cheap_jobs(client, repo, runs, cheap_workflows) if _closed_of(pr) == "" else ()
+    cheap: tuple[CheapJob, ...] = ()
+    if _closed_of(pr) == "":
+        # the jobs of the repository's own workflows (when it lists them) and the cheap jobs the controller started
+        head = pr.get("head")
+        sha = str(head.get("sha") or "") if isinstance(head, Mapping) else ""
+        cheap = read_cheap_jobs(client, repo, runs, cheap_workflows) + (
+            read_dispatched_jobs(client, repo, sha, runs) if sha else ()
+        )
     return replace(status, queue=queue, code_owners=owners, owners_checked=checked, cheap=cheap)
 
 

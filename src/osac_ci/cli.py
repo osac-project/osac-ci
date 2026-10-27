@@ -421,6 +421,8 @@ def _parser() -> argparse.ArgumentParser:
     rerun.add_argument("--sha", required=True, help="the head commit whose jobs they are")
     rerun.add_argument("--jobs", required=True, metavar="JSON", help="JSON list of the ids of the jobs")
     rerun.add_argument("--cheap-workflows", required=True, metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
+    rerun.add_argument("--policy", type=Path, required=True, help="the policy: its cheap jobs may be run again too")
+    rerun.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
 
     suites_cmd = sub.add_parser(
         "e2e-suites",
@@ -856,10 +858,16 @@ def main(argv: list[str] | None = None) -> int:
             ids = json.loads(args.jobs)
             if not isinstance(ids, list):
                 raise ValueError("--jobs must be a JSON list of ids")
-            done = cheap_jobs.rerun_jobs(
-                build_client(), args.repo, args.sha, ids, cheap_jobs.parse_workflows(args.cheap_workflows)
+            done = cheap_stage.rerun(
+                build_client(),
+                args.repo,
+                args.sha,
+                ids,
+                cheap_jobs.parse_workflows(args.cheap_workflows),
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
             )
-        except (GitHubError, KeyError, ValueError) as exc:
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
             print(f"error: e2e-rerun failed: {exc}", file=sys.stderr)
             return 3
         for name, started, what in done:

@@ -14,10 +14,10 @@ or end. What the event says is not believed on its own (see ``ended``), exactly 
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from osac_ci.cheap_jobs import RUN_NAME, RUN_NAME_PREFIX, read_dispatched_jobs, rerun_jobs
 from osac_ci.e2e_check import (
     SUITE_ID,
     WORKFLOW_FILE,
@@ -34,8 +34,6 @@ from osac_ci.e2e_suites_check import run_state
 from osac_ci.github.api import GitHubClient, check_repo, get, paginate
 from osac_ci.policy import Policy
 
-RUN_NAME_PREFIX = "CI job · "
-RUN_NAME = re.compile(r"CI job · (?P<job>[a-z0-9][a-z0-9_-]{0,39}) · #(?P<number>[0-9]+) · (?P<sha>[0-9a-f]{40})")
 DEFAULT_SUM = "CI"
 NOT_AFFECTED = "No cheap job applies to this change"
 
@@ -97,15 +95,17 @@ def add_up(
     context: str,
     run_url: str,
     kind: str = "checks",
+    assume: Mapping[str, str] | None = None,
 ) -> str:
     """The ``context`` check as the sum of the lines of the jobs the change needs: waiting while one goes or has not
     started, ``Failed`` when one failed and none goes, ``Passed`` when all passed. It is only written when it says
-    something new, so many calls (each job's end) leave one line, not a pile of them."""
+    something new, so many calls (each job's end) leave one line, not a pile of them. ``assume`` gives the state of jobs
+    that were just written and may not read back yet (``active`` for a job that was just run again)."""
     if not lines:
         text, state = NOT_AFFECTED, "success"
     else:
         latest = _latest_lines(client, repo, sha, lines)
-        states = {job: line_state(latest, line) for job, line in lines.items()}
+        states = {job: line_state(latest, line) for job, line in lines.items()} | dict(assume or {})
         going = [job for job, s in states.items() if s in ("active", "none")]
         failed = [job for job, s in states.items() if s == "failed"]
         if going:
@@ -189,7 +189,7 @@ def ended(
     pull = get(client, f"/repos/{repo}/pulls/{number}")
     if str((pull.get("head") or {}).get("sha", "")) != sha:
         return "the pull request has moved on to another commit: nothing to do"
-    description, state, url, over = run_state(client, repo, run_id)
+    description, state, url, over = run_state(client, repo, run_id, prefer=job)
     if not over:
         return "the run has not ended: nothing to do"
     current = newest_status(client, repo, sha, mine.check, lines_kind)
@@ -202,3 +202,37 @@ def ended(
     return add_up(
         client, repo, sha, needed, sum_name(policy), f"https://github.com/{repo}/actions/runs/{run_id}", "checks"
     )
+
+
+def rerun(
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    job_ids: Sequence[int],
+    workflows: Sequence[str],
+    policy: Policy,
+    *,
+    lines_kind: str = "statuses",
+) -> list[tuple[str, bool, str]]:
+    """Run failed jobs again, as ``/test ci-<job>`` asked: jobs of the repository's own workflows (``workflows``) and
+    the cheap jobs the controller started as runs of their own. Each id is checked again first (see ``rerun_jobs``); a
+    dispatched job must also be a job of the policy that names the workflow of its run. A job of the controller then
+    has its line written as running again and the sum written as waiting for it, so the pull request does not say
+    failed while the job runs; its end (the ``workflow_run`` event) completes the line."""
+    allowed = {j.name: j.workflow for j in jobs_of(policy)}
+    done = rerun_jobs(client, repo, sha, job_ids, workflows, dispatched=allowed)
+    started = {name for name, ok, _ in done if ok}
+    checks = list(paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/check-runs", key="check_runs"))
+    mine = [
+        j
+        for j in read_dispatched_jobs(client, repo, sha, checks)
+        if j.name in allowed and j.workflow == allowed[j.name]
+    ]
+    for job in mine:
+        if job.name in started:
+            run_url = f"https://github.com/{check_repo(repo)}/actions/runs/{job.run_id}"
+            post_status(client, repo, sha, job.line, "pending", "Running again", run_url, lines_kind)
+    if any(j.name in started for j in mine):
+        lines = {j.name: j.line for j in mine}
+        add_up(client, repo, sha, lines, sum_name(policy), "", "checks", {name: "active" for name in started})
+    return done

@@ -332,7 +332,9 @@ jobs:
           app-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-actions: write
-          permission-checks: read  # the jobs of the head commit
+          permission-checks: write  # the jobs of the head commit, and the CI check of a job run again
+          # the line of a job run again (write for statuses), and the lines read to find the jobs
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || 'read' }}
       - uses: $/.github/actions/e2e-rerun
         if: steps.by-hand.outputs.reruns != '' && steps.by-hand.outputs.reruns != '[]'
         continue-on-error: true
@@ -342,6 +344,8 @@ jobs:
           sha: ${{ steps.by-hand.outputs.head }}
           jobs: ${{ steps.by-hand.outputs.reruns }}
           cheap-workflows: ${{ inputs.cheap-workflows }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          lines-kind: ${{ inputs.lines-kind }}
       # The control comment: created when the pull request has none, refreshed with what the suite lines say now, and the
       # answer to a request. A failure here must not hold up the E2E.
       - uses: $/.github/actions/manual-comment
@@ -731,6 +735,7 @@ jobs:
           permission-pull-requests: write
           permission-contents: write
           permission-checks: read  # the status block of the control comment reads the check runs
+          permission-statuses: read
           permission-actions: read  # and the run behind each, for the jobs of the cheap workflows
           permission-issues: write  # and edits the comment
       # `$/` is this workflow's own repository at the exact commit the caller pinned. Not turned on when a person said no

@@ -12,10 +12,11 @@ from typing import Any
 import pytest
 import yaml
 
-from osac_ci import cheap_jobs, cli
+from osac_ci import cheap_jobs, cheap_stage, cli
 from osac_ci.cheap_jobs import CheapJob
 from osac_ci.e2e_start import NEEDED, Action, Inputs, Review, Suite, decide, to_json
 from osac_ci.github.api import Response
+from osac_ci.policy import parse_policy
 
 pytestmark = pytest.mark.unit
 HEAD = "a" * 40
@@ -92,6 +93,15 @@ def test_a_job_without_a_command_cannot_be_asked_for() -> None:
 
 
 SHA_URL = f"/repos/{REPO}/commits/{HEAD}/check-runs"
+POLICY_TEXT = """
+version: 1
+repo: o/r
+jobs:
+  lint:
+    kind: cheap
+    check: "CI / lint"
+    workflow: ci-lint.yml
+"""
 
 
 def check(name: str, run: int, job_id: int, conclusion: str | None = "failure") -> dict[str, Any]:
@@ -108,11 +118,23 @@ def wf_id(name: str) -> int:
 class Github:
     def __init__(self, checks: list[dict[str, Any]], runs: dict[int, tuple[str, str]], post: int = 201) -> None:
         self.checks, self.runs, self.post, self.posted = checks, runs, post, []
+        self.statuses: list[dict[str, Any]] = []  # the lines of the app, newest first
+        self.titles: dict[int, tuple[str, str]] = {}  # run -> (title, workflow path) for a run the controller started
+        self.written: list[tuple[str, Any]] = []
 
     def request(self, method: str, path: str, *, params: Any = None, body: Any = None) -> Response:
+        if method == "POST" and path.endswith(("/statuses/" + HEAD, "/check-runs")):
+            self.written.append((path, body))
+            return Response(201, {}, {})
         if method == "POST":
             self.posted.append(path)
             return Response(self.post, {"message": "nope"} if self.post >= 300 else {}, {})
+        if path.endswith("/statuses"):
+            return Response(200, self.statuses, {})
+        if "/actions/runs/" in path and int(path.rsplit("/", 1)[1]) in self.titles:
+            run = int(path.rsplit("/", 1)[1])
+            title, wf = self.titles[run]
+            return Response(200, {"display_title": title, "path": wf, "status": self.runs[run][1] or "completed"}, {})
         if path == SHA_URL:
             return Response(200, {"check_runs": self.checks}, {})
         if path.endswith("/actions/workflows"):
@@ -184,7 +206,8 @@ def test_the_command_runs_the_jobs_again_and_exits_with_3_when_one_could_not(
 ) -> None:
     github = Github([check("unit", 10, 5)], {10: ("CI", "completed")})
     monkeypatch.setattr(cli, "build_client", lambda **_: github)
-    argv = ["e2e-rerun", "--repo", REPO, "--sha", HEAD, "--cheap-workflows", '["CI"]']
+    monkeypatch.setattr(cli, "load_policy", lambda _p: parse_policy(POLICY_TEXT))
+    argv = ["e2e-rerun", "--repo", REPO, "--sha", HEAD, "--cheap-workflows", '["CI"]', "--policy", "p.yml"]
     assert cli.main([*argv, "--jobs", "[5]"]) == 0
     assert "Ran again unit: run again" in capsys.readouterr().out
     assert cli.main([*argv, "--jobs", "[9]"]) == 3
@@ -207,12 +230,13 @@ def test_the_action_declares_what_it_uses_and_expands_nothing_into_a_script() ->
     assert '"--cheap-workflows=$CHEAP_WORKFLOWS"' in text and '"${#SHA}" -ne 40' in text
 
 
-def test_the_decision_runs_jobs_again_with_a_token_that_may_only_run_actions_and_read_checks() -> None:
+def test_the_decision_runs_jobs_again_with_a_token_made_for_that_step_only() -> None:
     steps = yaml.safe_load(DECIDE.read_text(encoding="utf-8"))["jobs"]["decide"]["steps"]
     token = next(s for s in steps if s.get("id") == "rerun-token")
     assert {k: v for k, v in token["with"].items() if k.startswith("permission-")} == {
         "permission-actions": "write",
-        "permission-checks": "read",
+        "permission-checks": "write",
+        "permission-statuses": "${{ inputs.lines-kind == 'statuses' && 'write' || 'read' }}",
     }
     call = next(s for s in steps if str(s.get("uses", "")).endswith("/e2e-rerun"))
     asked = "steps.by-hand.outputs.reruns != '' && steps.by-hand.outputs.reruns != '[]'"
@@ -224,3 +248,65 @@ def test_the_decision_runs_jobs_again_with_a_token_that_may_only_run_actions_and
     assert order.index("rerun-token") < order.index(call["uses"]) < order.index("$/.github/actions/manual-comment")
     decide_step = next(s for s in steps if s.get("id") == "decide")
     assert decide_step["with"]["cheap-workflows"] == "${{ inputs.cheap-workflows }}"
+
+
+def line(context: str, state: str, link: str, creator: str = "osac-ci[bot]") -> dict[str, Any]:
+    return {"context": context, "state": state, "target_url": link, "description": "x", "creator": {"login": creator}}
+
+
+def dispatched(
+    failing: str = "failure", title: str | None = None, path: str = ".github/workflows/ci-lint.yml@refs/heads/main"
+) -> Github:
+    github = Github([], {})
+    github.runs[20] = ("lint", "completed")
+    github.titles[20] = (title or f"CI job · lint · #7 · {HEAD}", path)
+    github.statuses = [line("CI / lint", failing, f"https://github.com/{REPO}/actions/runs/20/job/77")]
+    return github
+
+
+def run_policy(github: Github, ids: list[int]) -> Any:
+    return cheap_stage.rerun(github, REPO, HEAD, ids, (), parse_policy(POLICY_TEXT), lines_kind="statuses")  # type: ignore[arg-type]
+
+
+def test_a_failed_cheap_job_of_the_controller_is_run_again_its_line_says_so_and_the_sum_waits_for_it() -> None:
+    github = dispatched()
+    assert run_policy(github, [77]) == [("lint", True, "run again")]
+    assert github.posted == [f"/repos/{REPO}/actions/jobs/77/rerun"]
+    again = [b for p, b in github.written if p.endswith("/statuses/" + HEAD)]
+    assert again == [
+        {"state": "pending", "context": "CI / lint", "description": "Running again",
+         "target_url": f"https://github.com/{REPO}/actions/runs/20"}
+    ]  # fmt: skip
+    sums = [b for p, b in github.written if p.endswith("/check-runs")]
+    assert sums and sums[0]["name"] == "CI" and sums[0]["status"] == "in_progress"
+
+
+@pytest.mark.parametrize(
+    "github",
+    [
+        dispatched(path=".github/workflows/ci-other.yml@refs/heads/main"),  # not the workflow the policy names
+        dispatched(title=f"CI job · lint · #7 · {'c' * 40}"),  # a run of another commit
+        dispatched(title="E2E suite · lint · #7 · " + HEAD),  # not a cheap job's run
+        dispatched(failing="success"),  # it passed
+        dispatched(title=f"CI job · nope · #7 · {HEAD}"),  # a job the policy does not have
+    ],
+)
+def test_a_dispatched_job_that_does_not_match_the_policy_or_the_commit_is_left_alone(github: Github) -> None:
+    [(_, started, says)] = run_policy(github, [77])
+    assert started is False and "left alone" in says and github.posted == [] and github.written == []
+
+
+def test_a_line_that_is_not_the_apps_is_never_a_cheap_job() -> None:
+    github = dispatched()
+    github.statuses = [line("CI / lint", "failure", github.statuses[0]["target_url"], creator="github-actions[bot]")]
+    [(_, started, _)] = run_policy(github, [77])
+    assert started is False and github.posted == []
+
+
+def test_the_panel_lists_the_jobs_the_controller_started_with_their_command() -> None:
+    github = dispatched()
+    [job] = cheap_jobs.read_dispatched_jobs(github, REPO, HEAD, [])  # type: ignore[arg-type]
+    assert (job.name, job.state, job.command, job.job_id, job.run_done, job.line) == (
+        "lint", "failed", "ci-lint", 77, True, "CI / lint",
+    )  # fmt: skip
+    assert job.can_run_again and job.workflow == "ci-lint.yml"

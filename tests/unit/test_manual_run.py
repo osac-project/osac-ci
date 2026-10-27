@@ -234,6 +234,8 @@ class Fake:
             if self.delete_status == 204:
                 self.comments = [c for c in self.comments if c["id"] != wanted]
             return Response(self.delete_status, {}, {})
+        if method == "GET" and "/actions/runs/" in path:  # the run behind a line (is it a cheap job of the controller?)
+            return Response(404, {"message": "Not Found"}, {})
         raise AssertionError(f"unexpected request {method} {path}")
 
 
@@ -1024,6 +1026,8 @@ class OwnersGitHub:
         if method == "GET" and "/contents/" in path:
             return Response(404, {}, {})
         if method == "GET" and path.endswith("/pulls/7/reviews"):
+            return Response(200, [], {})
+        if method == "GET" and path.endswith("/statuses") and "/commits/" in path:
             return Response(200, [], {})
         if method == "GET" and path.endswith("/pulls/7/files"):
             page = (params or {}).get("page", "1")

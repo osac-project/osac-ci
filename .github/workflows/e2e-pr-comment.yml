@@ -61,6 +61,7 @@ jobs:
           permission-contents: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # the CODEOWNERS of the base branch, for the code owners row
           permission-checks: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # the status block reads the checks
           permission-actions: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # and the run behind each, for the jobs of the cheap workflows
+          permission-statuses: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}
           permission-issues: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'write' || '' }}  # and edits the comment
       # `$/` is this workflow's own repository at the exact commit the caller pinned (see e2e-pr-decide.yml).
       - uses: $/.github/actions/early-comment

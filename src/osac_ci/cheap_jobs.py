@@ -18,12 +18,18 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
+from osac_ci.suite_lines import SUITE_LINE_CREATORS
 
 ACTIONS_APP = "github-actions"
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 IGNORED_CONCLUSIONS = frozenset({"skipped", "neutral", "stale"})
 NAME_MAX = 100  # the longest name of a workflow the repository may list
+RUN_NAME_PREFIX = "CI job · "
+RUN_NAME = re.compile(r"CI job · (?P<job>[a-z0-9][a-z0-9_-]{0,39}) · #(?P<number>[0-9]+) · (?P<sha>[0-9a-f]{40})")
+JOB_IN_URL = re.compile(r"/job/(\d+)")
+LINE_APP = "osac-ci"  # the app whose check runs are lines
+LINE_STATES = {"pending": "active", "success": "passed", "failure": "failed", "error": "cancelled"}
 COMMAND_PREFIX = "ci-"  # a job is asked for as ``/test ci-<its name>``: never a suite id of its own
 COMMAND_MAX = 40  # the longest id a ``/test`` comment takes
 
@@ -42,6 +48,7 @@ class CheapJob:
     running: bool = False  # active, and started (else it waits for a runner)
     workflow: str = ""
     command: str = ""  # what follows ``/test`` to run it again; empty when no name of it is unambiguous
+    line: str = ""  # a job the controller started as a run of its own: the name of its line (``CI / lint``)
 
     @property
     def can_run_again(self) -> bool:
@@ -159,12 +166,18 @@ HEAD_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 def rerun_jobs(
-    client: GitHubClient, repo: str, sha: str, job_ids: Sequence[int], workflows: Sequence[str]
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    job_ids: Sequence[int],
+    workflows: Sequence[str],
+    dispatched: Mapping[str, str] | None = None,
 ) -> list[tuple[str, bool, str]]:
     """Run each of ``job_ids`` again (GitHub runs again the job and the jobs that wait for it, in the run it belongs
-    to). Nothing in the request is believed: each id must still be a failed or cancelled job of a finished run of a
-    listed workflow on ``sha``, read now, so an id that is not (or a job somebody has already started again) is
-    refused. Returns (job, started, what happened) for each."""
+    to). Nothing in the request is believed: each id must still be a failed or cancelled job of a finished run on
+    ``sha``, read now, of a listed workflow or (``dispatched``: job -> workflow file, from the policy) of a cheap job
+    the controller started, so an id that is not (or a job somebody has already started again) is refused. Returns (job,
+    started, what happened) for each."""
     repo = check_repo(repo)
     if not HEAD_SHA.fullmatch(sha):
         raise ValueError(f"invalid commit: {sha!r}")
@@ -172,6 +185,10 @@ def rerun_jobs(
         raise ValueError("the jobs must be a list of ids")
     checks = list(paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs"))
     can = {j.job_id: j for j in read_cheap_jobs(client, repo, checks, workflows) if j.can_run_again}
+    if dispatched:
+        for job in read_dispatched_jobs(client, repo, sha, checks):
+            if job.can_run_again and dispatched.get(job.name) == job.workflow:
+                can[job.job_id] = job
     out: list[tuple[str, bool, str]] = []
     for job_id in dict.fromkeys(job_ids):
         job = can.get(job_id)
@@ -187,3 +204,80 @@ def rerun_jobs(
                 (job.name, False, f"could not be run again ({response.status}{': ' + message if message else ''})")
             )
     return out
+
+
+def _line_state(check: Mapping[str, object]) -> str:
+    if check.get("status") != "completed":
+        return "pending"
+    return {"success": "success", "cancelled": "error"}.get(str(check.get("conclusion") or ""), "failure")
+
+
+def _app_lines(
+    client: GitHubClient, repo: str, sha: str, checks: Sequence[Mapping[str, object]]
+) -> list[tuple[str, str, str]]:
+    """(name, state, link) of the newest line of each name that the OSAC CI app wrote on the commit: its commit statuses
+    (a token that may not read statuses sees none) and its check runs. State is a status state."""
+    lines: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    try:
+        statuses = list(paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/statuses"))  # newest first
+    except GitHubError as exc:
+        if exc.status not in (401, 403, 404):
+            raise
+        statuses = []
+    for status in statuses:
+        context = str(status.get("context") or "")
+        if context in seen or (status.get("creator") or {}).get("login") not in SUITE_LINE_CREATORS:
+            continue
+        seen.add(context)
+        lines.append((context, str(status.get("state") or ""), str(status.get("target_url") or "")))
+    mine = [c for c in checks if isinstance(c.get("app"), Mapping) and c["app"].get("slug") == LINE_APP]  # type: ignore[index, union-attr]
+    for check in sorted(mine, key=lambda c: -int(str(c.get("id") or 0))):
+        name = str(check.get("name") or "")
+        if name in seen:
+            continue
+        seen.add(name)
+        lines.append((name, _line_state(check), str(check.get("details_url") or check.get("html_url") or "")))
+    return lines
+
+
+def read_dispatched_jobs(
+    client: GitHubClient, repo: str, sha: str, checks: Sequence[Mapping[str, object]]
+) -> tuple[CheapJob, ...]:
+    """The cheap jobs the controller started as runs of their own, read from its lines on the commit: a line whose link
+    points into a run named ``CI job · <job> · #<pull request> · <commit>`` for this very commit is the line of that job
+    (the name of a run is set by the workflow, so a line of anything else, an E2E suite say, is not one). A run that
+    cannot be read is left out."""
+    repo = check_repo(repo)
+    jobs: list[CheapJob] = []
+    for context, state, url in _app_lines(client, repo, sha, checks):
+        found = RUN_IN_URL.search(url)
+        if found is None or state not in LINE_STATES:
+            continue
+        run = int(found.group(1))
+        try:
+            info = get(client, f"/repos/{repo}/actions/runs/{run}")
+        except GitHubError:
+            continue
+        named = RUN_NAME.fullmatch(str(info.get("display_title") or ""))
+        if named is None or named["sha"] != sha:
+            continue
+        job_id = JOB_IN_URL.search(url)
+        job = named["job"]
+        active = LINE_STATES[state] == "active"
+        jobs.append(
+            CheapJob(
+                name=job,
+                state=LINE_STATES[state],
+                url=url,
+                job_id=int(job_id.group(1)) if job_id else 0,
+                run_id=run,
+                run_done=info.get("status") == "completed",
+                running=active and info.get("status") == "in_progress",
+                workflow=str(info.get("path") or "").split("@")[0].rsplit("/", 1)[-1],
+                command=command_of(job),
+                line=context,
+            )
+        )
+    order = {"failed": 0, "active": 1, "cancelled": 2, "passed": 3}
+    return tuple(sorted(jobs, key=lambda j: (order[j.state], j.name)))

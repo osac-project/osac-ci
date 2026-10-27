@@ -191,6 +191,7 @@ def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_ex
     assert wanted["permission-issues"] == "${{ " + other + " && 'write' || '' }}"
     assert wanted["permission-contents"] == "${{ " + other + " && 'read' || '' }}"  # the CODEOWNERS of the status block
     assert wanted["permission-actions"] == "${{ " + other + " && 'read' || '' }}"  # the run behind each check
+    assert wanted["permission-statuses"] == "${{ " + other + " && 'read' || '' }}"  # the lines of the app
     assert set(wanted) == {
         "permission-pull-requests",
         "permission-members",
@@ -198,6 +199,7 @@ def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_ex
         "permission-issues",
         "permission-contents",
         "permission-actions",
+        "permission-statuses",
     }
 
 
