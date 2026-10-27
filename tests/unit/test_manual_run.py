@@ -1002,6 +1002,9 @@ def test_the_approval_row_says_it_runs_the_e2e_while_a_code_owner_group_has_not_
     assert "enough to run the E2E" not in rows(code_owners=done), "every group approved: the approval stands as it is"
     assert "enough to run the E2E" not in rows(), "no code owners"
     assert "enough to run the E2E" not in rows(code_owners=waiting, closed="merged")
+    assert "enough to run the E2E" not in rows(code_owners=waiting, owners_checked=False), (
+        "who approved is unknown: the note must not say the owners still have to"
+    )
 
 
 class OwnersGitHub:
