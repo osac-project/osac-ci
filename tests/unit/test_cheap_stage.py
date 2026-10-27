@@ -248,3 +248,30 @@ def test_a_needed_job_with_no_line_yet_keeps_the_ci_check_from_passing() -> None
     gh.line("CI / lint", "completed", "success", "Passed", RUN_LINT)
     cheap_stage.add_up(gh, "o/r", HEAD, {"lint": "CI / lint", "unit": "CI / unit"}, "CI", "", "checks")  # type: ignore[arg-type]
     assert gh.latest("CI") == ("in_progress", "Running: unit")
+
+
+def _workflow(name: str) -> dict[str, Any]:
+    import yaml
+    from helpers import ROOT
+
+    return yaml.safe_load((ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def test_the_front_door_runs_no_code_of_the_pull_request_and_asks_the_app_for_what_it_needs_only() -> None:
+    wf = _workflow("cheap-start.yml")
+    job = wf["jobs"]["start"]
+    assert wf["permissions"] == {} and job["permissions"] == {"contents": "read"}
+    for step in job["steps"]:
+        assert "ref" not in (step.get("with") or {}), "nothing of the pull request is checked out"
+        assert "${{" not in step.get("run", "")
+    token = next(s for s in job["steps"] if s.get("id") == "app-token")["with"]
+    assert {k: v for k, v in token.items() if k.startswith("permission-")} == {
+        "permission-actions": "write",
+        "permission-checks": "write",
+        "permission-statuses": "${{ inputs.lines-kind == 'statuses' && 'write' || '' }}",
+        "permission-pull-requests": "read",
+    }
+    assert "pull_request_target" in job["if"] and job["concurrency"]["cancel-in-progress"] is True
+    decide = _workflow("e2e-pr-decide.yml")["jobs"]
+    assert "cheap-start" not in decide, "the pull request must not get a skipped row for every job of the decision"
+    assert {"cheap-ended-find", "cheap-ended"} <= set(decide)

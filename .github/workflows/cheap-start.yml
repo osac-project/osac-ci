@@ -1,0 +1,82 @@
+---
+# Shared workflow, the front door of the cheap stage (the first piece of "Autopilot"): a pull request opened, was reopened
+# or got a new commit, so the cheap jobs of the policy (kind cheap, with a `workflow`) are started as runs of their own by
+# the OSAC CI app, their lines written, and the `CI` check written as waiting for them. Their ends are handled by the
+# decision workflow (`cheap-ended`).
+#
+# A repository calls it from a small workflow of its own on `pull_request_target` (types opened, reopened, synchronize); it
+# runs from the default branch, so it has the secret for any pull request, a fork's included, and it checks out nothing of
+# the pull request (the jobs run from the default branch and check their inputs against the pull request). It is a workflow
+# of its own, and not a job of the decision, so the pull request shows one row for it and not one skipped row for each job
+# of the decision.
+name: Cheap stage start
+
+on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a pull_request_target caller; no pull request code runs
+  workflow_call:
+    inputs:
+      policy-file:
+        description: The repository's policy (jobs and path filters), read from its default branch
+        type: string
+        default: .github/e2e-policy.yml
+      filters-file:
+        description: The repository's shared path filters, read from its default branch (the policy points at it)
+        type: string
+        default: .github/filters/ci-filters.yml
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+      lines-kind:
+        description: >-
+          Where the lines of the jobs are written: `statuses` (commit statuses, the row links straight to the job) or
+          `checks` (check runs of the app). Give every workflow of the flow the same value.
+        type: string
+        default: statuses
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  start:
+    name: Start the cheap jobs
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # One start at a time per pull request: a newer commit replaces a start that has not finished (the start reads the head
+    # of the pull request itself).
+    concurrency:
+      group: cheap-start-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read  # check out the policy of the default branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: |
+            ${{ inputs.policy-file }}
+            ${{ inputs.filters-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Token of the OSAC CI app
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-actions: write  # start the runs
+          permission-checks: write  # the CI check
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the job lines, when statuses
+          permission-pull-requests: read  # the commit and who wrote it
+      # `$/` is this workflow's own repository at the exact commit the caller pinned (see e2e-pr-decide.yml).
+      - uses: $/.github/actions/cheap-start
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ github.event.pull_request.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          lines-kind: ${{ inputs.lines-kind }}

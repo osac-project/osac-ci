@@ -452,49 +452,6 @@ jobs:
           number: ${{ steps.report.outputs.number }}
           head-sha: ${{ steps.report.outputs.sha }}
 
-  # A pull request opened, was reopened or got a new commit: the cheap jobs of the policy (kind cheap, with a `workflow`) are
-  # started as runs of their own by the OSAC CI app, their lines written, and the `CI` check written as waiting for them.
-  # Nothing of the pull request runs here (the jobs run from the default branch and check their inputs against the pull
-  # request), and the event is `pull_request_target` so a fork's pull request is served too. One start at a time per pull
-  # request: a newer commit replaces a start that has not finished (the start reads the head of the pull request itself).
-  cheap-start:
-    name: Start the cheap jobs
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    concurrency:
-      group: cheap-start-${{ github.event.pull_request.number }}
-      cancel-in-progress: true
-    permissions:
-      contents: read  # check out the policy of the default branch
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          sparse-checkout: |
-            ${{ inputs.policy-file }}
-            ${{ inputs.filters-file }}
-          sparse-checkout-cone-mode: false
-          persist-credentials: false
-      - name: Token of the OSAC CI app
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
-        with:
-          app-id: ${{ inputs.app-id }}
-          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
-          permission-actions: write  # start the runs
-          permission-checks: write  # the CI check
-          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the job lines, when statuses
-          permission-pull-requests: read  # the commit and who wrote it
-      - uses: $/.github/actions/cheap-start
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          repo: ${{ github.repository }}
-          number: ${{ github.event.pull_request.number }}
-          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
-          lines-kind: ${{ inputs.lines-kind }}
-
   # A cheap job (a policy job of kind cheap that names a `workflow`) that was started as a run of its own has ended: its
   # line gets the result and the `CI` check is added up from the lines of the jobs the change needs. The event is a
   # `workflow_run` of the job's workflow (the caller lists its name); it fires for a normal end, a cancel and a re-run, so a
