@@ -1,0 +1,133 @@
+"""The jobs of the cheap stage of a pull request, read from its check runs: the legs of the repository's own workflows
+(``CI``, say), each with where it stands and whether it can be run again.
+
+The status comment lists them next to the E2E suites, and a ``/test <job>`` comment runs a failed one again. Nothing
+here starts anything: it reads. A job is a check run of the head commit written by GitHub Actions, and for Actions its
+id is the id of the job, so a check run is enough to name the job, link to it and ask for it to be run again; the
+workflow it belongs to is found through the run its link points into (the run, not the commit, says the workflow's
+name: a ``pull_request_target`` run is tied to the base commit and is not found by the head commit). Jobs that were
+skipped say nothing and are left out.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get
+
+ACTIONS_APP = "github-actions"
+RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
+FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
+IGNORED_CONCLUSIONS = frozenset({"skipped", "neutral", "stale"})
+NAME_MAX = 100  # the longest name of a workflow the repository may list
+
+
+@dataclass(frozen=True)
+class CheapJob:
+    """A job of a cheap workflow on the head commit. ``state`` is active | passed | failed | cancelled; ``run_done`` is
+    whether its run has ended, the only time one job of it can be run again."""
+
+    name: str
+    state: str
+    url: str = ""
+    job_id: int = 0
+    run_id: int = 0
+    run_done: bool = False
+    running: bool = False  # active, and started (else it waits for a runner)
+    workflow: str = ""
+
+    @property
+    def can_run_again(self) -> bool:
+        return self.run_done and self.state in ("failed", "cancelled") and self.job_id > 0
+
+
+def parse_workflows(text: str) -> tuple[str, ...]:
+    """The workflows whose jobs are listed, as the command line gives them: a JSON list of names (``[]`` or empty:
+    none). Each name is checked: it is compared with names GitHub gives, so it must be one short printable line."""
+    if not text.strip():
+        return ()
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"the cheap workflows must be a JSON list of names: {exc}") from exc
+    if not isinstance(raw, list):
+        raise ValueError("the cheap workflows must be a JSON list of names")
+    names: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip() or len(item) > NAME_MAX or not item.isprintable():
+            raise ValueError(f"invalid workflow name: {item!r}")
+        names.append(item)
+    return tuple(dict.fromkeys(names))
+
+
+def _state(check: Mapping[str, object]) -> str | None:
+    """active | passed | failed | cancelled for a check run; None for one that says nothing (skipped, neutral)."""
+    if check.get("status") != "completed":
+        return "active"
+    conclusion = str(check.get("conclusion") or "")
+    if conclusion == "success":
+        return "passed"
+    if conclusion in FAILED_CONCLUSIONS:
+        return "failed"
+    if conclusion == "cancelled":
+        return "cancelled"
+    return None if conclusion in IGNORED_CONCLUSIONS or not conclusion else "failed"
+
+
+def _run_of(check: Mapping[str, object]) -> int | None:
+    found = RUN_IN_URL.search(str(check.get("details_url") or check.get("html_url") or ""))
+    return int(found.group(1)) if found else None
+
+
+def read_cheap_jobs(
+    client: GitHubClient, repo: str, checks: Sequence[Mapping[str, object]], workflows: Sequence[str]
+) -> tuple[CheapJob, ...]:
+    """The jobs of the newest run of each of ``workflows`` among the check runs of the head commit. A run that cannot be
+    read is left out (the status then shows less, never something wrong)."""
+    if not workflows:
+        return ()
+    repo = check_repo(repo)
+    by_run: dict[int, list[Mapping[str, object]]] = {}
+    for check in checks:
+        app = check.get("app")
+        if not isinstance(app, Mapping) or app.get("slug") != ACTIONS_APP:
+            continue
+        run = _run_of(check)
+        if run is not None:
+            by_run.setdefault(run, []).append(check)
+    newest: dict[str, tuple[int, int, bool]] = {}  # workflow name -> (run number, run id, run is done)
+    for run in by_run:
+        try:
+            info = get(client, f"/repos/{repo}/actions/runs/{run}")
+        except GitHubError:
+            continue
+        name = str(info.get("name") or "")
+        number = info.get("run_number")
+        if name not in workflows or not isinstance(number, int):
+            continue
+        if name not in newest or number > newest[name][0]:
+            newest[name] = (number, run, info.get("status") == "completed")
+    jobs: list[CheapJob] = []
+    for workflow, (_, run, done) in newest.items():
+        for check in by_run[run]:
+            state = _state(check)
+            job_id = check.get("id")
+            if state is None or not isinstance(job_id, int):
+                continue
+            jobs.append(
+                CheapJob(
+                    name=str(check.get("name") or ""),
+                    state=state,
+                    url=str(check.get("html_url") or check.get("details_url") or ""),
+                    job_id=job_id,
+                    run_id=run,
+                    run_done=done,
+                    running=state == "active" and check.get("status") == "in_progress",
+                    workflow=workflow,
+                )
+            )
+    order = {"failed": 0, "active": 1, "cancelled": 2, "passed": 3}
+    return tuple(sorted(jobs, key=lambda j: (order[j.state], j.workflow, j.name)))

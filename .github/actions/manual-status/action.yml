@@ -24,6 +24,11 @@ inputs:
   number:
     description: Pull request number
     required: true
+  cheap-workflows:
+    description: >-
+      JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs the status lists next to the E2E
+      suites; empty or `[]`: none
+    default: "[]"
 
 runs:
   using: composite
@@ -38,6 +43,7 @@ runs:
         OSAC_CI_EDIT_TOKEN: ${{ inputs.edit-token }}
         REPO: ${{ inputs.repo }}
         NUMBER: ${{ inputs.number }}
+        CHEAP_WORKFLOWS: ${{ inputs.cheap-workflows }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -48,4 +54,4 @@ runs:
         if [ -z "$OSAC_CI_EDIT_TOKEN" ]; then unset OSAC_CI_EDIT_TOKEN; fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci manual-status --repo "$REPO" --number "$NUMBER" \
-          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          "--cheap-workflows=$CHEAP_WORKFLOWS" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

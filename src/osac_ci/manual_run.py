@@ -26,6 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs
 from osac_ci.e2e_start import (
     CHECK_APP,
     NEEDED,
@@ -240,6 +241,7 @@ class PrStatus:
     blocked_by: tuple[str, ...] = ()
     code_owners: tuple[OwnerGroup, ...] = ()  # who has to approve the changed files (CODEOWNERS), and who has
     owners_checked: bool = True  # False when who is in a team could not be read: no group is then shown as approved
+    cheap: tuple[CheapJob, ...] = ()  # the jobs of the repository's cheap workflows on the head commit (CI's legs)
     rerun: tuple[str, ...] = ()  # the suites (box ids) whose line says failed: the E2E row says how to run them again
 
 
@@ -310,6 +312,30 @@ def _owners_row(status: PrStatus) -> str:
     return f"{lead('pending')}**Code owners:** waiting for approval from {groups}{note}"
 
 
+CHEAP_SHOWN = 40  # how many jobs of the cheap stage the section lists
+
+
+def _cheap_section(jobs: Sequence[CheapJob]) -> list[str]:
+    """The jobs of the cheap stage in a collapsed section, failed first. A failed job of a run that has ended says how
+    to run it again; one of a run that still goes cannot be run again before the run ends."""
+    count = {state: sum(1 for j in jobs if j.state == state) for state in ("failed", "active", "cancelled", "passed")}
+    parts = [f"{n} {word}" for state, word in CHEAP_WORDS if (n := count[state])]
+    lines = [f"<details><summary><b>🧰 Checks</b> · {' · '.join(parts)} ({len(jobs)} jobs)</summary>", ""]
+    for job in jobs[:CHEAP_SHOWN]:
+        view = CheckView(job.state, job.url, running=job.running)
+        mark = lead("running" if job.state == "active" and job.running else CHECK_ICON.get(job.state, "neutral"))
+        word = "waiting" if job.state == "active" and not job.running else CHECK_WORD.get(job.state, job.state)
+        text = f"[{word}]({view.url})" if view.url else word
+        again = f" · comment `/test {job.name}` to run it again" if job.can_run_again else ""
+        lines.append(f"- {mark}**{job.name}** · {text}{again}")
+    if len(jobs) > CHEAP_SHOWN:
+        lines.append(f"- and {len(jobs) - CHEAP_SHOWN} more")
+    return [*lines, "", "</details>"]
+
+
+CHEAP_WORDS = (("failed", "failed"), ("active", "running"), ("cancelled", "cancelled"), ("passed", "passed"))
+
+
 def _queue_row(queue: QueueView) -> str:
     if queue.state == "queued":
         return f"{lead('pending')}**Merge queue:** in the queue ({queue.detail})"
@@ -370,7 +396,8 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
                 if status.blocked_by and status.queue.state == "none":
                     row += " (blocked by the review above)"
                 rows.append(row)
-    return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
+    extra = _cheap_section(status.cheap) if status is not None and status.cheap and status.closed == "" else []
+    return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), *(["", *extra] if extra else []), STATUS_END]
 
 
 def _shown_as(view: SuiteView) -> str:
@@ -955,7 +982,12 @@ def code_owner_groups(
 
 
 def status_of(
-    client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    pr: Mapping[str, object],
+    runs: Sequence[Mapping[str, object]],
+    cheap_workflows: Sequence[str] = (),
 ) -> PrStatus:
     """The status of a pull request, reading its reviews and the role of each reviewer as the decision does. When the
     roles cannot be read (no right to), the approval row says so instead of guessing from the raw reviews."""
@@ -974,7 +1006,8 @@ def status_of(
             owners, checked = code_owner_groups(client, repo, number, pr, approvers)
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
-    return replace(status, queue=queue, code_owners=owners, owners_checked=checked)
+    cheap = read_cheap_jobs(client, repo, runs, cheap_workflows) if _closed_of(pr) == "" else ()
+    return replace(status, queue=queue, code_owners=owners, owners_checked=checked, cheap=cheap)
 
 
 # What a refused quiet edit answers (no `pull-requests: write` for the job): not an error, the app edits.
@@ -997,7 +1030,13 @@ def edit_comment(
 
 
 def refresh_status(
-    client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN, edit_client: GitHubClient | None = None
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    *,
+    bot: str = BOT_LOGIN,
+    edit_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
     the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
@@ -1019,7 +1058,7 @@ def refresh_status(
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
-    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs)))
+    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs, cheap_workflows)))
     new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
     if new == body:
         return "unchanged"
@@ -1039,6 +1078,7 @@ def refresh(
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
     edit_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> str:
     """Create or update the control comment of the pull request from the state of its head commit. Nothing is written
     when the pull request is closed or its author is not a member of the organization, or when the text is the same
@@ -1048,7 +1088,7 @@ def refresh(
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     if str(pr.get("state")) != "open":
         # Nothing to list or start any more; a comment that is there still shows where the pull request ended.
-        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client)
+        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client, cheap_workflows=cheap_workflows)
     suites = suites_of(policy)
     if not suites:
         return "skipped: the policy has no E2E suite"
@@ -1067,7 +1107,11 @@ def refresh(
     lines = suite_line_runs_if_readable(client, repo, sha, [s.check for s in suites], CHECK_APP)
     every = [*runs, *lines]
     body = render_comment(
-        sha, views_for(suites, every), kept, status_of(client, repo, number, pr, runs), history_for(suites, every)
+        sha,
+        views_for(suites, every),
+        kept,
+        status_of(client, repo, number, pr, runs, cheap_workflows),
+        history_for(suites, every),
     )
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})

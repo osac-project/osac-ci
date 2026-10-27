@@ -75,6 +75,12 @@ on:
           a spinner; the row links straight to the job). Give every workflow of the flow the same value.
         type: string
         default: checks
+      cheap-workflows:
+        description: >-
+          JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs the status in the control
+          comment lists next to the E2E suites; `[]`: none
+        type: string
+        default: "[]"
     secrets:
       OSAC_CI_APP_PRIVATE_KEY:
         description: Private key of the OSAC CI app (an organization secret)
@@ -190,6 +196,7 @@ jobs:
         if: inputs.number != ''
         continue-on-error: true
         with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
           github-token: ${{ steps.app-token.outputs.token }}
           org-token: ${{ steps.app-token.outputs.token }}
           edit-token: ${{ github.token }}

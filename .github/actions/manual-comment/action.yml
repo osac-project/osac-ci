@@ -29,6 +29,11 @@ inputs:
   number:
     description: Pull request number
     required: true
+  cheap-workflows:
+    description: >-
+      JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs the status lists next to the E2E
+      suites; empty or `[]`: none
+    default: "[]"
   policy-file:
     description: The E2E policy file of the repository, as a path on the runner (from its default branch)
     required: true
@@ -60,6 +65,7 @@ runs:
         DECISION_FILE: ${{ inputs.decision-file }}
         BY: ${{ inputs.by }}
         RUN_URL: ${{ inputs.run-url }}
+        CHEAP_WORKFLOWS: ${{ inputs.cheap-workflows }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -70,6 +76,7 @@ runs:
         args=(--policy "$POLICY_FILE" --repo "$REPO" --number "$NUMBER" --run-url="$RUN_URL")
         if [ -n "$DECISION_FILE" ]; then args+=(--decision-file "$DECISION_FILE"); fi
         if [ -n "$BY" ]; then args+=(--by="$BY"); fi
+        args+=("--cheap-workflows=$CHEAP_WORKFLOWS")
         # An empty org token must not reach the program as an empty variable: it then uses the main token.
         if [ -z "$OSAC_CI_ORG_TOKEN" ]; then unset OSAC_CI_ORG_TOKEN; fi
         if [ -z "$OSAC_CI_EDIT_TOKEN" ]; then unset OSAC_CI_EDIT_TOKEN; fi

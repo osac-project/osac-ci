@@ -26,6 +26,7 @@ from typing import Any
 from osac_ci import (
     bot_approve,
     cancel_older,
+    cheap_jobs,
     clean_runs,
     e2e_check,
     e2e_dispatch,
@@ -155,6 +156,12 @@ def build_client(*, anonymous_ok: bool = False) -> GitHubClient:
     if anonymous_ok:
         return HttpClient("", anonymous=True)
     raise SystemExit(f"error: set one of {' or '.join(TOKEN_ENV)} (for example GH_TOKEN=$(gh auth token))")
+
+
+CHEAP_WORKFLOWS_HELP = (
+    "JSON list of the names of the repository's own workflows whose jobs the status lists next to the E2E suites "
+    "(empty: none)"
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -514,6 +521,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mcom.add_argument("--by", default="", help="who asked, for the answer")
     mcom.add_argument("--run-url", default="", help="link of the workflow run, shown with the answer")
+    mcom.add_argument("--cheap-workflows", default="", metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
 
     cold = sub.add_parser(
         "cancel-older",
@@ -540,6 +548,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mstat.add_argument("--repo", required=True, help="owner/name")
     mstat.add_argument("--number", type=int, required=True, help="the pull request")
+    mstat.add_argument("--cheap-workflows", default="", metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
 
     strack = sub.add_parser(
         "e2e-suites-track",
@@ -925,7 +934,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "manual-status":
         try:
-            result = manual_run.refresh_status(build_client(), args.repo, args.number, edit_client=build_edit_client())
+            result = manual_run.refresh_status(
+                build_client(),
+                args.repo,
+                args.number,
+                edit_client=build_edit_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
+            )
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-status failed: {exc}", file=sys.stderr)
             return 3
@@ -1157,6 +1172,7 @@ def main(argv: list[str] | None = None) -> int:
                 notes=notes,
                 org_client=build_org_client(),
                 edit_client=build_edit_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
             )
         except (OSError, GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-comment failed: {exc}", file=sys.stderr)

@@ -75,6 +75,12 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         description: Id of the OSAC CI app
         type: string
         default: "4966101"
+      cheap-workflows:
+        description: >-
+          JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs the status in the control
+          comment lists next to the E2E suites; `[]`: none
+        type: string
+        default: "[]"
       lines-kind:
         description: >-
           Where the lines of the suites (`E2E / VMaaS Full Install`) are written: `checks` (check runs of the app, with a
@@ -317,6 +323,7 @@ jobs:
         if: steps.decide.outputs.number != ''
         continue-on-error: true
         with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
           github-token: ${{ steps.app-token.outputs.token }}
           org-token: ${{ steps.app-token.outputs.token }}
           edit-token: ${{ github.token }}  # an edit with it starts no workflow; created with the app so the author stays the app
@@ -507,6 +514,7 @@ jobs:
       - uses: $/.github/actions/manual-comment
         continue-on-error: true
         with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
           github-token: ${{ steps.app-token.outputs.token }}
           org-token: ${{ steps.app-token.outputs.token }}
           edit-token: ${{ github.token }}
@@ -599,6 +607,7 @@ jobs:
           permission-pull-requests: write
           permission-contents: write
           permission-checks: read  # the status block of the control comment reads the check runs
+          permission-actions: read  # and the run behind each, for the jobs of the cheap workflows
           permission-issues: write  # and edits the comment
       # `$/` is this workflow's own repository at the exact commit the caller pinned. Not turned on when a person said no
       # (auto-merge turned off, or the pull request taken out of the merge queue, after the approval) or asked for changes.
@@ -613,6 +622,7 @@ jobs:
       - uses: $/.github/actions/manual-status
         continue-on-error: true
         with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
           github-token: ${{ steps.app-token.outputs.token }}
           edit-token: ${{ github.token }}  # an edit with it starts no workflow
           repo: ${{ github.repository }}

@@ -180,6 +180,7 @@ def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_ex
     assert status["uses"] == "$/.github/actions/manual-status"
     assert status["if"] == "github.event.action != 'opened' && github.event.action != 'reopened'"
     assert status["with"] == {
+        "cheap-workflows": "${{ inputs.cheap-workflows }}",
         "github-token": "${{ steps.app-token.outputs.token }}",
         "repo": "${{ github.repository }}",
         "number": "${{ github.event.pull_request.number }}",
@@ -189,12 +190,14 @@ def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_ex
     assert wanted["permission-checks"] == "${{ " + other + " && 'read' || '' }}"
     assert wanted["permission-issues"] == "${{ " + other + " && 'write' || '' }}"
     assert wanted["permission-contents"] == "${{ " + other + " && 'read' || '' }}"  # the CODEOWNERS of the status block
+    assert wanted["permission-actions"] == "${{ " + other + " && 'read' || '' }}"  # the run behind each check
     assert set(wanted) == {
         "permission-pull-requests",
         "permission-members",
         "permission-checks",
         "permission-issues",
         "permission-contents",
+        "permission-actions",
     }
 
 

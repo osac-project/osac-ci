@@ -190,6 +190,24 @@ app needs the permission "Commit statuses: read and write" on the installation; 
 decision, the control comment and the sum of a run started by hand read the lines of either kind, so a commit that has
 both (for example one tried before the switch) is read by the newest line of each name.
 
+## The jobs of the repository's own workflows in the status
+
+The status block of the control comment can list the jobs of the repository's own workflows (the legs of `CI`) next to
+the E2E suites, in a collapsed `Checks` section: how many failed, are running or passed, and each job with a link to its
+log. A job that failed or was cancelled in a run that has ended says so; nothing is started by listing.
+
+It is off until the caller names the workflows. Give `decide`, `finish` and the comment workflow the same list of
+workflow names (as they appear on the pull request, not file names):
+
+```yaml
+    with:
+      cheap-workflows: '["CI"]'
+```
+
+Only the newest run of each listed workflow for the head commit counts, and only jobs written by GitHub Actions. The
+workflows then ask the app token for `actions: read` as well (the job's run is read to learn its workflow). The default
+`[]` lists nothing and changes nothing.
+
 ## Suites started by hand
 
 The decision workflow keeps a comment on the pull request of a member of the organization (written by the OSAC CI app)
