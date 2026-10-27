@@ -265,7 +265,8 @@ def _approval_row(status: PrStatus, sha: str) -> str:
     who = ", ".join(f"`{login}`" for login in status.approvers)
     if status.approval == "approved":
         row = f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
-        if any(not g.approved_by for g in status.code_owners) and status.closed not in ("merged", "closed"):
+        pending = any(not g.approved_by for g in status.code_owners)
+        if pending and status.owners_checked and status.closed not in ("merged", "closed"):
             row += " · enough to run the E2E; the code owners below still have to approve"
         return row
     if status.approval == "older":
