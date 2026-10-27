@@ -364,3 +364,25 @@ def test_a_ci_check_of_another_app_is_not_the_controllers() -> None:
 
 def test_without_the_controller_the_decision_reads_the_ruleset_as_before() -> None:
     assert decide(inputs(check_runs=(app_ci("failure"),), requested=())).action is Action.START
+
+
+def test_with_wait_for_ci_the_suites_wait_until_ci_has_passed_and_the_decision_says_so() -> None:
+    for runs in ((), (app_ci(None),)):
+        d = decide(replace(with_ci(*runs), wait_for_ci=True))
+        assert d.action is Action.WAIT_CI and d.suites == ("vmaas",)
+        assert "CI has not passed yet" in d.reason
+    assert decide(replace(with_ci(app_ci("success")), wait_for_ci=True)).action is Action.START
+    assert decide(replace(with_ci(app_ci("failure")), wait_for_ci=True)).action is Action.BLOCKED_CHEAP_FAILED
+
+
+def test_the_wait_comes_after_the_approval_and_never_applies_to_a_request_by_hand() -> None:
+    unapproved = replace(with_ci(), wait_for_ci=True, reviews=())
+    assert decide(unapproved).action is Action.WAIT_APPROVAL
+    by_hand = replace(with_ci(), wait_for_ci=True, requested=("vmaas",), requested_by="carol")
+    assert decide(by_hand).action is Action.START, "a person who asks for a suite decides to spend the run"
+
+
+def test_the_policy_names_the_wait_and_it_is_off_by_default() -> None:
+    off = parse_policy("version: 1\nrepo: o/r\njobs:\n  a:\n    kind: cheap\n    check: x\n")
+    on = parse_policy("version: 1\nrepo: o/r\ne2e:\n  wait_for_ci: true\njobs:\n  a:\n    kind: cheap\n    check: x\n")
+    assert off.e2e.wait_for_ci is False and on.e2e.wait_for_ci is True

@@ -63,6 +63,7 @@ class Action(StrEnum):
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
+    WAIT_CI = "wait-ci"  # the policy has the E2E wait for the CI check, and it has not passed yet
     ALREADY_PASSED = "already-passed"  # every suite the change needs has already passed on this commit
     NOTHING_TO_START = "nothing-to-start"  # a person asked for suites by hand, and none needs to start
     RUNNING_BY_HAND = "running-by-hand"  # every suite the change needs that has not passed is being run by hand
@@ -143,6 +144,8 @@ class Inputs:
     # The name of the CI check when the controller owns it (the policy has cheap jobs that run as runs of their own): it
     # is the OSAC CI app's check that adds them up, so it is read from the app's check runs, not the ruleset's app.
     ci_check: str = ""
+    # The policy has the suites start only after the CI check of the controller has passed (``E2E.wait_for_ci``).
+    wait_for_ci: bool = False
 
 
 @dataclass(frozen=True)
@@ -449,6 +452,14 @@ def decide(inputs: Inputs) -> Decision:
         return Decision(
             action=Action.BLOCKED_CHEAP_FAILED,
             reason=f"cheap checks failed: {', '.join(g.split(':')[0] for g in failed)}",
+            suites=names,
+            suite_checks=checks,
+            **base,
+        )
+    if inputs.wait_for_ci and inputs.ci_check and pending:
+        return Decision(
+            action=Action.WAIT_CI,
+            reason=f"{', '.join(g.split(':')[0] for g in pending)} has not passed yet: the suites start when it does",
             suites=names,
             suite_checks=checks,
             **base,
@@ -774,6 +785,7 @@ def fetch_inputs(
         live_runs=live,
         cheap_jobs=jobs,
         ci_check=ci_check,
+        wait_for_ci=bool(ci_check) and policy.e2e.wait_for_ci,
     )
 
 

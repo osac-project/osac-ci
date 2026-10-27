@@ -298,6 +298,14 @@ class E2EUnlock(_Strict):
 
 class E2E(_Strict):
     unlock: E2EUnlock = E2EUnlock()
+    wait_for_ci: bool = Field(
+        default=False,
+        description=(
+            "Start the suites only after the CI check has passed: while the cheap jobs the controller started (kind: "
+            "cheap with a workflow) run, or before CI has an answer, the E2E waits (and starts by itself when CI "
+            "passes). Absent: the suites start in parallel with the cheap jobs, as the E2E always did"
+        ),
+    )
 
 
 class Trust(_Strict):
