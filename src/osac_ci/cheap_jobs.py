@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
@@ -28,6 +28,7 @@ NAME_MAX = 100  # the longest name of a workflow the repository may list
 RUN_NAME_PREFIX = "CI job · "
 RUN_NAME = re.compile(r"CI job · (?P<job>[a-z0-9][a-z0-9_-]{0,39}) · #(?P<number>[0-9]+) · (?P<sha>[0-9a-f]{40})")
 JOB_IN_URL = re.compile(r"/job/(\d+)")
+DEFAULT_SUM = "CI"  # the check that adds the cheap jobs up: it links into a job's run but is not a line of a job
 LINE_APP = "osac-ci"  # the app whose check runs are lines
 LINE_STATES = {"pending": "active", "success": "passed", "failure": "failed", "error": "cancelled"}
 COMMAND_PREFIX = "ci-"  # a job is asked for as ``/test ci-<its name>``: never a suite id of its own
@@ -172,6 +173,7 @@ def rerun_jobs(
     job_ids: Sequence[int],
     workflows: Sequence[str],
     dispatched: Mapping[str, str] | None = None,
+    exclude: Collection[str] = (DEFAULT_SUM,),
 ) -> list[tuple[str, bool, str]]:
     """Run each of ``job_ids`` again (GitHub runs again the job and the jobs that wait for it, in the run it belongs
     to). Nothing in the request is believed: each id must still be a failed or cancelled job of a finished run on
@@ -186,7 +188,7 @@ def rerun_jobs(
     checks = list(paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs"))
     can = {j.job_id: j for j in read_cheap_jobs(client, repo, checks, workflows) if j.can_run_again}
     if dispatched:
-        for job in read_dispatched_jobs(client, repo, sha, checks):
+        for job in read_dispatched_jobs(client, repo, sha, checks, exclude):
             if job.can_run_again and dispatched.get(job.name) == job.workflow:
                 can[job.job_id] = job
     out: list[tuple[str, bool, str]] = []
@@ -242,15 +244,22 @@ def _app_lines(
 
 
 def read_dispatched_jobs(
-    client: GitHubClient, repo: str, sha: str, checks: Sequence[Mapping[str, object]]
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    checks: Sequence[Mapping[str, object]],
+    exclude: Collection[str] = (DEFAULT_SUM,),
 ) -> tuple[CheapJob, ...]:
     """The cheap jobs the controller started as runs of their own, read from its lines on the commit: a line whose link
     points into a run named ``CI job · <job> · #<pull request> · <commit>`` for this very commit is the line of that job
     (the name of a run is set by the workflow, so a line of anything else, an E2E suite say, is not one). A run that
-    cannot be read is left out."""
+    cannot be read is left out. ``exclude`` names the check that adds the jobs up: it links into the run of the job that
+    ended last, and is no line of a job."""
     repo = check_repo(repo)
     jobs: list[CheapJob] = []
     for context, state, url in _app_lines(client, repo, sha, checks):
+        if context in exclude:
+            continue
         found = RUN_IN_URL.search(url)
         if found is None or state not in LINE_STATES:
             continue

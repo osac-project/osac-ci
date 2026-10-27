@@ -26,7 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
-from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs, read_dispatched_jobs
+from osac_ci.cheap_jobs import DEFAULT_SUM, CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.e2e_start import (
     CHECK_APP,
     NEEDED,
@@ -988,6 +988,7 @@ def status_of(
     pr: Mapping[str, object],
     runs: Sequence[Mapping[str, object]],
     cheap_workflows: Sequence[str] = (),
+    ci_check: str = DEFAULT_SUM,
 ) -> PrStatus:
     """The status of a pull request, reading its reviews and the role of each reviewer as the decision does. When the
     roles cannot be read (no right to), the approval row says so instead of guessing from the raw reviews."""
@@ -1012,7 +1013,7 @@ def status_of(
         head = pr.get("head")
         sha = str(head.get("sha") or "") if isinstance(head, Mapping) else ""
         cheap = read_cheap_jobs(client, repo, runs, cheap_workflows) + (
-            read_dispatched_jobs(client, repo, sha, runs) if sha else ()
+            read_dispatched_jobs(client, repo, sha, runs, (ci_check,)) if sha else ()
         )
     return replace(status, queue=queue, code_owners=owners, owners_checked=checked, cheap=cheap)
 
@@ -1117,7 +1118,7 @@ def refresh(
         sha,
         views_for(suites, every),
         kept,
-        status_of(client, repo, number, pr, runs, cheap_workflows),
+        status_of(client, repo, number, pr, runs, cheap_workflows, policy.ci_check or DEFAULT_SUM),
         history_for(suites, every),
     )
     if existing is None:

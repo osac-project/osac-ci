@@ -29,7 +29,7 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
 
-from osac_ci.cheap_jobs import CheapJob, read_cheap_jobs, read_dispatched_jobs
+from osac_ci.cheap_jobs import DEFAULT_SUM, CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
@@ -732,7 +732,7 @@ def fetch_inputs(
     others = [n for n in requested if n != NEEDED and n not in {s.name for s in suites}]
     jobs = (
         read_cheap_jobs(client, repo, raw_runs, cheap_workflows)
-        + read_dispatched_jobs(client, repo, head_sha, raw_runs)
+        + read_dispatched_jobs(client, repo, head_sha, raw_runs, (policy.ci_check or DEFAULT_SUM,))
         if others
         else ()
     )

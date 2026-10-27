@@ -310,3 +310,15 @@ def test_the_panel_lists_the_jobs_the_controller_started_with_their_command() ->
         "lint", "failed", "ci-lint", 77, True, "CI / lint",
     )  # fmt: skip
     assert job.can_run_again and job.workflow == "ci-lint.yml"
+
+
+def test_the_check_that_adds_the_jobs_up_is_no_line_of_a_job_even_though_it_links_into_a_run() -> None:
+    github = dispatched()
+    sum_link = f"https://github.com/{REPO}/actions/runs/20"
+    checks = [{"id": 9, "name": "CI", "status": "completed", "conclusion": "failure", "app": {"slug": "osac-ci"},
+               "details_url": sum_link}]  # fmt: skip
+    jobs = cheap_jobs.read_dispatched_jobs(github, REPO, HEAD, checks)  # type: ignore[arg-type]
+    assert [(j.name, j.line) for j in jobs] == [("lint", "CI / lint")], "one job, from its own line"
+    # a repository that names its sum differently says so, and the default name is then a line like any other
+    other = cheap_jobs.read_dispatched_jobs(github, REPO, HEAD, checks, ("Cheap",))  # type: ignore[arg-type]
+    assert sorted(j.line for j in other) == ["CI", "CI / lint"]

@@ -220,12 +220,12 @@ def rerun(
     has its line written as running again and the sum written as waiting for it, so the pull request does not say
     failed while the job runs; its end (the ``workflow_run`` event) completes the line."""
     allowed = {j.name: j.workflow for j in jobs_of(policy)}
-    done = rerun_jobs(client, repo, sha, job_ids, workflows, dispatched=allowed)
+    done = rerun_jobs(client, repo, sha, job_ids, workflows, dispatched=allowed, exclude=(sum_name(policy),))
     started = {name for name, ok, _ in done if ok}
     checks = list(paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/check-runs", key="check_runs"))
     mine = [
         j
-        for j in read_dispatched_jobs(client, repo, sha, checks)
+        for j in read_dispatched_jobs(client, repo, sha, checks, (sum_name(policy),))
         if j.name in allowed and j.workflow == allowed[j.name]
     ]
     for job in mine:
