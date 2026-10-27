@@ -255,8 +255,10 @@ started them, or the end of the suite's run, heard by the `suite-ended` job of t
 a suite that could not be started has a failed line saying so. A newer commit stops the dispatched runs of the older one.
 
 The comment starts with a status block, "🚦 CI status", that says where the pull request stands: whether it is approved
-on the head commit (and by whom; that approval is the one that runs the E2E, so when GitHub still asks for reviews, such as the
-code owners' teams, a `Reviews requested` row names them and says the approval is not enough to merge), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
+on the head commit (and by whom; that approval is the one that runs the E2E, not necessarily a code owner's: a `Code owners` row lists the owners
+that CODEOWNERS (read from the base branch) names for the changed files, one group per rule, and crosses out a group once one of
+its owners, or a member of its team, has approved the head commit; it needs `contents: read` on the app token for CODEOWNERS and
+`members: read` for the teams, and says so when the teams could not be read), the `CI`, `jira-reference` and `E2E` checks, whether auto-merge is on, and where the pull
 request is in the merge queue (in it, with its place; taken out, with why; or not queued); a draft and a merge conflict get
 a row of their own. The E2E suites and the ways to start them are below it, in a collapsed section. Rows that do not apply
 (a check the commit does not have) are left out. The block is refreshed when CI starts or ends, a review is submitted or

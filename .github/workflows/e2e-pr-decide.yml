@@ -244,6 +244,7 @@ jobs:
           permission-pull-requests: write  # a comment on a pull request needs this one, not only issues
           permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
           permission-members: read
+          permission-contents: read  # the CODEOWNERS of the base branch, for the code owners row of the status
       # `$/` is this workflow's own repository at the exact commit the caller pinned, so the actions used here are the ones
       # that were reviewed with this file (a plain `./` would resolve against the caller's workspace).
       - uses: $/.github/actions/e2e-decide
@@ -484,6 +485,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-members: read
+          permission-contents: read  # the CODEOWNERS of the base branch, for the code owners row of the status
       - uses: $/.github/actions/e2e-suite-ended
         with:
           github-token: ${{ steps.app-token.outputs.token }}

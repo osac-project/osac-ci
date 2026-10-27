@@ -188,7 +188,14 @@ def test_on_every_other_event_the_workflow_rewrites_the_status_block_with_the_ex
     other = "github.event.action != 'opened' && github.event.action != 'reopened'"
     assert wanted["permission-checks"] == "${{ " + other + " && 'read' || '' }}"
     assert wanted["permission-issues"] == "${{ " + other + " && 'write' || '' }}"
-    assert set(wanted) == {"permission-pull-requests", "permission-members", "permission-checks", "permission-issues"}
+    assert wanted["permission-contents"] == "${{ " + other + " && 'read' || '' }}"  # the CODEOWNERS of the status block
+    assert set(wanted) == {
+        "permission-pull-requests",
+        "permission-members",
+        "permission-checks",
+        "permission-issues",
+        "permission-contents",
+    }
 
 
 def test_the_decision_keeps_its_own_early_comment_as_the_second_chance_with_the_same_action() -> None:

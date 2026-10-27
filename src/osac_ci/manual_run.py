@@ -43,9 +43,11 @@ from osac_ci.e2e_start import (
     unqualified_approvers,
 )
 from osac_ci.github.api import GitHubClient, GitHubError, Response, check_repo, get, paginate
+from osac_ci.github.snapshot import fetch_codeowners, fetch_team_members
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
+from osac_ci.rules import codeowners
 from osac_ci.suite_lines import suite_line_runs_if_readable
 
 MARKER = "<!-- osac-ci:manual-run -->"
@@ -203,16 +205,25 @@ class QueueView:
 
 
 @dataclass(frozen=True)
+class OwnerGroup:
+    """The owners of changed files by one CODEOWNERS rule (``@owner/team`` or ``@login``): one of them has to approve.
+    ``approved_by`` is the login of one who approved the head commit, empty while none has."""
+
+    owners: tuple[str, ...]
+    approved_by: str = ""
+
+
+@dataclass(frozen=True)
 class PrStatus:
     """Where a pull request stands, for the status block. ``approval`` is approved | older | changes | waiting |
     unchecked (the reviews show an approval but who may approve could not be read), with the logins behind it, and
     ``ignored`` the people whose approval does not count; ``blocked_by`` the bots (CodeRabbit) whose request for changes
-    GitHub still holds against the merge, though the decision to start the E2E ignores it; ``reviews_requested`` the
-    teams and people whose review is still asked for (a code owner's team stays there until one of its members has
-    reviewed; the approval that starts the E2E is not theirs), and ``held`` that GitHub holds the merge; ``auto_merge``
-    is the merge method when auto-merge is on, empty when it is off; ``queue`` the merge queue (None when it could not
-    be read: the row is then left out); ``closed`` merged | closed once the pull request is over: the block then says
-    so, and says nothing of auto-merge and the queue, which are no more."""
+    GitHub still holds against the merge, though the decision to start the E2E ignores it; ``code_owners`` the owners
+    that CODEOWNERS names for the changed files, each group with who approved the head commit (the approval that starts
+    the E2E is not necessarily theirs); ``auto_merge`` is the merge method when auto-merge is on, empty when it is off;
+    ``queue`` the merge queue (None when it could not be read: the row is then left out); ``closed`` merged | closed
+    once the pull request is over: the block then says so, and says nothing of auto-merge and the queue, which are no
+    more."""
 
     approval: str
     approvers: tuple[str, ...] = ()
@@ -227,8 +238,8 @@ class PrStatus:
     closed: str = ""  # "" while open | merged | closed (without merging)
     base: str = ""  # the branch it was or would be merged into
     blocked_by: tuple[str, ...] = ()
-    reviews_requested: tuple[str, ...] = ()  # the teams (``@owner/team``) and people whose review is still requested
-    held: bool = False  # GitHub holds the merge (``blocked``): the requested reviews that are required are missing
+    code_owners: tuple[OwnerGroup, ...] = ()  # who has to approve the changed files (CODEOWNERS), and who has
+    owners_checked: bool = True  # False when who is in a team could not be read: no group is then shown as approved
     rerun: tuple[str, ...] = ()  # the suites (box ids) whose line says failed: the E2E row says how to run them again
 
 
@@ -254,8 +265,8 @@ def _approval_row(status: PrStatus, sha: str) -> str:
     who = ", ".join(f"`{login}`" for login in status.approvers)
     if status.approval == "approved":
         row = f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
-        if status.reviews_requested and status.closed not in ("merged", "closed"):
-            row += " · enough to run the E2E, not to merge: see the reviews requested below"
+        if any(not g.approved_by for g in status.code_owners) and status.closed not in ("merged", "closed"):
+            row += " · enough to run the E2E; the code owners below still have to approve"
         return row
     if status.approval == "older":
         return (
@@ -273,6 +284,29 @@ def _approval_row(status: PrStatus, sha: str) -> str:
         names = ", ".join(f"`{login}`" for login in status.ignored)
         row += f" (an approval by {names} does not count: not from someone who may approve here)"
     return row
+
+
+OWNERS_SHOWN = 3  # how many owners of a group the row names before "or N more"
+
+
+def _group_text(group: OwnerGroup) -> str:
+    names = [f"`{owner}`" for owner in group.owners[:OWNERS_SHOWN]]
+    more = len(group.owners) - OWNERS_SHOWN
+    text = " or ".join(names) + (f" or {more} more" if more > 0 else "")
+    return f"~~{text}~~" if group.approved_by else text
+
+
+def _owners_row(status: PrStatus) -> str:
+    """The code owners of the changed files, each group crossed out once one of its owners has approved. The row only
+    names who is asked: whether GitHub makes the approval a condition of the merge is the repository's rule."""
+    groups = " · ".join(_group_text(g) for g in status.code_owners)
+    done = [g for g in status.code_owners if g.approved_by]
+    if not status.owners_checked:
+        return f"{lead('warning')}**Code owners:** {groups} (who approved could not be checked)"
+    if len(done) == len(status.code_owners):
+        return f"{lead('passed')}**Code owners:** {groups} (all approved)"
+    note = " (crossed out: approved)" if done else ""
+    return f"{lead('pending')}**Code owners:** waiting for approval from {groups}{note}"
 
 
 def _queue_row(queue: QueueView) -> str:
@@ -304,10 +338,8 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
         if status.conflict and not over:
             rows.append(f"{lead('error')}**Merge conflict:** rebase on the target branch")
         rows.append(_approval_row(status, sha))
-        if status.reviews_requested and not over:
-            names = ", ".join(f"`{name}`" for name in status.reviews_requested)
-            hold = "; GitHub holds the merge until the required ones have approved" if status.held else ""
-            rows.append(f"{lead('pending')}**Reviews requested:** waiting for {names}{hold}")
+        if status.code_owners and not over:
+            rows.append(_owners_row(status))
         if status.blocked_by and not over:
             who = ", ".join(f"`{login}`" for login in status.blocked_by)
             rows.append(
@@ -776,24 +808,6 @@ def approval_of(
     return "waiting", (), ignored
 
 
-def _requested_reviews(pr: Mapping[str, object], owner: str) -> tuple[str, ...]:
-    """The teams (``@owner/team``) and people whose review the pull request still asks for. GitHub requests the code
-    owners of the changed files itself and drops a team's request once one of its members has reviewed."""
-    teams = pr.get("requested_teams")
-    people = pr.get("requested_reviewers")
-    found = (
-        [f"@{owner}/{t['slug']}" for t in teams if isinstance(t, Mapping) and t.get("slug")]
-        if isinstance(teams, list)
-        else []
-    )
-    found += (
-        [f"@{u['login']}" for u in people if isinstance(u, Mapping) and u.get("login")]
-        if isinstance(people, list)
-        else []
-    )
-    return tuple(found)
-
-
 def _closed_of(pr: Mapping[str, object]) -> str:
     if str(pr.get("state", "open")) != "closed":
         return ""
@@ -803,6 +817,17 @@ def _closed_of(pr: Mapping[str, object]) -> str:
 def _base_of(pr: Mapping[str, object]) -> str:
     base = pr.get("base")
     return str(base.get("ref", "")) if isinstance(base, Mapping) else ""
+
+
+def _facts(pr: Mapping[str, object], repo: str) -> tuple[str, str, bool]:
+    """The head commit, the author and whether the commit is a fork's, from the pull request."""
+    head = pr.get("head")
+    sha = str(head.get("sha", "")) if isinstance(head, Mapping) else ""
+    user = pr.get("user")
+    author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
+    source = head.get("repo") if isinstance(head, Mapping) else None
+    fork = str(source.get("full_name", "") if isinstance(source, Mapping) else "").lower() != repo.lower()
+    return sha, author, fork
 
 
 def pr_status(
@@ -816,18 +841,12 @@ def pr_status(
     """The status of the pull request from its own data, its reviews (with the reviewers' roles, read the way the
     decision reads them) and the check runs of the head commit. ``roles_known`` False when the roles could not be read:
     the approval row then says what the reviews show and that it was not checked, never "approved"."""
-    head = pr.get("head")
-    sha = str(head.get("sha", "")) if isinstance(head, Mapping) else ""
-    user = pr.get("user")
-    author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
-    source = head.get("repo") if isinstance(head, Mapping) else None
-    fork = str(source.get("full_name", "") if isinstance(source, Mapping) else "").lower() != repo.lower()
+    sha, author, fork = _facts(pr, repo)
     if roles_known:
         approval, approvers, ignored = approval_of(reviews, sha, author, fork)
     else:
         approval, approvers, ignored = "unchecked", approvals_seen(reviews, sha), ()
     auto = pr.get("auto_merge")
-    owner = repo.partition("/")[0]
     return PrStatus(
         approval=approval,
         approvers=approvers,
@@ -839,8 +858,6 @@ def pr_status(
         auto_merge=str(auto.get("merge_method") or "on") if isinstance(auto, Mapping) else "",
         draft=bool(pr.get("draft")),
         conflict=pr.get("mergeable_state") == "dirty",
-        reviews_requested=_requested_reviews(pr, owner),
-        held=pr.get("mergeable_state") == "blocked",
         closed=_closed_of(pr),
         base=_base_of(pr),
     )
@@ -883,6 +900,59 @@ def queue_view(client: GitHubClient, repo: str, number: int) -> QueueView | None
     )
 
 
+def code_owner_groups(
+    client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], approvers: Sequence[str]
+) -> tuple[tuple[OwnerGroup, ...], bool]:
+    """The owners CODEOWNERS (read from the base branch) names for the files the pull request changes, one group per
+    distinct set of owners (one of them has to approve), each with who of ``approvers`` (the people who approved the
+    head commit) is one of them: an owner that is a login, or a member of an owner team. ``(groups, checked)``: no
+    groups when there is no CODEOWNERS, no owned file, or it cannot be read; ``checked`` False when who is in a team
+    could not be read, and no group is then shown as approved."""
+    base = _base_of(pr)
+    if not base:
+        return (), True
+    try:
+        text = fetch_codeowners(client, repo, base)
+        paths: list[str] = []
+        for raw in paginate(client, f"/repos/{repo}/pulls/{number}/files"):
+            if isinstance(raw, Mapping):
+                paths += [str(raw[key]) for key in ("filename", "previous_filename") if raw.get(key)]
+    except GitHubError:
+        return (), True
+    if not text:
+        return (), True
+    rules = codeowners.parse(text)
+    sets: dict[tuple[str, ...], None] = {}
+    for path in paths:
+        owners = codeowners.owners_of(rules, path)
+        if owners:
+            sets.setdefault(tuple(owners), None)
+    members: dict[str, frozenset[str] | None] = {}
+    known = {login.casefold(): login for login in approvers}
+    checked = True
+    groups: list[OwnerGroup] = []
+    for owners in sorted(sets):
+        by = ""
+        for owner in owners:
+            name = owner.lstrip("@")
+            if "/" in name:
+                if name not in members:
+                    members[name] = fetch_team_members(client, name)
+                team = members[name]
+                if team is None:
+                    checked = False
+                    continue
+                by = next((login for login in approvers if login.casefold() in {m.casefold() for m in team}), "")
+            else:
+                by = known.get(name.casefold(), "")
+            if by:
+                break
+        groups.append(OwnerGroup(owners, by))
+    if not checked:
+        groups = [OwnerGroup(g.owners) for g in groups]
+    return tuple(groups), checked
+
+
 def status_of(
     client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
 ) -> PrStatus:
@@ -892,11 +962,18 @@ def status_of(
     user = pr.get("user")
     author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
     queue = queue_view(client, repo, number) if _closed_of(pr) == "" else None
+    owners: tuple[OwnerGroup, ...] = ()
+    checked = True
     try:
-        status = pr_status(pr, reviews_with_roles(client, repo, raw, author), runs, repo=repo)
+        reviews = reviews_with_roles(client, repo, raw, author)
+        status = pr_status(pr, reviews, runs, repo=repo)
+        if _closed_of(pr) == "":
+            sha, writer, fork = _facts(pr, repo)
+            approvers, _, _ = approvals_of(reviews, sha, writer, fork)
+            owners, checked = code_owner_groups(client, repo, number, pr, approvers)
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
-    return replace(status, queue=queue)
+    return replace(status, queue=queue, code_owners=owners, owners_checked=checked)
 
 
 # What a refused quiet edit answers (no `pull-requests: write` for the job): not an error, the app edits.

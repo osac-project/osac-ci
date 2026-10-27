@@ -139,6 +139,7 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
           permission-members: read
+          permission-contents: read  # the CODEOWNERS of the base branch, for the code owners row of the status
       # A failure here must not keep the result from being written below: the lines of this run's suites that it could not
       # complete still say they are going, and the result then does not count them as passed.
       - uses: $/.github/actions/e2e-suites-settle
