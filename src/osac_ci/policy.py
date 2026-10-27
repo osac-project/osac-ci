@@ -150,10 +150,8 @@ class Job(_Strict):
 
     @model_validator(mode="after")
     def _workflow_only_for_a_suite(self) -> Job:
-        if self.workflow is not None and (self.kind != "e2e" or self.variant_of is not None):
-            raise ValueError(
-                "workflow is only valid for a kind: e2e suite that is not a variant (a variant uses its suite's)"
-            )
+        if self.workflow is not None and self.variant_of is not None:
+            raise ValueError("workflow is only valid for a job that is not a variant (a variant uses its suite's)")
         return self
 
     @model_validator(mode="after")
@@ -350,6 +348,9 @@ class Policy(_Strict):
     locks: dict[str, Lock] = Field(default_factory=dict)
     default_locks: tuple[str, ...] = ()
     jobs: dict[str, Job]
+    # The check that adds up the cheap jobs that run as runs of their own (a kind: cheap job that names a `workflow`):
+    # the required check the repository calls its CI. Absent: `CI`.
+    ci_check: str | None = Field(default=None, min_length=1, max_length=100)
     # What the repository adds to the central rules of policy/flow.yml: only `checks.not_cheap_extra` (check names that
     # are not "cheap"). Anything else is refused when the policy loads.
     flow: dict[str, Any] | None = None

@@ -452,6 +452,146 @@ jobs:
           number: ${{ steps.report.outputs.number }}
           head-sha: ${{ steps.report.outputs.sha }}
 
+  # A pull request opened, was reopened or got a new commit: the cheap jobs of the policy (kind cheap, with a `workflow`) are
+  # started as runs of their own by the OSAC CI app, their lines written, and the `CI` check written as waiting for them.
+  # Nothing of the pull request runs here (the jobs run from the default branch and check their inputs against the pull
+  # request), and the event is `pull_request_target` so a fork's pull request is served too. One start at a time per pull
+  # request: a newer commit replaces a start that has not finished (the start reads the head of the pull request itself).
+  cheap-start:
+    name: Start the cheap jobs
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: cheap-start-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read  # check out the policy of the default branch
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: |
+            ${{ inputs.policy-file }}
+            ${{ inputs.filters-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Token of the OSAC CI app
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-actions: write  # start the runs
+          permission-checks: write  # the CI check
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the job lines, when statuses
+          permission-pull-requests: read  # the commit and who wrote it
+      - uses: $/.github/actions/cheap-start
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ github.event.pull_request.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          lines-kind: ${{ inputs.lines-kind }}
+
+  # A cheap job (a policy job of kind cheap that names a `workflow`) that was started as a run of its own has ended: its
+  # line gets the result and the `CI` check is added up from the lines of the jobs the change needs. The event is a
+  # `workflow_run` of the job's workflow (the caller lists its name); it fires for a normal end, a cancel and a re-run, so a
+  # job run again by GitHub's button or by /test is added up the same way. Nothing in the event is believed on its own (a person
+  # with write access can start the workflow with any inputs): the program checks the name of the run, the workflow
+  # against the policy and the commit against the head of the pull request (src/osac_ci/cheap_stage.py).
+  # Two jobs because the concurrency group has to hold the commit, which only a step can read out of the run name.
+  cheap-ended-find:
+    name: Find the cheap job that ended
+    if: >-
+      github.event_name == 'workflow_run' && github.event.action == 'completed' &&
+      github.event.workflow_run.event == 'workflow_dispatch' &&
+      startsWith(github.event.workflow_run.display_title, 'CI job · ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    outputs:
+      sha: ${{ steps.name.outputs.sha }}
+    steps:
+      - name: Read the name of the run
+        id: name
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+        run: |
+          set -euo pipefail
+          pattern='^CI job · [a-z0-9][a-z0-9_-]{0,39} · #[0-9]+ · ([0-9a-f]{40})$'
+          if [[ "${TITLE}" =~ ${pattern} ]]; then
+            echo "sha=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::The run is not named like the run of a cheap job: nothing to do."
+          fi
+
+  cheap-ended:
+    name: Add up the cheap job that ended
+    needs: cheap-ended-find
+    if: needs.cheap-ended-find.outputs.sha != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One at a time per commit: the check is written from the lines, so each end reads what the others left. `queue: max`
+    # keeps every one waiting.
+    concurrency:
+      group: cheap-ended-${{ needs.cheap-ended-find.outputs.sha }}
+      queue: max
+      cancel-in-progress: false
+    permissions:
+      contents: read  # check out the policy
+      pull-requests: write  # edit the control comment quietly (edit-token below)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: |
+            ${{ inputs.policy-file }}
+            ${{ inputs.filters-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Token of the OSAC CI app
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+          permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
+          permission-issues: write
+          permission-pull-requests: write
+          permission-members: read
+          permission-contents: read  # the CODEOWNERS of the base branch, for the code owners row of the status
+      - uses: $/.github/actions/cheap-ended
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          run-id: ${{ github.event.workflow_run.id }}
+          title: ${{ github.event.workflow_run.display_title }}
+          workflow-path: ${{ github.event.workflow_run.path }}
+          lines-kind: ${{ inputs.lines-kind }}
+      # The control comment shows what each job's line says: refresh it. A failure here must not matter.
+      - name: Number of the pull request
+        id: pull
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+        run: |
+          set -euo pipefail
+          number="${TITLE#*#}"
+          echo "number=${number%% *}" >> "$GITHUB_OUTPUT"
+      - uses: $/.github/actions/manual-comment
+        continue-on-error: true
+        with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
+          github-token: ${{ steps.app-token.outputs.token }}
+          org-token: ${{ steps.app-token.outputs.token }}
+          edit-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.pull.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+
   # A suite that was started as a run of its own (its job in the policy names a `workflow`) has ended: its line gets the
   # result and the `E2E` check is added up from the lines of the suites the change needs. The event is a `workflow_run`
   # of the suite's workflow (the caller lists its name); it fires for a normal end, a cancel and a re-run, so a suite run

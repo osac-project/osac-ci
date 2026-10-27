@@ -27,6 +27,7 @@ from osac_ci import (
     bot_approve,
     cancel_older,
     cheap_jobs,
+    cheap_stage,
     clean_runs,
     e2e_check,
     e2e_dispatch,
@@ -493,6 +494,27 @@ def _parser() -> argparse.ArgumentParser:
     eend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
     eend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
 
+    cstart = sub.add_parser(
+        "cheap-start",
+        help="a pull request opened or got a commit: start its cheap jobs as runs of their own and write their lines",
+    )
+    cstart.add_argument("--policy", type=Path, required=True)
+    cstart.add_argument("--repo", required=True, help="owner/name")
+    cstart.add_argument("--number", type=int, required=True, help="the pull request")
+    cstart.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+    cstart.add_argument("--run-url", default="", help="link of this workflow run, shown on a line that could not start")
+
+    cend = sub.add_parser(
+        "cheap-ended",
+        help="a cheap job that ran as a run of its own has ended: complete its line and add up the CI check",
+    )
+    cend.add_argument("--policy", type=Path, required=True)
+    cend.add_argument("--repo", required=True, help="owner/name")
+    cend.add_argument("--run-id", type=int, required=True, help="the run of the job that ended")
+    cend.add_argument("--title", required=True, help="the name of that run (its display title)")
+    cend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
+    cend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -871,6 +893,43 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "cheap-start":
+        try:
+            done = cheap_stage.start(
+                build_client(),
+                args.repo,
+                args.number,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+                run_url=args.run_url,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: cheap-start failed: {exc}", file=sys.stderr)
+            return 3
+        for s in done.started:
+            print(f"Started {s.suite} as run {s.run}: {s.url}")
+        for job in done.failed:
+            print(f"error: {job} could not be started", file=sys.stderr)
+        print(f"CI check: {done.sum}")
+        return 3 if done.failed else 0
+
+    if args.command == "cheap-ended":
+        try:
+            said = cheap_stage.ended(
+                build_client(),
+                args.repo,
+                args.run_id,
+                args.title,
+                args.workflow_path,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: cheap-ended failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Cheap job: {said}")
         return 0
 
     if args.command == "e2e-finish":

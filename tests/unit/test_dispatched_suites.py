@@ -66,8 +66,12 @@ def test_only_a_suite_that_is_not_a_variant_may_have_one() -> None:
     with pytest.raises(PolicyError, match="not a variant"):
         parse_policy(policy(variant=variant))
     cheap = policy().replace('kind: e2e\n    check: "E2E / VMaaS Full Install"', 'kind: cheap\n    check: "x"')
-    with pytest.raises(PolicyError):
-        parse_policy(cheap.replace("filters_any: [code]\n    ", "filters_any: [code]\n    workflow: x.yml\n    ", 1))
+    parsed = parse_policy(
+        cheap.replace("filters_any: [code]\n    ", "filters_any: [code]\n    workflow: x.yml\n    ", 1)
+    )
+    assert any(j.kind == "cheap" and j.workflow == "x.yml" for j in parsed.jobs.values()), (
+        "a cheap job may be dispatched"
+    )
 
 
 SUITES = (
