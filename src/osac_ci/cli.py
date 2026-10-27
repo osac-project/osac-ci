@@ -516,6 +516,9 @@ def _parser() -> argparse.ArgumentParser:
     cend.add_argument("--title", required=True, help="the name of that run (its display title)")
     cend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
     cend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+    cend.add_argument(
+        "--json-file", type=Path, help="write {number, wake} here: wake is true when the CI check just got its answer"
+    )
 
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
@@ -925,7 +928,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "cheap-ended":
         try:
-            said = cheap_stage.ended(
+            said, number, summed = cheap_stage.ended_detail(
                 build_client(),
                 args.repo,
                 args.run_id,
@@ -938,6 +941,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: cheap-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"Cheap job: {said}")
+        if args.json_file is not None:
+            # the answer of the CI check is news for the E2E decision (a pass starts it, a failure holds it back)
+            wake = number is not None and summed in ("success", "failure")
+            args.json_file.write_text(json.dumps({"number": number, "wake": wake}), encoding="utf-8")
         return 0
 
     if args.command == "e2e-finish":

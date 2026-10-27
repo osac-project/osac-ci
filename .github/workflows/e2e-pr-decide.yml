@@ -518,13 +518,14 @@ jobs:
           app-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
-          permission-actions: read
+          permission-actions: write  # read the run that ended, and wake the E2E decision (below)
           permission-statuses: ${{ inputs.lines-kind == 'statuses' && 'write' || '' }}  # the suite lines, when statuses
           permission-issues: write
           permission-pull-requests: write
           permission-members: read
           permission-contents: read  # the CODEOWNERS of the base branch, for the code owners row of the status
       - uses: $/.github/actions/cheap-ended
+        id: ended
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           repo: ${{ github.repository }}
@@ -552,6 +553,29 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ steps.pull.outputs.number }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+      # The `CI` check has its answer: the E2E decision is run again for the pull request (it starts the suites when CI
+      # passed and the pull request is approved, and holds them back when CI failed). It is the caller's own workflow
+      # started with `workflow_dispatch` by the app (`github.workflow_ref` of a called workflow is the caller's), so it is the
+      # same decision a person would start by hand. A failure here must not matter: the next event decides too.
+      - name: Wake the E2E decision
+        if: steps.ended.outputs.wake == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          NUMBER: ${{ steps.ended.outputs.number }}
+          CALLER: ${{ github.workflow_ref }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          case "$NUMBER" in "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;; esac
+          file="${CALLER#"${REPO}"/.github/workflows/}"
+          file="${file%%@*}"
+          case "$file" in
+            *[!A-Za-z0-9._-]* | "") echo "::error::Not a workflow file name: ${file}"; exit 1 ;;
+          esac
+          gh api -X POST "repos/${REPO}/actions/workflows/${file}/dispatches" -f "ref=${BRANCH}" -f "inputs[number]=${NUMBER}"
+          echo "Woke ${file} for pull request ${NUMBER}."
 
   # A suite that was started as a run of its own (its job in the policy names a `workflow`) has ended: its line gets the
   # result and the `E2E` check is added up from the lines of the suites the change needs. The event is a `workflow_run`

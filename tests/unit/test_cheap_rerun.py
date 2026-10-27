@@ -322,3 +322,45 @@ def test_the_check_that_adds_the_jobs_up_is_no_line_of_a_job_even_though_it_link
     # a repository that names its sum differently says so, and the default name is then a line like any other
     other = cheap_jobs.read_dispatched_jobs(github, REPO, HEAD, checks, ("Cheap",))  # type: ignore[arg-type]
     assert sorted(j.line for j in other) == ["CI", "CI / lint"]
+
+
+# the CI check of the controller in the decision --------------------------------------------------------------------
+
+
+def app_ci(conclusion: str | None) -> Any:
+    from osac_ci.model import CheckRun
+
+    return CheckRun(
+        "CI", "completed" if conclusion else "in_progress", conclusion, "2026-10-10T10:00:00Z", app="osac-ci"
+    )
+
+
+def with_ci(*runs: Any, ci: str = "CI") -> Inputs:
+    return inputs(check_runs=tuple(runs), ci_check=ci, requested=())
+
+
+def test_a_failed_ci_check_of_the_controller_holds_the_start_back() -> None:
+    d = decide(with_ci(app_ci("failure")))
+    assert d.action is Action.BLOCKED_CHEAP_FAILED and d.cheap_failed == ("CI: conclusion: failure",)
+
+
+@pytest.mark.parametrize("runs", [(), (app_ci(None),)])
+def test_a_ci_check_that_goes_or_is_not_written_yet_does_not_delay_the_start(runs: tuple[Any, ...]) -> None:
+    d = decide(with_ci(*runs))
+    assert d.action is Action.START and d.cheap_pending, "named, but not holding back"
+
+
+def test_a_passed_ci_check_of_the_controller_starts_the_e2e_and_names_nothing_pending() -> None:
+    d = decide(with_ci(app_ci("success")))
+    assert d.action is Action.START and d.cheap_pending == () and d.cheap_failed == ()
+
+
+def test_a_ci_check_of_another_app_is_not_the_controllers() -> None:
+    from osac_ci.model import CheckRun
+
+    other = CheckRun("CI", "completed", "failure", "2026-10-10T10:00:00Z", app="github-actions")
+    assert decide(with_ci(other)).action is Action.START, "only the app's own CI check counts"
+
+
+def test_without_the_controller_the_decision_reads_the_ruleset_as_before() -> None:
+    assert decide(inputs(check_runs=(app_ci("failure"),), requested=())).action is Action.START

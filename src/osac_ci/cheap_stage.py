@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from osac_ci.cheap_jobs import RUN_NAME, RUN_NAME_PREFIX, read_dispatched_jobs, rerun_jobs
 from osac_ci.e2e_check import (
@@ -162,7 +163,7 @@ def start(
     return Outcome(tuple(started), tuple(failed), add_up(client, repo, sha, lines, context, run_url, "checks"))
 
 
-def ended(
+def ended_detail(
     client: GitHubClient,
     repo: str,
     run_id: int,
@@ -171,7 +172,7 @@ def ended(
     policy: Policy,
     *,
     lines_kind: str = "statuses",
-) -> str:
+) -> tuple[str, int | None, str]:
     """A cheap job that ran as a run of its own has ended (the ``workflow_run`` event): its line gets the result and the
     sum is written again. The event is not believed on its own, since a person with write access can start the workflow
     with any inputs: the title must be the one the job's workflow gives its run, the workflow must be the one the policy
@@ -180,28 +181,33 @@ def ended(
     repo = check_repo(repo)
     found = read_run_name(title)
     if found is None:
-        return "not the run of a cheap job: nothing to do"
+        return "not the run of a cheap job: nothing to do", None, ""
     job, number, sha = found
     file = workflow_path.rsplit("/", 1)[-1]
     mine = next((j for j in jobs_of(policy) if j.name == job and j.workflow == file), None)
     if mine is None or not WORKFLOW_FILE.fullmatch(file) or not SUITE_ID.fullmatch(job):
-        return f"{file} is not the workflow of the cheap job {job} in the policy: nothing to do"
+        return f"{file} is not the workflow of the cheap job {job} in the policy: nothing to do", None, ""
     pull = get(client, f"/repos/{repo}/pulls/{number}")
     if str((pull.get("head") or {}).get("sha", "")) != sha:
-        return "the pull request has moved on to another commit: nothing to do"
+        return "the pull request has moved on to another commit: nothing to do", None, ""
     description, state, url, over = run_state(client, repo, run_id, prefer=job)
     if not over:
-        return "the run has not ended: nothing to do"
+        return "the run has not ended: nothing to do", None, ""
     current = newest_status(client, repo, sha, mine.check, lines_kind)
     owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
     if owner is not None and owner != run_id:
-        return "a newer run of the job owns its line: nothing to do"
+        return "a newer run of the job owns its line: nothing to do", None, ""
     post_status(client, repo, sha, mine.check, state, description, url, lines_kind)
     needed = {j.name: j.check for j in needed_jobs(policy, _changed_files(client, repo, number))}
     needed.setdefault(mine.name, mine.check)
-    return add_up(
-        client, repo, sha, needed, sum_name(policy), f"https://github.com/{repo}/actions/runs/{run_id}", "checks"
-    )
+    run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
+    summed = add_up(client, repo, sha, needed, sum_name(policy), run_url, "checks")
+    return f"CI check: {summed}", number, summed
+
+
+def ended(*args: Any, **kwargs: Any) -> str:
+    """``ended_detail``, as the text of what was done."""
+    return ended_detail(*args, **kwargs)[0]
 
 
 def rerun(

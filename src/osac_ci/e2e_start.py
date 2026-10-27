@@ -35,7 +35,7 @@ from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
-from osac_ci.planner import latest_checks
+from osac_ci.planner import check_outcome, latest_checks
 from osac_ci.policy import Policy
 from osac_ci.suite_lines import suite_line_runs, suite_line_runs_if_readable
 
@@ -140,6 +140,9 @@ class Inputs:
     # The jobs of the repository's own workflows on the head commit (see cheap_jobs), read only when a comment asks for
     # a name that is not a suite: ``/test ci-unit`` runs a failed job of CI again.
     cheap_jobs: tuple[CheapJob, ...] = ()
+    # The name of the CI check when the controller owns it (the policy has cheap jobs that run as runs of their own): it
+    # is the OSAC CI app's check that adds them up, so it is read from the app's check runs, not the ruleset's app.
+    ci_check: str = ""
 
 
 @dataclass(frozen=True)
@@ -335,6 +338,13 @@ def decide(inputs: Inputs) -> Decision:
     approvers, stale, blocking = approvals(inputs)
     snapshot = Snapshot(repo="", number=inputs.number, head_sha=inputs.head_sha, check_runs=inputs.check_runs)
     gaps = unmet(snapshot, inputs.cheap, inputs.statuses)
+    if inputs.ci_check:
+        # the CI check of the controller (the app's own): failed holds the start back, one that goes or is not written
+        # yet does not delay it, like the required checks above
+        ci = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP and r.name == inputs.ci_check))
+        status, detail = check_outcome(ci.get(inputs.ci_check))
+        if status is not JobStatus.PASSED:
+            gaps = (*gaps, (f"{inputs.ci_check}: {detail}", status))
     failed = tuple(g for g, s in gaps if s is JobStatus.FAILED)
     pending = tuple(g for g, s in gaps if s is not JobStatus.FAILED)
     base = {
@@ -680,7 +690,11 @@ def fetch_inputs(
     if required is None:
         required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
     not_cheap = extend(flow(), policy.flow).not_cheap  # the central rules plus what this repository added
-    cheap = tuple(r for r in required if r.context not in gates and r.context not in not_cheap)
+    owned = any(j.kind == "cheap" and j.workflow for j in policy.jobs.values())
+    ci_check = (policy.ci_check or DEFAULT_SUM) if owned else ""
+    cheap = tuple(
+        r for r in required if r.context not in gates and r.context not in not_cheap and r.context != ci_check
+    )
     author = str((pr.get("user") or {}).get("login", ""))
     reviews = reviews_with_roles(client, repo, paginate(client, f"{base}/pulls/{number}/reviews"), author)
     raw_runs = list(paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs"))
@@ -759,6 +773,7 @@ def fetch_inputs(
         comment_ignored=comment_given and not requested and not request_refused,
         live_runs=live,
         cheap_jobs=jobs,
+        ci_check=ci_check,
     )
 
 

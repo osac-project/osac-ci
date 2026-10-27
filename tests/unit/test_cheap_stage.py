@@ -275,3 +275,47 @@ def test_the_front_door_runs_no_code_of_the_pull_request_and_asks_the_app_for_wh
     decide = _workflow("e2e-pr-decide.yml")["jobs"]
     assert "cheap-start" not in decide, "the pull request must not get a skipped row for every job of the decision"
     assert {"cheap-ended-find", "cheap-ended"} <= set(decide)
+
+
+def test_the_end_of_the_last_job_says_to_wake_the_e2e_decision_and_an_end_that_settles_nothing_does_not() -> None:
+    gh = Gh()
+    two_jobs(gh, ("completed", "success"), ("completed", "success"))
+    gh.checks[1] = {**gh.checks[1], "status": "completed", "conclusion": "success"}
+    said, number, summed = cheap_stage.ended_detail(gh, "o/r", RUN_LINT, TITLE, FILE, POLICY, lines_kind="checks")  # type: ignore[arg-type]
+    assert (number, summed) == (7, "success") and said == "CI check: success"
+    gh2 = Gh()
+    two_jobs(gh2, ("completed", "success"), ("in_progress", ""))
+    assert cheap_stage.ended_detail(gh2, "o/r", RUN_LINT, TITLE, FILE, POLICY, lines_kind="checks")[2] == "pending"  # type: ignore[arg-type]
+    assert cheap_stage.ended_detail(gh2, "o/r", RUN_LINT, "not mine", FILE, POLICY)[1:] == (None, "")  # type: ignore[arg-type]
+
+
+def test_the_command_tells_the_workflow_to_wake_the_decision_only_when_ci_got_its_answer(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from osac_ci import cli
+
+    answers = iter([("done", 7, "success"), ("done", 7, "failure"), ("done", 7, "pending"), ("no", None, "")])
+    monkeypatch.setattr(cheap_stage, "ended_detail", lambda *a, **k: next(answers))
+    monkeypatch.setattr(cli, "build_client", lambda **_: object())
+    monkeypatch.setattr(cli, "load_policy", lambda _p: POLICY)
+    out = tmp_path / "out.json"
+    argv = ["cheap-ended", "--policy", "p", "--repo", "o/r", "--run-id", "1", "--title", "t", "--workflow-path", "w"]
+    seen = []
+    for _ in range(4):
+        assert cli.main([*argv, "--json-file", str(out)]) == 0
+        seen.append(json.loads(out.read_text()))
+    assert [s["wake"] for s in seen] == [True, True, False, False]
+
+
+def test_the_wake_step_runs_only_on_an_answer_with_a_digits_only_number_and_cannot_fail_the_job() -> None:
+    steps = _workflow("e2e-pr-decide.yml")["jobs"]["cheap-ended"]["steps"]
+    wake = next(s for s in steps if s.get("name") == "Wake the E2E decision")
+    assert wake["if"] == "steps.ended.outputs.wake == 'true'" and wake["continue-on-error"] is True
+    assert "*[!0-9]*" in wake["run"] and "${{" not in wake["run"]
+    assert wake["env"]["CALLER"] == "${{ github.workflow_ref }}", (
+        "the caller's own workflow, not a name given by anyone"
+    )
+    token = next(s for s in steps if s.get("id") == "app-token")["with"]
+    assert token["permission-actions"].startswith("write")
