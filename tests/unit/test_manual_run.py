@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import re
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
@@ -961,44 +963,142 @@ def test_the_status_block_is_a_list_of_what_the_pull_request_waits_for() -> None
     ]
 
 
-def test_the_reviews_still_requested_have_a_row_and_the_approval_says_it_does_not_cover_them() -> None:
+def test_the_code_owner_groups_are_listed_and_crossed_out_once_one_of_the_owners_approved() -> None:
     def rows(**changes: Any) -> str:
         return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
 
-    asked = ("@osac-project/wg-infra", "@osac-project/wg-vmaas")
-    text = rows(reviews_requested=asked, held=True)
+    infra, vmaas = "@osac-project/wg-infra", "@osac-project/wg-vmaas"
+    none = (manual_run.OwnerGroup((infra,)), manual_run.OwnerGroup((vmaas,)))
+    assert f"**Code owners:** waiting for approval from `{infra}` · `{vmaas}`" in rows(code_owners=none)
+    assert "crossed out" not in rows(code_owners=none)
+    part = (manual_run.OwnerGroup((infra,), "amej"), manual_run.OwnerGroup((vmaas,)))
+    text = rows(code_owners=part)
     assert (
-        f"{lead('pending')}**Reviews requested:** waiting for `@osac-project/wg-infra`, `@osac-project/wg-vmaas`; "
-        "GitHub holds the merge until the required ones have approved"
-    ) in text
-    assert "approved by `alice` on `aaaaaaa` · enough to run the E2E, not to merge" in text
-    assert "**Reviews requested:**" not in rows(), "nothing is asked: no row"
-    assert "not to merge" not in rows(), "and the approval stands as it is"
-    assert "GitHub holds the merge" not in rows(reviews_requested=asked, held=False)
-    assert "**Reviews requested:**" not in rows(reviews_requested=asked, closed="merged"), "a finished pull request"
-    assert "**Reviews requested:**" not in rows(reviews_requested=asked, closed="closed")
+        f"{lead('pending')}**Code owners:** waiting for approval from ~~`{infra}`~~ · `{vmaas}` (crossed out: approved)"
+        in text
+    )
+    done = (manual_run.OwnerGroup((infra,), "amej"), manual_run.OwnerGroup((vmaas,), "slintes"))
+    assert f"{lead('passed')}**Code owners:** ~~`{infra}`~~ · ~~`{vmaas}`~~ (all approved)" in rows(code_owners=done)
+    either = (manual_run.OwnerGroup((infra, "@bob"), "bob"),)
+    assert f"~~`{infra}` or `@bob`~~" in rows(code_owners=either)
+    many = (manual_run.OwnerGroup(("@a", "@b", "@c", "@d", "@e")),)
+    assert "`@a` or `@b` or `@c` or 2 more" in rows(code_owners=many)
+    unchecked = rows(code_owners=part, owners_checked=False)
+    assert "(who approved could not be checked)" in unchecked and f"`{vmaas}`" in unchecked
+    assert "**Code owners:**" not in rows(), "no owned file, no row"
+    assert "**Code owners:**" not in rows(code_owners=none, closed="merged"), "a finished pull request"
 
 
-def test_the_requested_teams_and_people_come_from_the_pull_request() -> None:
-    mine = {"full_name": REPO}
-    pr = {
-        "head": {"sha": HEAD, "repo": mine},
-        "mergeable_state": "blocked",
-        "requested_teams": [{"slug": "wg-infra"}, {"slug": "wg-vmaas"}, {"name": "no slug"}],
-        "requested_reviewers": [{"login": "bob"}, {}],
-    }
-    status = manual_run.pr_status(pr, [], [], repo=REPO)
-    owner = REPO.partition("/")[0]
-    assert status.reviews_requested == (f"@{owner}/wg-infra", f"@{owner}/wg-vmaas", "@bob")
-    assert status.held is True
-    assert manual_run.pr_status({**pr, "mergeable_state": "clean"}, [], [], repo=REPO).held is False
-    for odd in (None, "x", [None, 3]):  # whatever else GitHub sent is ignored
-        assert (
-            manual_run.pr_status(
-                {**pr, "requested_teams": odd, "requested_reviewers": odd}, [], [], repo=REPO
-            ).reviews_requested
-            == ()
-        )
+def test_the_approval_row_says_it_runs_the_e2e_while_a_code_owner_group_has_not_approved() -> None:
+    def rows(**changes: Any) -> str:
+        return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
+
+    waiting = (manual_run.OwnerGroup(("@o/t",)),)
+    assert (
+        "approved by `alice` on `aaaaaaa` · enough to run the E2E; the code owners below still have to approve"
+        in rows(code_owners=waiting)
+    )
+    done = (manual_run.OwnerGroup(("@o/t",), "bob"),)
+    assert "enough to run the E2E" not in rows(code_owners=done), "every group approved: the approval stands as it is"
+    assert "enough to run the E2E" not in rows(), "no code owners"
+    assert "enough to run the E2E" not in rows(code_owners=waiting, closed="merged")
+
+
+class OwnersGitHub:
+    """A repository's CODEOWNERS (base branch), the files of a pull request and the members of two teams."""
+
+    def __init__(
+        self, codeowners: str | None, files: list[str | tuple[str, str]], teams: Mapping[str, list[str] | None]
+    ) -> None:
+        self.codeowners, self.files, self.teams = codeowners, files, teams
+
+    def request(self, method: str, path: str, *, params: Any = None, body: Any = None) -> Response:
+        if method == "GET" and path.endswith("/contents/CODEOWNERS"):
+            if self.codeowners is None:
+                return Response(404, {}, {})
+            assert (params or {}).get("ref") == "main", "read from the base branch, never the head"
+            return Response(200, {"content": base64.b64encode(self.codeowners.encode()).decode()}, {})
+        if method == "GET" and "/contents/" in path:
+            return Response(404, {}, {})
+        if method == "GET" and path.endswith("/pulls/7/reviews"):
+            return Response(200, [], {})
+        if method == "GET" and path.endswith("/pulls/7/files"):
+            page = (params or {}).get("page", "1")
+            listed = [
+                {"filename": f} if isinstance(f, str) else {"filename": f[0], "previous_filename": f[1]}
+                for f in self.files
+            ]
+            return Response(200, listed if page == "1" else [], {})
+        if method == "GET" and (m := re.fullmatch(r"/orgs/o/teams/([a-z-]+)/members", path)):
+            members = self.teams[m.group(1)]
+            if members is None:
+                return Response(403, {}, {})
+            return Response(200, [{"login": u} for u in members] if (params or {}).get("page", "1") == "1" else [], {})
+        raise AssertionError(f"unexpected request {method} {path}")
+
+
+OWNERS_FILE = "/.github/ @o/infra\n/tests/e2e/vmaas/ @o/vmaas\n/docs/ @o/infra @carol\n"
+PR_FOR_OWNERS = {"base": {"ref": "main"}, "head": {"sha": HEAD}}
+
+
+def owner_groups(gh: OwnersGitHub, approvers: tuple[str, ...]) -> tuple[tuple[manual_run.OwnerGroup, ...], bool]:
+    return manual_run.code_owner_groups(gh, "o/r", 7, PR_FOR_OWNERS, approvers)  # type: ignore[arg-type]
+
+
+def test_a_group_is_crossed_out_when_a_member_of_its_team_approved() -> None:
+    gh = OwnersGitHub(
+        OWNERS_FILE, [".github/x.yml", "tests/e2e/vmaas/t.py", "README.md"], {"infra": ["amej"], "vmaas": ["slintes"]}
+    )
+    groups, checked = owner_groups(gh, ("amej",))
+    assert checked is True
+    assert groups == (manual_run.OwnerGroup(("@o/infra",), "amej"), manual_run.OwnerGroup(("@o/vmaas",), ""))
+    both, _ = owner_groups(gh, ("amej", "slintes"))
+    assert [g.approved_by for g in both] == ["amej", "slintes"]
+    nobody, _ = owner_groups(gh, ())
+    assert [g.approved_by for g in nobody] == ["", ""]
+
+
+def test_a_group_of_several_owners_is_one_group_and_a_login_owner_is_matched_without_regard_to_case() -> None:
+    gh = OwnersGitHub(OWNERS_FILE, ["docs/a.md", "docs/b.md"], {"infra": ["amej"], "vmaas": []})
+    groups, _ = owner_groups(gh, ("CAROL",))
+    assert groups == (manual_run.OwnerGroup(("@o/infra", "@carol"), "CAROL"),)
+    other, _ = owner_groups(gh, ("amej",))
+    assert other == (manual_run.OwnerGroup(("@o/infra", "@carol"), "amej"),)
+
+
+def test_a_login_owner_is_matched_whatever_the_case_of_either_side() -> None:
+    gh = OwnersGitHub("/docs/ @Carol\n", ["docs/a.md"], {})
+    groups, _ = owner_groups(gh, ("carol",))
+    assert groups == (manual_run.OwnerGroup(("@Carol",), "carol"),)
+
+
+def test_a_file_renamed_out_of_an_owned_folder_still_asks_its_owners() -> None:
+    gh = OwnersGitHub(OWNERS_FILE, [("misc/new.yml", ".github/old.yml")], {"infra": ["amej"]})
+    groups, _ = owner_groups(gh, ())
+    assert groups == (manual_run.OwnerGroup(("@o/infra",), ""),)
+
+
+def test_a_file_nobody_owns_adds_no_group_and_no_codeowners_means_no_groups() -> None:
+    assert owner_groups(OwnersGitHub(OWNERS_FILE, ["README.md"], {}), ("amej",)) == ((), True)
+    assert owner_groups(OwnersGitHub(None, ["docs/a.md"], {}), ("amej",)) == ((), True)
+    assert manual_run.code_owner_groups(OwnersGitHub(OWNERS_FILE, [], {}), "o/r", 7, {}, ()) == ((), True), "no base"  # type: ignore[arg-type]
+
+
+def test_a_team_that_cannot_be_read_shows_no_group_as_approved_and_says_so() -> None:
+    gh = OwnersGitHub(OWNERS_FILE, [".github/x.yml", "tests/e2e/vmaas/t.py"], {"infra": ["amej"], "vmaas": None})
+    groups, checked = owner_groups(gh, ("amej",))
+    assert checked is False and [g.approved_by for g in groups] == ["", ""]
+
+
+def test_the_status_of_a_pull_request_names_the_code_owners_of_its_changes(monkeypatch: pytest.MonkeyPatch) -> None:
+    gh = OwnersGitHub(OWNERS_FILE, [".github/x.yml"], {"infra": ["amej"], "vmaas": []})
+    pr = {"head": {"sha": HEAD, "repo": {"full_name": "o/r"}}, "base": {"ref": "main"}, "user": {"login": "author"}}
+    monkeypatch.setattr(manual_run, "queue_view", lambda *a: None)
+    monkeypatch.setattr(manual_run, "reviews_with_roles", lambda *a: [rv("amej", "APPROVED")])
+    status = manual_run.status_of(gh, "o/r", 7, pr, [])  # type: ignore[arg-type]
+    assert status.code_owners == (manual_run.OwnerGroup(("@o/infra",), "amej"),) and status.owners_checked is True
+    closed = manual_run.status_of(gh, "o/r", 7, {**pr, "state": "closed", "merged": True}, [])  # type: ignore[arg-type]
+    assert closed.code_owners == (), "a finished pull request has no owners to wait for"
 
 
 def test_each_state_of_the_pull_request_has_its_own_row() -> None:
