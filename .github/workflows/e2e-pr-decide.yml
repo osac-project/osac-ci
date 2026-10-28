@@ -361,6 +361,24 @@ jobs:
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
           decision-file: ${{ steps.decide.outputs.json-file }}
           by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
+      # The CI Autopilot check (the app's own summary of every line, with what happened) and the removal of the finished entry
+      # runs of this pull request, which only add rows to its page. A failure here must not hold up the E2E.
+      - uses: $/.github/actions/autopilot-summary
+        if: steps.decide.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.decide.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          event: ${{ steps.decide.outputs.reason }}
+      - uses: $/.github/actions/clean-start-runs
+        if: steps.decide.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ github.token }}  # actions write, from the job's permissions
+          repo: ${{ github.repository }}
+          number: ${{ steps.decide.outputs.number }}
       # The answer on the command itself, so the person sees it where they wrote it: a rocket when suites start, a confused
       # face when none did (the control comment says why). A comment that only starts like the command gets nothing.
       - name: Answer the /test comment
@@ -553,6 +571,31 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ steps.pull.outputs.number }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+      - name: What happened
+        id: event
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          RESULT: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          # the title without its commit: `CI job · unit · #157`
+          echo "text=${TITLE% · *}: ${RESULT}" >> "$GITHUB_OUTPUT"
+      - uses: $/.github/actions/autopilot-summary
+        if: steps.ended.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.ended.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          event: ${{ steps.event.outputs.text }}
+      - uses: $/.github/actions/clean-start-runs
+        if: steps.ended.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.ended.outputs.number }}
       # The `CI` check has its answer: the E2E decision is run again for the pull request (it starts the suites when CI
       # passed and the pull request is approved, and holds them back when CI failed). It is the caller's own workflow
       # started with `workflow_dispatch` by the app (`github.workflow_ref` of a called workflow is the caller's), so it is the
@@ -673,6 +716,23 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ steps.pull.outputs.number }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+      - name: What happened
+        id: event
+        env:
+          TITLE: ${{ github.event.workflow_run.display_title }}
+          RESULT: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          set -euo pipefail
+          # the title without its commit: `E2E suite · alpha · #157`
+          echo "text=${TITLE% · *}: ${RESULT}" >> "$GITHUB_OUTPUT"
+      - uses: $/.github/actions/autopilot-summary
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.pull.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          event: ${{ steps.event.outputs.text }}
 
   # The review relay only wakes the caller. Once it has, its run is of no use and its row on the pull request is noise,
   # so delete it (a deleted run takes its check rows with it). Only a relay that succeeded: a failed one stays, to be

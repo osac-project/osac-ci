@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from osac_ci import (
+    autopilot_summary,
     bot_approve,
     cancel_older,
     cheap_jobs,
@@ -520,6 +521,24 @@ def _parser() -> argparse.ArgumentParser:
         "--json-file", type=Path, help="write {number, wake} here: wake is true when the CI check just got its answer"
     )
 
+    asum = sub.add_parser(
+        "autopilot-summary",
+        help="say what just happened on a pull request in the CI Autopilot check (the app's own summary of every line)",
+    )
+    asum.add_argument("--policy", type=Path, required=True)
+    asum.add_argument("--repo", required=True, help="owner/name")
+    asum.add_argument("--number", type=int, required=True, help="the pull request")
+    asum.add_argument("--event", default="", help="what happened, in a line (added to the events of the check)")
+    asum.add_argument("--run-url", default="", help="link of the workflow run, the details link of the check")
+
+    cstr = sub.add_parser(
+        "clean-start-runs",
+        help="delete the finished runs of the controller's entry workflow for a pull request (they add rows to it)",
+    )
+    cstr.add_argument("--repo", required=True, help="owner/name")
+    cstr.add_argument("--number", type=int, required=True, help="the pull request")
+    cstr.add_argument("--workflow", required=True, help="the entry workflow file, such as autopilot.yml")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -904,6 +923,26 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "autopilot-summary":
+        try:
+            said = autopilot_summary.update(
+                build_client(), args.repo, args.number, load_policy(args.policy), args.event, args.run_url
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: autopilot-summary failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"{autopilot_summary.NAME}: {said}")
+        return 0
+
+    if args.command == "clean-start-runs":
+        try:
+            gone = clean_runs.clean_start_runs(build_client(), args.repo, args.workflow, args.number)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: clean-start-runs failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Removed {len(gone)} finished run(s) of the entry workflow for pull request #{args.number}.")
         return 0
 
     if args.command == "cheap-start":

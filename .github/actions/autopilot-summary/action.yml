@@ -1,0 +1,55 @@
+name: Say what happened in the CI Autopilot check
+description: >-
+  Write the `CI Autopilot` check of the OSAC CI app on the head commit of a pull request: the state of every line of the
+  policy (the cheap jobs and the E2E suites), the CI and E2E checks, and what happened, newest first. A row that comes from
+  a workflow job has GitHub Actions' icon and goes away with its run; this check has the app's icon and stays. Called from
+  the workflows of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: checks write, statuses read, pull requests read). This action never
+# checks out the calling repository, so it cannot run pull request code. Every input reaches the shell through an
+# environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (checks write, statuses read, pull requests read)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  policy-file:
+    description: The repository's policy, read from its default branch (a path of the workspace)
+    required: true
+  event:
+    description: What happened, in a line (it is added to the events of the check)
+    default: ""
+  run-url:
+    description: Link of the workflow run, the details link of the check
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Write the check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        POLICY: ${{ inputs.policy-file }}
+        EVENT: ${{ inputs.event }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci autopilot-summary --policy "$POLICY" --repo "$REPO" --number "$NUMBER" \
+          --event "$EVENT" --run-url "$RUN_URL" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
