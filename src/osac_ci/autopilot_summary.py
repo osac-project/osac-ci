@@ -33,6 +33,11 @@ EVENT_LINE = re.compile(r"^- (\d\d:\d\d:\d\d) UTC · (.*)$")
 ICONS = {"passed": "✅", "failed": "❌", "active": "⏳", "none": "▫️"}
 
 
+def stamp(now: datetime | None = None) -> str:
+    """The time of an event, as the events of the check write it."""
+    return (now or datetime.now(UTC)).strftime("%H:%M:%S")
+
+
 def _row(name: str, state: str, text: str, url: str) -> str:
     shown = f"[{text}]({url})" if url and text else (text or "not started")
     return f"| {ICONS.get(state, '▫️')} | {name} | {shown} |"

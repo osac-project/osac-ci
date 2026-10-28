@@ -24,6 +24,14 @@ outputs:
     description: >-
       JSON object, suite id -> line name on the pull request, of the same suites (the "check" of each in the policy)
     value: ${{ steps.suites.outputs.suite-checks }}
+  cheap:
+    description: >-
+      JSON list of the cheap jobs the controller runs (kind cheap with a workflow) that the change needs, such as
+      ["lint","unit"] (an empty list when none)
+    value: ${{ steps.suites.outputs.cheap }}
+  jobs:
+    description: JSON list of the cheap jobs and the suites the change needs together (the jobs of a queue entry)
+    value: ${{ steps.suites.outputs.jobs }}
 
 runs:
   using: composite
@@ -43,6 +51,9 @@ runs:
         root="$ACTION_PATH/../../.."
         suites=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE")
         checks=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE" --checks)
+        cheap=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE" --cheap)
+        echo "cheap=$cheap" >> "$GITHUB_OUTPUT"
+        echo "jobs=$(jq -cn --argjson cheap "$cheap" --argjson suites "$suites" '$cheap + $suites')" >> "$GITHUB_OUTPUT"
         echo "suites=$suites" >> "$GITHUB_OUTPUT"
         echo "suite-checks=$checks" >> "$GITHUB_OUTPUT"
         echo "E2E suites needed: $suites" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

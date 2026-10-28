@@ -37,6 +37,7 @@ from osac_ci import (
     jira_reference,
     lockfacts,
     manual_run,
+    queue_gate,
     queue_guard,
 )
 from osac_ci import compare as compare_mod
@@ -437,6 +438,25 @@ def _parser() -> argparse.ArgumentParser:
     suites_cmd.add_argument(
         "--checks", action="store_true", help="print a JSON object, suite -> line name, instead of the list of suites"
     )
+    suites_cmd.add_argument(
+        "--cheap",
+        action="store_true",
+        help="print the list of the cheap jobs the controller runs (kind cheap with a workflow) that the change needs",
+    )
+
+    qgate = sub.add_parser(
+        "autopilot-queue-gate",
+        help="write the CI Autopilot check of a merge queue entry (in progress, passed, failed or cancelled)",
+    )
+    qgate.add_argument("--repo", required=True, help="owner/name")
+    qgate.add_argument("--sha", required=True, help="the commit of the queue entry")
+    qgate.add_argument("--run-id", type=int, required=True, help="the run that holds the jobs of the entry")
+    qgate.add_argument(
+        "--jobs", required=True, metavar="JSON", help="JSON list of the ids of the jobs (cheap and suites)"
+    )
+    qgate.add_argument("--result", required=True, choices=queue_gate.RESULTS)
+    qgate.add_argument("--detail", default="", help="what failed or why it was cancelled")
+    qgate.add_argument("--run-url", default="", help="link of the run, the details link of the check")
 
     erep = sub.add_parser(
         "e2e-report",
@@ -935,6 +955,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"E2E suite: {said}")
         return 0
 
+    if args.command == "autopilot-queue-gate":
+        try:
+            jobs = json.loads(args.jobs)
+            if not isinstance(jobs, list) or not all(isinstance(j, str) for j in jobs):
+                raise ValueError("--jobs must be a JSON list of ids")
+            said = queue_gate.write(
+                build_client(), args.repo, args.sha, args.run_id, jobs, args.result, args.detail, args.run_url
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: autopilot-queue-gate failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"{autopilot_summary.NAME} (queue entry): {said}")
+        return 0
+
     if args.command == "jira-reference":
         try:
             said = jira_reference.update(
@@ -1127,7 +1161,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"error: cannot read {args.files_from}: {exc}", file=sys.stderr)
             return 3
-        if args.checks:
+        if args.cheap:
+            print(json.dumps([j.name for j in cheap_stage.needed_jobs(policy, names)]))
+        elif args.checks:
             print(json.dumps(dict(e2e_start.suite_checks_for_files(policy, names))))
         else:
             print(json.dumps(list(e2e_start.suites_for_files(policy, names))))

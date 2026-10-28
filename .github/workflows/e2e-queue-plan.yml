@@ -24,6 +24,14 @@ on:
       suites:
         description: JSON list of the suite ids the entry needs
         value: ${{ jobs.plan.outputs.suites }}
+      cheap:
+        description: >-
+          JSON list of the cheap jobs the controller runs (a policy job of kind cheap with a workflow) that the entry needs;
+          `[]` when the policy has none
+        value: ${{ jobs.plan.outputs.cheap }}
+      jobs:
+        description: JSON list of the cheap jobs and the suites the entry needs together
+        value: ${{ jobs.plan.outputs.jobs }}
 
 permissions: {}
 
@@ -36,6 +44,8 @@ jobs:
       contents: read
     outputs:
       suites: ${{ steps.suites.outputs.suites }}
+      cheap: ${{ steps.suites.outputs.cheap }}
+      jobs: ${{ steps.suites.outputs.jobs }}
     steps:
       # The queue entry itself (the merged result) with its history, to list what changed against the base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

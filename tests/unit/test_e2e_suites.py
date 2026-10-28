@@ -101,7 +101,8 @@ def test_the_action_passes_both_files_to_the_command_and_sets_the_output(tmp_pat
     script = (
         "#!/bin/bash\n"
         f"echo \"$@\" >> '{tmp_path}/uv-args'\n"
-        'if [[ "$*" == *--checks* ]]; then echo \'{"vmaas": "E2E / VMaaS Full Install"}\'; '
+        'if [[ "$*" == *--cheap* ]]; then echo \'["lint"]\'; '
+        'elif [[ "$*" == *--checks* ]]; then echo \'{"vmaas": "E2E / VMaaS Full Install"}\'; '
         "else echo '[\"vmaas\"]'; fi\n"
     )
     uv.write_text(script)
@@ -115,4 +116,9 @@ def test_the_action_passes_both_files_to_the_command_and_sets_the_output(tmp_pat
     done = subprocess.run(["bash", "-c", step], env=env, capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
     assert "e2e-suites --policy /w/p.yml --files-from /w/files" in (tmp_path / "uv-args").read_text()
-    assert out.read_text().splitlines() == ['suites=["vmaas"]', 'suite-checks={"vmaas": "E2E / VMaaS Full Install"}']
+    assert out.read_text().splitlines() == [
+        'cheap=["lint"]',
+        'jobs=["lint","vmaas"]',
+        'suites=["vmaas"]',
+        'suite-checks={"vmaas": "E2E / VMaaS Full Install"}',
+    ]
