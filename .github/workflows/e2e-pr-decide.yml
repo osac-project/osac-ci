@@ -361,17 +361,8 @@ jobs:
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
           decision-file: ${{ steps.decide.outputs.json-file }}
           by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
-      # The CI Autopilot check (the app's own summary of every line, with what happened) and the removal of the finished entry
+      # The removal of the finished entry
       # runs of this pull request, which only add rows to its page. A failure here must not hold up the E2E.
-      - uses: $/.github/actions/autopilot-summary
-        if: steps.decide.outputs.number != ''
-        continue-on-error: true
-        with:
-          github-token: ${{ steps.app-token.outputs.token }}
-          repo: ${{ github.repository }}
-          number: ${{ steps.decide.outputs.number }}
-          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
-          event: ${{ steps.decide.outputs.reason }}
       - uses: $/.github/actions/clean-start-runs
         if: steps.decide.outputs.number != ''
         continue-on-error: true
@@ -473,6 +464,17 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ steps.report.outputs.number }}
           head-sha: ${{ steps.report.outputs.sha }}
+      # The CI Autopilot check (the app's own summary of every line, with what happened): last, so the lines of the suites
+      # this decision started are written. A failure here must not hold up the E2E.
+      - uses: $/.github/actions/autopilot-summary
+        if: steps.decide.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.decide.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          event: ${{ steps.decide.outputs.reason }}
 
   # A cheap job (a policy job of kind cheap that names a `workflow`) that was started as a run of its own has ended: its
   # line gets the result and the `CI` check is added up from the lines of the jobs the change needs. The event is a

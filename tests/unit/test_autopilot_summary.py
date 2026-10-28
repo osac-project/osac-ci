@@ -193,3 +193,18 @@ def test_the_commands_report_what_they_did(monkeypatch: pytest.MonkeyPatch, caps
     monkeypatch.setattr(cli, "build_client", lambda **_: fake)
     assert cli.main(["clean-start-runs", "--repo", "o/r", "--number", "7", "--workflow", "autopilot.yml"]) == 0
     assert "Removed 1 finished run" in capsys.readouterr().out
+
+
+def test_a_check_that_was_settled_and_goes_again_is_written_as_a_new_run() -> None:
+    gh = Gh()
+    gh.line("CI Autopilot / CI / Lint", "completed", "success", "Passed")
+    gh.line("CI Autopilot / CI / Unit", "completed", "success", "Passed")
+    gh.line("CI", "completed", "success", "Passed: lint, unit")
+    gh.line("E2E", "queued", None, "Waiting for an approval")
+    update(gh, "approved")  # nothing goes: settled (neutral), written as the first run
+    assert gh.mine()["status"] == "completed" and gh.mine().get("conclusion") == "neutral"
+    gh.line("CI Autopilot / E2E / Alpha Stub", "in_progress", None, "Running")
+    update(gh, "alpha started")
+    runs = [c for c in gh.checks if c["name"] == autopilot_summary.NAME]
+    assert [r["status"] for r in runs] == ["completed", "in_progress"], "GitHub does not reopen a completed run"
+    assert [w[0] for w in gh.writes] == ["POST", "POST"]

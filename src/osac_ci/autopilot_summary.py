@@ -153,4 +153,7 @@ def update(
         if mine and (existing is None or int(run["id"]) > int(existing["id"])):
             existing = run
     body = build(client, repo, sha, policy, event, existing, now)
-    return _write(client, repo, sha, body, run_url, existing)
+    # GitHub does not reopen a check run that was completed: a check that was settled and goes again (a job run again, a
+    # suite started after CI passed) is written as a new run, and the newest of the name is the one the page shows.
+    reopened = existing is not None and existing.get("status") == "completed" and body["status"] != "completed"
+    return _write(client, repo, sha, body, run_url, None if reopened else existing)

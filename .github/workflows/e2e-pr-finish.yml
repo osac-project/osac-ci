@@ -203,3 +203,12 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ inputs.number }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+      - uses: $/.github/actions/autopilot-summary
+        if: inputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ inputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          event: the E2E run finished
