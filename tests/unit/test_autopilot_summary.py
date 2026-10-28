@@ -107,12 +107,13 @@ CASES = [
     (PASSED, ("success", "Passed"), ("success", "Passed: alpha"), "completed", "success"),
     ([PASSED[0], ("Unit", "completed", "failure")], ("failure", "Failed: unit"), None, "completed", "failure"),
     ([PASSED[0], ("Unit", "in_progress", None)], ("in_progress", "Running: unit"), None, "in_progress", None),
-    (PASSED, ("success", "Passed"), ("queued", "Waiting for an approval"), "completed", "neutral"),
+    (PASSED, ("success", "Passed"), ("queued", "Waiting for an approval"), "in_progress", None),
+    (PASSED, ("success", "Passed"), ("failure", "Failed: alpha"), "completed", "failure"),  # the E2E check failed
 ]
 
 
 @pytest.mark.parametrize(("lines", "ci", "e2e", "status", "conclusion"), CASES)
-def test_the_check_is_running_while_a_job_goes_failed_when_one_failed_and_neutral_while_it_waits(
+def test_the_check_is_in_progress_until_all_passed_failed_when_one_failed_and_never_neutral(
     lines: list[tuple[str, str, str | None]],
     ci: tuple[str, str],
     e2e: tuple[str, str] | None,
@@ -126,9 +127,8 @@ def test_the_check_is_running_while_a_job_goes_failed_when_one_failed_and_neutra
         "CI", "completed" if ci[0] != "in_progress" else "in_progress", ci[0] if ci[0] != "in_progress" else None, ci[1]
     )
     if e2e:
-        gh.line(
-            "E2E", "completed" if e2e[0] == "success" else "queued", e2e[0] if e2e[0] == "success" else None, e2e[1]
-        )
+        done = e2e[0] in ("success", "failure")
+        gh.line("E2E", "completed" if done else "queued", e2e[0] if done else None, e2e[1])
     update(gh, "x")
     check = gh.mine()
     assert check["status"] == status and check.get("conclusion") == conclusion
@@ -197,14 +197,38 @@ def test_the_commands_report_what_they_did(monkeypatch: pytest.MonkeyPatch, caps
 
 def test_a_check_that_was_settled_and_goes_again_is_written_as_a_new_run() -> None:
     gh = Gh()
-    gh.line("CI Autopilot / CI / Lint", "completed", "success", "Passed")
-    gh.line("CI Autopilot / CI / Unit", "completed", "success", "Passed")
+    for name in ("Lint", "Unit"):
+        gh.line(f"CI Autopilot / CI / {name}", "completed", "success", "Passed")
+    gh.line("CI Autopilot / E2E / Alpha Stub", "completed", "success", "Passed")
     gh.line("CI", "completed", "success", "Passed: lint, unit")
-    gh.line("E2E", "queued", None, "Waiting for an approval")
-    update(gh, "approved")  # nothing goes: settled (neutral), written as the first run
-    assert gh.mine()["status"] == "completed" and gh.mine().get("conclusion") == "neutral"
-    gh.line("CI Autopilot / E2E / Alpha Stub", "in_progress", None, "Running")
-    update(gh, "alpha started")
+    gh.line("E2E", "completed", "success", "Passed: alpha")
+    update(gh, "everything passed")
+    assert gh.mine()["status"] == "completed" and gh.mine().get("conclusion") == "success"
+    gh.line("CI Autopilot / CI / Unit", "in_progress", None, "Running again")
+    gh.line("CI", "in_progress", None, "Running: unit")
+    update(gh, "unit run again")
     runs = [c for c in gh.checks if c["name"] == autopilot_summary.NAME]
     assert [r["status"] for r in runs] == ["completed", "in_progress"], "GitHub does not reopen a completed run"
     assert [w[0] for w in gh.writes] == ["POST", "POST"]
+
+
+def test_what_the_policy_does_not_have_is_not_waited_for() -> None:
+    only_cheap = parse_policy("""
+version: 1
+repo: o/r
+jobs:
+  lint: {kind: cheap, check: "CI Autopilot / CI / Lint", workflow: ci-lint.yml}
+""")
+    gh = Gh()
+    gh.line("CI Autopilot / CI / Lint", "completed", "success", "Passed")
+    gh.line("CI", "completed", "success", "Passed: lint")  # no E2E check, and the policy has no suite
+    autopilot_summary.update(gh, "o/r", 7, only_cheap, "x", "", NOW)  # type: ignore[arg-type]
+    assert gh.mine()["conclusion"] == "success"
+    only_e2e = parse_policy("version: 1\nrepo: o/r\njobs:\n  e2e-a: {kind: e2e, check: A, suite: a}\n")
+    gh2 = Gh()
+    gh2.line("A", "completed", "success", "Passed")
+    gh2.line(
+        "E2E", "completed", "success", "Passed: a"
+    )  # no CI check, and the policy has no cheap job of the controller
+    autopilot_summary.update(gh2, "o/r", 7, only_e2e, "x", "", NOW)  # type: ignore[arg-type]
+    assert gh2.mine()["conclusion"] == "success"

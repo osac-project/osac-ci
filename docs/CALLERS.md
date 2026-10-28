@@ -217,6 +217,95 @@ step. A job that passed or still runs, or whose run still goes, is not run again
 jobs share has no command. To have the status refresh when the run ends, list the workflow (as `workflow_run`) in
 `e2e-pr.yml`, like `CI`.
 
+## Autopilot: the cheap jobs, the summary check and one entry point
+
+Autopilot makes osac-ci the one handler of a pull request. It is opt-in: a repository that adds nothing below sees no
+change. Three pieces, each usable alone.
+
+**1. Cheap jobs the controller starts.** A policy job of `kind: cheap` that names a `workflow` is started by the OSAC CI
+app as a run of its own (`workflow_dispatch`) when a pull request opens, reopens or gets a commit, exactly as an E2E suite
+is. The app writes the line of each job (the job's `check`, for example `CI Autopilot / CI / Lint`) and the sum `CI` (the
+policy's `ci_check`, default `CI`), and follows the runs to their end. The runs are of the default branch's workflow, with
+the commit as an input, so no repository secret reaches pull request code (the app's tokens are made for the step: no
+secret is mapped into the checked-out code).
+
+```yaml
+jobs:
+  lint:
+    kind: cheap
+    check: "CI Autopilot / CI / Lint"   # the line on the pull request
+    workflow: ci-lint.yml                # a workflow_dispatch workflow of the repository
+    filters_any: [code]                  # optional: the same path filters as a suite
+ci_check: CI                             # optional: the sum of the cheap jobs (the required check)
+e2e:
+  wait_for_ci: true                      # optional: the suites start after CI has passed, and by themselves when it does
+```
+
+The workflow of a cheap job (`ci-lint.yml`) is written like the workflow of a suite that runs as a run of its own:
+`workflow_dispatch` inputs `repo`, `sha`, `pr-number` (and the fork author inputs), a `run-name` of exactly
+`CI job · <job> · #<pull request> · <commit>` (the name is how its end is recognised), a first job that calls `suite-inputs.yml`
+(it checks the inputs against the pull request before anything runs), the job itself with `needs` on it, `contents: read`
+and no secrets, and a `concurrency` group per pull request with `cancel-in-progress` so a newer commit stops the old run.
+A failed job can be run again by `/test ci-<job>` (the control comment shows the command) or by GitHub's own button.
+
+**2. The `CI Autopilot` check.** The app writes one check of that name on the head commit (the app's icon, so it is not
+mistaken for a GitHub Actions row): the state of every line of the policy, the `CI` and `E2E` results, and what happened,
+newest first. It is the gate of the pull request: in progress until everything the policy has has passed (a job that goes,
+a suite that waits for an approval), a failure when anything failed, a success only when all passed, and never neutral
+(a required check counts neutral as passed). A repository can require it alone once its queue entries have it too; until
+then `CI` and `E2E` stay required because the merge queue builds them (see below).
+
+**3. One entry point.** Every event of a pull request ends in one workflow of the repository, `autopilot.yml`, which runs
+from the default branch and checks out nothing of the pull request:
+
+```yaml
+name: Autopilot
+run-name: >-   # for people; the decision does not read it, the entry runs of a pull request start with `Autopilot #<number> (`
+  ${{ github.event_name == 'pull_request_target' && format('Autopilot #{0} ({1}) · {2}', github.event.pull_request.number,
+  github.event.action, github.event.pull_request.head.ref) || ... }}
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, closed, enqueued, dequeued, auto_merge_enabled, auto_merge_disabled]
+  workflow_run:
+    workflows: ["CI Lint", "CI Unit", "E2E review relay", "E2E Alpha Stub"]   # the workflows that run as runs of their own
+    types: [requested, completed]
+  issue_comment: {types: [edited, created]}
+  workflow_dispatch: {inputs: {number: {description: Pull request number, required: true}}}   # a person, or the controller
+jobs:
+  autopilot:   # the pull request events, in one job named for what it is
+    name: CI Autopilot
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions: {contents: read}
+    steps:
+      - uses: actions/create-github-app-token@<sha>        # permissions: pull-requests write, members read, issues write,
+        id: app-token                                       # checks write, actions write, statuses write, contents read
+      - uses: osac-project/osac-ci/.github/actions/early-comment@<sha>    # opened, reopened: the control comment, first
+      - uses: osac-project/osac-ci/.github/actions/manual-status@<sha>    # the other events: refresh its status block
+      - uses: actions/checkout@<sha>                        # the default branch: only the policy and the path filters
+      - uses: osac-project/osac-ci/.github/actions/cheap-start@<sha>      # opened, reopened, synchronize
+      - uses: osac-project/osac-ci/.github/actions/autopilot-summary@<sha>
+  decide:      # every other event: the decision, then the suites, then the sum
+    if: github.event_name != 'pull_request_target'
+    uses: osac-project/osac-ci/.github/workflows/e2e-pr-decide.yml@<sha>
+    ...        # track, the suites that are jobs of this file, and finish, as in the sections above
+```
+
+The jobs of the events that do not apply are skipped, and GitHub lists them on the pull request for a `pull_request_target`
+run. So the finished entry runs of a pull request are deleted by the next decision and by the end of a cheap job
+(`clean-start-runs`; a run that failed stays): the rows of the run go with it, and what the app wrote (the lines, `CI`,
+`E2E`, `CI Autopilot`) belongs to no run and stays. While a cheap job still runs the page shows the Actions row too.
+`workflow_dispatch` with `number` is also how the controller wakes the decision again when the `CI` check gets its answer
+(it dispatches the caller's own file, taken from `github.workflow_ref`), so the E2E starts by itself when CI passes.
+
+What it reads and writes of the app: `actions` write (start runs, run a job again, delete the entry runs), `checks` write,
+`statuses` write (lines, when `lines-kind: statuses`), `pull-requests` write and `issues` write (the control comment),
+`members` read, `contents` read (the policy, CODEOWNERS). No new permission over the E2E flow.
+
+Not yet: the merge queue is not under Autopilot (its entries get `CI` and `E2E` from `ci.yml` and `e2e-queue.yml`, so those
+two names are still required); the lines show waiting and then the result, with no live "running"; the old runs of the
+Jira reference check are tidied only on a completion of the repository's `CI` workflow.
+
 ## Suites started by hand
 
 The decision workflow keeps a comment on the pull request of a member of the organization (written by the OSAC CI app)

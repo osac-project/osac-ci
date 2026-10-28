@@ -5,7 +5,10 @@ A row that comes from a workflow job is always GitHub Actions' (its icon, its na
 check run the app writes has the app's icon and stays. The controller updates this one whenever something happens (the
 cheap jobs start, one ends, the decision says what the E2E does, a suite ends): the table is the state of every line of
 the policy now, and the events are what happened, newest first, so a person reading the check sees the whole story
-without opening a log. It is not a required check and decides nothing; it only reports what the other lines say.
+without opening a log. It is the gate of the pull request, in step with the lines: in progress until everything the
+policy has has passed (a waiting E2E, a missing approval, a job that goes), a failure when anything failed, a success
+only when all passed. It is never neutral, which a required check would count as passed. A repository can require this
+check alone.
 """
 
 from __future__ import annotations
@@ -74,14 +77,17 @@ def build(
     sums = {n: newest_status(client, repo, sha, n, "checks") for n in (ci_name, E2E_SUM)}
     ci_text, ci_state = _sum_text(sums, ci_name)
     e2e_text, e2e_state = _sum_text(sums, E2E_SUM)
-    if "active" in states or ci_state == "active":
-        status, conclusion = "in_progress", None
-    elif "failed" in states or "failed" in (ci_state, e2e_state):
+    # The check is the gate of the pull request: a required check that is not settled keeps it from merging, and a
+    # neutral one would let it through, so nothing but a pass of everything the policy has is a success. What the
+    # policy does not have (no cheap job, no suite) is not waited for.
+    parts = [ci_state] if cheap else []
+    parts += [e2e_state] if suites else []
+    if "failed" in states or "failed" in parts:
         status, conclusion = "completed", "failure"
-    elif ci_state == "passed" and e2e_state == "passed":
-        status, conclusion = "completed", "success"
+    elif "active" in states or any(p != "passed" for p in parts):
+        status, conclusion = "in_progress", None
     else:
-        status, conclusion = "completed", "neutral"
+        status, conclusion = "completed", "success"
     stamp = (now or datetime.now(UTC)).strftime("%H:%M:%S")
     events = _previous_events(previous)
     fresh = f"- {stamp} UTC · {' '.join(event.split())[:EVENT_MAX]}"
