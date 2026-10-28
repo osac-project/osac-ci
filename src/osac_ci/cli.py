@@ -34,6 +34,7 @@ from osac_ci import (
     e2e_dispatch,
     e2e_start,
     e2e_suites_check,
+    jira_reference,
     lockfacts,
     manual_run,
     queue_guard,
@@ -521,6 +522,15 @@ def _parser() -> argparse.ArgumentParser:
         "--json-file", type=Path, help="write {number, wake} here: wake is true when the CI check just got its answer"
     )
 
+    jira = sub.add_parser(
+        "jira-reference",
+        help="write the Jira reference line of a pull request (from Prow's label, or from the title)",
+    )
+    jira.add_argument("--policy", type=Path, required=True)
+    jira.add_argument("--repo", required=True, help="owner/name")
+    jira.add_argument("--number", type=int, required=True, help="the pull request")
+    jira.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+
     asum = sub.add_parser(
         "autopilot-summary",
         help="say what just happened on a pull request in the CI Autopilot check (the app's own summary of every line)",
@@ -923,6 +933,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "jira-reference":
+        try:
+            said = jira_reference.update(
+                build_client(), args.repo, args.number, load_policy(args.policy), args.lines_kind
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: jira-reference failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Jira reference: {said}")
         return 0
 
     if args.command == "autopilot-summary":

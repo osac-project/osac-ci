@@ -64,7 +64,8 @@ def build(
     """The body of the check run: title, summary and events, and the status and conclusion that go with them."""
     cheap = {j.name: j.check for j in jobs_of(policy)}
     suites = {s.name: s.check for s in suites_of(policy) if not s.manual_only and not s.variant_of}
-    lines = [*cheap.values(), *suites.values()]
+    jira = policy.jira_reference
+    lines = [*cheap.values(), *suites.values(), *([jira.check] if jira else [])]
     latest = _latest_lines(client, repo, sha, {str(i): c for i, c in enumerate(lines)}) if lines else {}
     rows: list[str] = []
     states: list[str] = []
@@ -82,6 +83,8 @@ def build(
     # policy does not have (no cheap job, no suite) is not waited for.
     parts = [ci_state] if cheap else []
     parts += [e2e_state] if suites else []
+    if jira:  # a line the controller writes itself: not written yet counts as not passed
+        parts.append(line_state(latest, jira.check))
     if "failed" in states or "failed" in parts:
         status, conclusion = "completed", "failure"
     elif "active" in states or any(p != "passed" for p in parts):

@@ -1,0 +1,55 @@
+name: Write the Jira reference line of a pull request
+description: >-
+  Write the `jira_reference` line of the policy for a pull request: green when the title names a Jira issue (or says
+  NO-ISSUE:), as Prow's jira plugin decided and marked with a label, or, for a repository without Prow, as the title says.
+  It replaces a workflow that turned the label into a check. Called from the workflows of the repository's entry point,
+  pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: pull requests read, statuses write for lines-kind statuses, checks
+# write for checks). This action never checks out the calling repository, so it cannot run pull request code. Every input
+# reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (pull requests read; statuses or checks write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  policy-file:
+    description: The repository's policy, read from its default branch (a path of the workspace)
+    required: true
+  lines-kind:
+    description: Where the line is written, "statuses" or "checks" (the same as the other workflows of the flow)
+    default: statuses
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Write the line
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        POLICY: ${{ inputs.policy-file }}
+        LINES_KIND: ${{ inputs.lines-kind }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        case "$LINES_KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci jira-reference --policy "$POLICY" --repo "$REPO" --number "$NUMBER" \
+          --lines-kind "$LINES_KIND" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

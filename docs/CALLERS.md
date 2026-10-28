@@ -302,6 +302,23 @@ What it reads and writes of the app: `actions` write (start runs, run a job agai
 `statuses` write (lines, when `lines-kind: statuses`), `pull-requests` write and `issues` write (the control comment),
 `members` read, `contents` read (the policy, CODEOWNERS). No new permission over the E2E flow.
 
+**The Jira reference** can be a line of Autopilot too, so the repository's `jira-reference` workflow (a check that turns
+Prow's label into a required status, run again on every label and title change) is not needed for pull requests. Add
+`jira_reference` to the policy and the `jira-reference` action to the entry job, and list `edited`, `labeled` and
+`unlabeled` in its `pull_request_target` types:
+
+```yaml
+jira_reference:
+  check: "CI Autopilot / Jira reference"   # the line; part of the CI Autopilot table and gate
+  mode: label                              # label: green when Prow has set `label` (default jira/valid-reference);
+                                           # title: green when the title starts with a key or NO-ISSUE: (no Prow)
+```
+
+A red line says how to fix it (start the title with `OSAC-1234:` or `NO-ISSUE:`), and the gate fails with it, as the check
+did. No workflow runs for it, so there are no rows and no old runs to tidy. The merge queue still builds `jira-reference`
+for its entries (a `merge_group` workflow that only says it was checked on the pull request) until the queue is under
+Autopilot.
+
 Not yet: the merge queue is not under Autopilot (its entries get `CI` and `E2E` from `ci.yml` and `e2e-queue.yml`, so those
 two names are still required); the lines show waiting and then the result, with no live "running"; the old runs of the
 Jira reference check are tidied only on a completion of the repository's `CI` workflow.
