@@ -34,7 +34,7 @@ from osac_ci.e2e_check import (
     tiered,
     validate_lines,
 )
-from osac_ci.github.api import GitHubClient, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 
 
 @dataclass(frozen=True)
@@ -132,6 +132,8 @@ def _state(job: Job | None, *, final: bool = False) -> tuple[str, str]:
     return "Running", "pending"
 
 
+TRANSIENT = frozenset({0, 500, 502, 503, 504})  # statuses of a failure in transit: the next poll may well work
+TOLERATED_FAILURES = 5  # polls in a row that may fail this way (about two and a half minutes) before the follower stops
 RESULT_TITLES = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}
 RESULT_STATES = {"success": "success", "failure": "failure", "cancelled": "error"}
 
@@ -190,7 +192,10 @@ def track(
     result as soon as that suite's job ends, so a suite that passed shows as passed while the others still run.
 
     ``runs`` (suite -> (run id, line name)) are the suites that run as a run of their own: their lines follow that run
-    instead of a job of this one, in the same loop, and end as the jobs do: running, or over with ``follow``."""
+    instead of a job of this one, in the same loop, and end as the jobs do: running, or over with ``follow``.
+
+    A poll that fails in transit (no answer, or a gateway error) is tried again on the next tick, up to
+    ``TOLERATED_FAILURES`` in a row, so a dropped connection does not end the follower of a run that lasts an hour."""
     sha = check_sha(sha)
     own = {suite: (rid, validate_lines({suite: line})[suite]) for suite, (rid, line) in (runs or {}).items()}
     lines = validate_lines(lines)
@@ -198,7 +203,8 @@ def track(
     shown: dict[str, tuple[str, str]] = {}
     newer: set[str] = set()  # suites whose line a newer run has taken over: this run leaves them alone
     deadline = clock() + timeout
-    while True:
+
+    def poll() -> bool:
         jobs = find_jobs(client, repo, run_id, suites)
         for suite in suites:
             job = jobs.get(suite)
@@ -232,7 +238,23 @@ def track(
             finished = all(s in jobs and jobs[s].status == "completed" for s in suites)
         else:
             finished = all(s in jobs and jobs[s].status != "queued" for s in suites)
-        if (finished and over) or clock() >= deadline:
+        return finished and over
+
+    failures = 0
+    while True:
+        try:
+            ended = poll()
+        except GitHubError as exc:
+            # One read that fails in transit is no reason to stop following a run that lasts an hour (the client has
+            # already tried it again); a refusal (a status below 500) is an answer, and the same on every try.
+            failures += 1
+            if exc.status not in TRANSIENT or failures > TOLERATED_FAILURES or clock() >= deadline:
+                raise
+        else:
+            failures = 0
+            if ended:
+                return list(shown)
+        if clock() >= deadline:
             return list(shown)
         sleep(interval)
 

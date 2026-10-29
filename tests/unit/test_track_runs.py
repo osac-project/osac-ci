@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from osac_ci import e2e_suites_check as tracker
-from osac_ci.github.api import Response
+from osac_ci.github.api import GitHubError, Response
 
 pytestmark = pytest.mark.unit
 HEAD = "a" * 40
@@ -187,3 +187,64 @@ def test_the_loop_goes_on_while_a_run_is_not_over_and_writes_each_step_it_goes_t
         "Waiting for a runner",
     ]
     assert says(gh, CA) == ("failure", "Failed")
+
+
+class Dropping(Gh):
+    """A GitHub whose reads of the jobs of a run fail the first ``fail`` times (a dropped connection)."""
+
+    def __init__(self, fail: int, status: int = 0) -> None:
+        super().__init__()
+        self.fail, self.status, self.dropped = fail, status, 0
+
+    def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
+        if method == "GET" and path.endswith("/jobs") and self.dropped < self.fail:
+            self.dropped += 1
+            raise GitHubError(self.status, f"GET {path}: RemoteDisconnected")
+        return super().request(method, path, params=params, body=body)
+
+
+def _both_passed(gh: Gh) -> None:
+    gh.runs = {RUN_VM: ("completed", "success"), RUN_CA: ("completed", "success")}
+    gh.jobs.update({RUN_VM: [job("e2e", "completed", "success")], RUN_CA: [job("e2e", "completed", "success")]})
+
+
+def test_a_poll_that_fails_in_transit_is_tried_again_on_the_next_tick() -> None:
+    gh = Dropping(fail=3)
+    _both_passed(gh)
+    waits: list[float] = []
+    assert sorted(follow(gh, sleep=waits.append)) == ["caas", "vmaas"]
+    assert gh.dropped == 3 and len(waits) == 3
+    assert says(gh, VM) == ("success", "Passed")
+
+
+def test_polls_that_keep_failing_in_transit_end_the_follower_with_the_error() -> None:
+    gh = Dropping(fail=100)
+    _both_passed(gh)
+    with pytest.raises(GitHubError):
+        follow(gh)
+    assert gh.dropped == tracker.TOLERATED_FAILURES + 1
+
+
+def test_the_count_of_failures_in_a_row_starts_again_after_a_poll_that_works() -> None:
+    gh = Dropping(fail=tracker.TOLERATED_FAILURES)
+    gh.runs = {RUN_VM: ("in_progress", ""), RUN_CA: ("in_progress", "")}
+    gh.jobs.update({RUN_VM: [job("e2e", "in_progress")], RUN_CA: [job("e2e", "in_progress")]})
+    ticks = 0
+
+    def sleep(_: float) -> None:
+        nonlocal ticks
+        ticks += 1
+        if ticks == tracker.TOLERATED_FAILURES + 1:  # one poll worked in between: the run goes on and then ends
+            gh.fail = gh.dropped + tracker.TOLERATED_FAILURES
+        if ticks == 2 * tracker.TOLERATED_FAILURES + 1:
+            _both_passed(gh)
+
+    assert sorted(follow(gh, sleep=sleep)) == ["caas", "vmaas"]
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 422])
+def test_a_refusal_is_not_tried_again(status: int) -> None:
+    gh = Dropping(fail=100, status=status)
+    with pytest.raises(GitHubError):
+        follow(gh)
+    assert gh.dropped == 1

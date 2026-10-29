@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import http.client
 import io
 import json
 import urllib.error
@@ -82,6 +84,74 @@ def test_only_absolute_api_paths_are_accepted(path: str) -> None:
 def test_empty_token_is_rejected() -> None:
     with pytest.raises(ValueError, match="token"):
         HttpClient("")
+
+
+# ---- a read is tried again ----------------------------------------------------------------------------------------
+
+
+def _flaky(*steps: object) -> tuple[Any, list[urllib.request.Request]]:
+    """An opener that does what each step says in turn: raise it, or answer with the status."""
+    seen: list[urllib.request.Request] = []
+    todo = list(steps)
+
+    def opener(request: urllib.request.Request, timeout: float) -> _Raw:
+        seen.append(request)
+        step = todo.pop(0)
+        if isinstance(step, int):
+            raise urllib.error.HTTPError(request.full_url, step, "x", {}, io.BytesIO(b"{}"))  # type: ignore[arg-type]
+        if isinstance(step, BaseException):
+            raise step
+        return _Raw(b'{"ok": true}')
+
+    return opener, seen
+
+
+def _client(opener: Any, waits: list[float]) -> HttpClient:
+    return HttpClient("tok-123", opener=opener, sleep=waits.append)
+
+
+def test_a_read_that_drops_is_tried_again_and_waits_longer_each_time() -> None:
+    drop = http.client.RemoteDisconnected("Remote end closed connection without response")
+    opener, seen = _flaky(drop, ConnectionResetError(), "ok")
+    waits: list[float] = []
+    response = _client(opener, waits).request("GET", "/repos/o/r/actions/runs/1/jobs")
+    assert response.status == 200 and response.data == {"ok": True}
+    assert len(seen) == 3 and waits == [1.0, 2.0]
+
+
+def test_a_read_that_keeps_failing_in_transit_raises_after_three_tries() -> None:
+    opener, seen = _flaky(*[http.client.RemoteDisconnected("gone")] * 3)
+    waits: list[float] = []
+    with pytest.raises(GitHubError) as err:
+        _client(opener, waits).request("GET", "/x")
+    assert err.value.status == 0 and "RemoteDisconnected" in str(err.value)
+    assert len(seen) == 3 and waits == [1.0, 2.0]
+
+
+def test_a_gateway_error_is_tried_again_and_the_last_one_is_returned_when_it_stays() -> None:
+    opener, seen = _flaky(503, 502, 504)
+    waits: list[float] = []
+    assert _client(opener, waits).request("GET", "/x").status == 504
+    assert len(seen) == 3
+    opener, seen = _flaky(502, "ok")
+    assert _client(opener, []).request("GET", "/x").status == 200
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 409, 422, 429, 500])
+def test_an_answer_that_is_not_a_gateway_error_is_never_tried_again(status: int) -> None:
+    opener, seen = _flaky(status, "ok")
+    waits: list[float] = []
+    assert _client(opener, waits).request("GET", "/x").status == status
+    assert len(seen) == 1 and waits == []
+
+
+@pytest.mark.parametrize("failure", [urllib.error.URLError("down"), 503])
+def test_a_write_is_never_tried_again(failure: object) -> None:
+    opener, seen = _flaky(failure, "ok")
+    waits: list[float] = []
+    with contextlib.suppress(GitHubError):  # a failed transfer raises, a 503 is returned: neither is tried again
+        _client(opener, waits).request("POST", "/repos/o/r/statuses/abc", body={"state": "success"})
+    assert len(seen) == 1 and waits == []
 
 
 # ---- rate limit ---------------------------------------------------------------------------------------------------
