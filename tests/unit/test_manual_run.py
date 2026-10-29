@@ -1423,7 +1423,7 @@ def test_a_pull_request_in_the_queue_says_its_place_and_what_the_entry_is_doing(
     [
         ("failed_checks", "checks failed", False),
         ("checks_timed_out", "checks timed out", False),
-        ("merge_conflict", "merge conflict", False),
+        ("merge_conflict", "merge conflict: it no longer merges cleanly into its base branch, update it", False),
         ("manual", "taken out by a person", True),
         ("some_new_reason", "some new reason", False),
     ],
@@ -1873,3 +1873,96 @@ def test_the_box_of_a_failed_suite_says_to_tick_it_to_run_it_again() -> None:
 def test_a_pull_request_that_is_over_gets_no_hint() -> None:
     done = full_status(closed="merged", e2e=manual_run.CheckView("failed", title="Failed: vmaas"))
     assert "to run again" not in block_of(manual_run.render_comment(HEAD, (failed_view("vmaas"),), "", done))
+
+
+# why the queue let a pull request go -------------------------------------------------------------------------------
+
+ENTRY = "e" * 40
+
+
+def removed_answer(reason: str, actor: str = "github-merge-queue", sha: str | None = ENTRY) -> dict[str, Any]:
+    node: dict[str, Any] = {
+        "__typename": REMOVED, "createdAt": "2026-10-20T11:00:00Z", "reason": reason, "actor": {"login": actor},
+        "beforeCommit": {"oid": sha} if sha else None,
+    }  # fmt: skip
+    return {"mergeQueueEntry": None, "timelineItems": {"nodes": [node]}}
+
+
+def entry_run(
+    name: str, conclusion: str | None, app: str = "github-actions", title: str = "", run: int = 1
+) -> dict[str, Any]:
+    return {"id": run, "name": name, "status": "completed", "conclusion": conclusion, "app": {"slug": app},
+            "output": {"title": title}, "details_url": f"https://github.com/o/r/actions/runs/{run}"}  # fmt: skip
+
+
+def removed_view(reason: str, runs: list[dict[str, Any]] | None = None, **given: Any) -> manual_run.QueueView | None:
+    fake = Fake(runs or [])
+    fake.queue = removed_answer(reason, **given)
+    return manual_run.queue_view(fake, REPO, 7)  # type: ignore[arg-type]
+
+
+def test_a_pull_request_removed_for_failed_checks_names_the_job_the_gate_of_the_entry_says_failed() -> None:
+    runs = [
+        entry_run("CI Autopilot", "failure", "osac-ci", "Failed: unit", 5),
+        entry_run("unit / unit", "failure", run=6),
+    ]
+    view = removed_view("failed_checks", runs)
+    assert view == manual_run.QueueView(
+        "removed", "checks failed: unit", False, "https://github.com/o/r/actions/runs/5"
+    )
+
+
+def test_the_gate_of_a_stopped_entry_says_what_stopped_it() -> None:
+    runs = [entry_run("CI Autopilot", "cancelled", "osac-ci", "Cancelled: stopped, CI / unit-tests failed", 5)]
+    view = removed_view("failed_checks", runs)
+    assert view is not None and view.detail == "checks failed: stopped, CI / unit-tests failed"
+
+
+def test_without_a_gate_the_failed_checks_of_the_entry_are_named_and_a_long_list_is_cut() -> None:
+    runs = [entry_run(f"job{i}", "failure", run=i + 1) for i in range(7)] + [entry_run("fine", "success", run=20)]
+    view = removed_view("failed_checks", runs)
+    assert view is not None and view.detail == "checks failed: job0, job1, job2, job3, job4 and 2 more"
+    other = removed_view("failed_checks", [entry_run("CI Autopilot", "failure", "github-actions", "Failed: nope")])
+    assert other is not None and other.detail == "checks failed: CI Autopilot", (
+        "only the app's own gate speaks for the entry"
+    )
+
+
+def test_a_pull_request_removed_for_failed_checks_with_nothing_to_read_says_only_that() -> None:
+    assert removed_view("failed_checks", []) == manual_run.QueueView("removed", "checks failed")
+    assert removed_view("failed_checks", [], sha=None) == manual_run.QueueView("removed", "checks failed")
+
+
+def test_a_pull_request_removed_for_a_conflict_says_to_update_the_branch() -> None:
+    view = removed_view("merge_conflict")
+    assert (
+        view is not None
+        and view.detail.startswith("merge conflict: it no longer merges cleanly")
+        and not view.by_person
+    )
+
+
+def test_a_pull_request_taken_out_by_a_person_names_them_and_one_taken_out_by_the_queue_does_not() -> None:
+    assert removed_view("manual", actor="carol") == manual_run.QueueView("removed", "taken out by carol", True)
+    assert removed_view("manual", actor="github-merge-queue[bot]") == manual_run.QueueView(
+        "removed", "taken out by a person", True
+    )
+
+
+def test_the_row_links_what_failed_when_it_knows_where_to_read_it() -> None:
+    view = manual_run.QueueView("removed", "checks failed: unit", False, "https://x/run")
+    assert manual_run._queue_row(view).endswith("removed from the queue: [checks failed: unit](https://x/run)")
+    plain = manual_run.QueueView("removed", "checks failed")
+    assert manual_run._queue_row(plain).endswith("removed from the queue: checks failed")
+
+
+def test_the_graphql_query_asks_for_the_commit_and_the_actor_of_a_removal() -> None:
+    assert "beforeCommit { oid }" in manual_run.QUEUE_QUERY and "actor { login }" in manual_run.QUEUE_QUERY
+
+
+def test_a_commit_id_that_is_not_one_is_never_used_in_a_request() -> None:
+    fake = Fake([entry_run("unit", "failure")])
+    fake.queue = removed_answer("failed_checks", sha="../../etc/x")
+    view = manual_run.queue_view(fake, REPO, 7)  # type: ignore[arg-type]
+    assert view == manual_run.QueueView("removed", "checks failed")
+    assert not [p for p in fake.posted if "/commits/" in p[1]], "nothing was asked of GitHub about it"
