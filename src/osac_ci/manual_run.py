@@ -313,13 +313,36 @@ def _owners_row(status: PrStatus) -> str:
     return f"{lead('pending')}**Code owners:** waiting for approval from {groups}{note}"
 
 
+MD_SPECIAL = re.compile(r"([\\`*_{}\[\]()<>#+!|~&])")
+MD_TEXT_MAX = 200
+GITHUB_URL = re.compile(r"https://github\.com/[A-Za-z0-9._~:/?#@!$&*+,;=%-]+")
+
+
+def _md_text(text: str) -> str:
+    """Text that came from GitHub (a check name, a title, a login) as plain Markdown text: whitespace collapsed to
+    single spaces (a name can hold a newline), cut, and every character that Markdown reads escaped, so a name such as
+    ``x](http://evil) [y`` stays a name."""
+    flat = " ".join("".join(c if c.isprintable() else " " for c in text).split())
+    shown = flat if len(flat) <= MD_TEXT_MAX else flat[: MD_TEXT_MAX - 1] + "…"
+    return MD_SPECIAL.sub(r"\\\1", shown)
+
+
+def _md_url(url: str) -> str | None:
+    """A link destination for a page of GitHub: an https://github.com address made only of characters that cannot end
+    or open a destination (no space, parenthesis, angle bracket or quote). None for anything else: the text is then
+    shown without a link."""
+    return url if GITHUB_URL.fullmatch(url) else None
+
+
 def _queue_row(queue: QueueView) -> str:
+    detail = _md_text(queue.detail)
     if queue.state == "queued":
-        return f"{lead('pending')}**Merge queue:** in the queue ({queue.detail})"
+        return f"{lead('pending')}**Merge queue:** in the queue ({detail})"
     if queue.state == "removed":
         if queue.by_person:
-            return f"{lead('neutral')}**Merge queue:** {queue.detail}"
-        why = f"[{queue.detail}]({queue.url})" if queue.url else queue.detail
+            return f"{lead('neutral')}**Merge queue:** {detail}"
+        link = _md_url(queue.url) if queue.url else None
+        why = f"[{detail}]({link})" if link else detail
         return f"{lead('error')}**Merge queue:** removed from the queue: {why}"
     return f"{lead('neutral')}**Merge queue:** not queued"
 
