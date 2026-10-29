@@ -25,6 +25,12 @@ name: E2E comment
 on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a pull_request_target caller; no pull request code runs
   workflow_call:
     inputs:
+      cheap-workflows:
+        description: >-
+          JSON list of the names of the repository's own workflows (`["CI"]`) whose jobs the status in the control
+          comment lists next to the E2E suites; `[]`: none
+        type: string
+        default: "[]"
       app-id:
         description: Id of the OSAC CI app
         type: string
@@ -54,6 +60,8 @@ jobs:
           permission-members: read
           permission-contents: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # the CODEOWNERS of the base branch, for the code owners row
           permission-checks: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # the status block reads the checks
+          permission-actions: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}  # and the run behind each, for the jobs of the cheap workflows
+          permission-statuses: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'read' || '' }}
           permission-issues: ${{ github.event.action != 'opened' && github.event.action != 'reopened' && 'write' || '' }}  # and edits the comment
       # `$/` is this workflow's own repository at the exact commit the caller pinned (see e2e-pr-decide.yml).
       - uses: $/.github/actions/early-comment
@@ -68,6 +76,7 @@ jobs:
       - uses: $/.github/actions/manual-status
         if: github.event.action != 'opened' && github.event.action != 'reopened'
         with:
+          cheap-workflows: ${{ inputs.cheap-workflows }}
           github-token: ${{ steps.app-token.outputs.token }}
           repo: ${{ github.repository }}
           number: ${{ github.event.pull_request.number }}

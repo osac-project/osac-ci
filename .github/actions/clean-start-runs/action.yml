@@ -1,0 +1,49 @@
+name: Remove the finished entry runs of a pull request
+description: >-
+  Delete the finished runs of the controller's entry workflow that were started by an event of a pull request (titled
+  `Autopilot #<number> (<action>) · <branch>`). They did their work, and each one adds rows to the pull request page (the
+  run that started the jobs, the comment, and the jobs of the other events as skipped). What the app wrote (the lines, the
+  CI and E2E checks, the CI Autopilot check) belongs to no run and stays. A run that failed stays. Called from the workflows
+  of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (actions write). This action never checks out the calling repository. Every input
+# reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: A token that deletes workflow runs (actions write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  workflow-ref:
+    description: The ref of the entry workflow (`github.workflow_ref` of a called workflow is the caller's)
+    default: ${{ github.workflow_ref }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Remove the runs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        WORKFLOW_REF: ${{ inputs.workflow-ref }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        file="${WORKFLOW_REF#"${REPO}"/.github/workflows/}"
+        file="${file%%@*}"
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci clean-start-runs --repo "$REPO" --number "$NUMBER" --workflow "$file" \
+          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -1,0 +1,62 @@
+name: Start the cheap jobs of a pull request as runs of their own
+description: >-
+  A pull request opened or got a new commit: start the cheap jobs of the policy (kind cheap, with a workflow) that the
+  change needs as runs of their own (workflow_dispatch), write their lines on the pull request, linked to those runs, and
+  write the `CI` check as waiting for them. Called from the decision workflow of osac-ci on the `pull_request_target`
+  event, pinned to a commit, like the other actions.
+
+# The calling workflow decides when this runs and what token it holds: one token of the OSAC CI app (actions write to start
+# the runs, checks write and statuses write for the lines and the sum, pull requests read to learn the commit and who wrote
+# it). This action never checks out the calling repository, so it cannot run pull request code; the jobs it starts run the
+# head commit from the default branch's workflow files, and check their inputs against the pull request first. Every
+# input reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: >-
+      Token of the OSAC CI app (actions write, checks write, pull requests read; statuses write for lines-kind statuses)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  policy-file:
+    description: The repository's policy, read from its default branch (a path of the workspace)
+    required: true
+  lines-kind:
+    description: Where the lines are written, "statuses" or "checks" (the same as the other workflows of the flow)
+    default: statuses
+  run-url:
+    description: Link of this workflow run, shown on a line that could not be started
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Start the cheap jobs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        POLICY: ${{ inputs.policy-file }}
+        LINES_KIND: ${{ inputs.lines-kind }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        case "$LINES_KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The lines kind must be statuses or checks."; exit 1 ;;
+        esac
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci cheap-start --policy "$POLICY" --repo "$REPO" --number "$NUMBER" \
+          --lines-kind "$LINES_KIND" --run-url "$RUN_URL" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

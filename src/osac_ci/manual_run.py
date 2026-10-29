@@ -26,6 +26,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
+from osac_ci.cheap_jobs import DEFAULT_SUM, LINE_APP, CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.e2e_start import (
     CHECK_APP,
     NEEDED,
@@ -43,7 +44,7 @@ from osac_ci.e2e_start import (
     unqualified_approvers,
 )
 from osac_ci.github.api import GitHubClient, GitHubError, Response, check_repo, get, paginate
-from osac_ci.github.snapshot import fetch_codeowners, fetch_team_members
+from osac_ci.github.snapshot import COMMIT_SHA, fetch_codeowners, fetch_team_members
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
@@ -128,6 +129,7 @@ CHECK_WORD = {
 }
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 FAILED_SHOWN = 5  # how many failed checks the CI row names
+AUTOPILOT_CHECK = "CI Autopilot"  # the controller's summary check (see autopilot_summary.NAME)
 # The merge queue of a pull request: its entry (where it is in the queue) and its last events (added, removed and why).
 QUEUE_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -136,7 +138,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     timelineItems(last: 30, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
       nodes { __typename
         ... on AddedToMergeQueueEvent { createdAt }
-        ... on RemovedFromMergeQueueEvent { createdAt reason } } } } } }
+        ... on RemovedFromMergeQueueEvent { createdAt reason beforeCommit { oid } actor { login } } } } } } }
 """
 QUEUE_ENTRY_WORDS = {
     "QUEUED": "waiting its turn",
@@ -202,6 +204,7 @@ class QueueView:
     state: str
     detail: str = ""
     by_person: bool = False
+    url: str = ""  # where to read what failed (the run of the entry), when it is known
 
 
 @dataclass(frozen=True)
@@ -240,6 +243,7 @@ class PrStatus:
     blocked_by: tuple[str, ...] = ()
     code_owners: tuple[OwnerGroup, ...] = ()  # who has to approve the changed files (CODEOWNERS), and who has
     owners_checked: bool = True  # False when who is in a team could not be read: no group is then shown as approved
+    cheap: tuple[CheapJob, ...] = ()  # the jobs of the repository's cheap workflows on the head commit (CI's legs)
     rerun: tuple[str, ...] = ()  # the suites (box ids) whose line says failed: the E2E row says how to run them again
 
 
@@ -310,13 +314,38 @@ def _owners_row(status: PrStatus) -> str:
     return f"{lead('pending')}**Code owners:** waiting for approval from {groups}{note}"
 
 
+CHEAP_SHOWN = 40  # how many jobs of the cheap stage the section lists
+
+
+def _cheap_section(jobs: Sequence[CheapJob]) -> list[str]:
+    """The jobs of the cheap stage in a collapsed section, failed first. A failed job of a run that has ended says how
+    to run it again; one of a run that still goes cannot be run again before the run ends."""
+    count = {state: sum(1 for j in jobs if j.state == state) for state in ("failed", "active", "cancelled", "passed")}
+    parts = [f"{n} {word}" for state, word in CHEAP_WORDS if (n := count[state])]
+    lines = [f"<details><summary><b>🧰 Checks</b> · {' · '.join(parts)} ({len(jobs)} jobs)</summary>", ""]
+    for job in jobs[:CHEAP_SHOWN]:
+        view = CheckView(job.state, job.url, running=job.running)
+        mark = lead("running" if job.state == "active" and job.running else CHECK_ICON.get(job.state, "neutral"))
+        word = "waiting" if job.state == "active" and not job.running else CHECK_WORD.get(job.state, job.state)
+        text = f"[{word}]({view.url})" if view.url else word
+        again = f" · comment `/test {job.command}` to run it again" if job.can_run_again else ""
+        lines.append(f"- {mark}**{job.name}** · {text}{again}")
+    if len(jobs) > CHEAP_SHOWN:
+        lines.append(f"- and {len(jobs) - CHEAP_SHOWN} more")
+    return [*lines, "", "</details>"]
+
+
+CHEAP_WORDS = (("failed", "failed"), ("active", "running"), ("cancelled", "cancelled"), ("passed", "passed"))
+
+
 def _queue_row(queue: QueueView) -> str:
     if queue.state == "queued":
         return f"{lead('pending')}**Merge queue:** in the queue ({queue.detail})"
     if queue.state == "removed":
         if queue.by_person:
             return f"{lead('neutral')}**Merge queue:** {queue.detail}"
-        return f"{lead('error')}**Merge queue:** removed from the queue: {queue.detail}"
+        why = f"[{queue.detail}]({queue.url})" if queue.url else queue.detail
+        return f"{lead('error')}**Merge queue:** removed from the queue: {why}"
     return f"{lead('neutral')}**Merge queue:** not queued"
 
 
@@ -370,7 +399,8 @@ def status_block(sha: str, status: PrStatus | None = None) -> list[str]:
                 if status.blocked_by and status.queue.state == "none":
                     row += " (blocked by the review above)"
                 rows.append(row)
-    return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), STATUS_END]
+    extra = _cheap_section(status.cheap) if status is not None and status.cheap and status.closed == "" else []
+    return [STATUS_START, *_alert("TIP", ["## 🚦 CI status", "", *rows]), *(["", *extra] if extra else []), STATUS_END]
 
 
 def _shown_as(view: SuiteView) -> str:
@@ -896,9 +926,46 @@ def queue_view(client: GitHubClient, repo: str, number: int) -> QueueView | None
         return QueueView("none")
     reason = str(last.get("reason") or "")
     by_person = reason == "manual"
-    return QueueView(
-        "removed", QUEUE_REMOVAL_WORDS.get(reason, reason.replace("_", " ")) or "no reason given", by_person
-    )
+    words = QUEUE_REMOVAL_WORDS.get(reason, reason.replace("_", " ")) or "no reason given"
+    commit = last.get("beforeCommit")
+    sha = str(commit.get("oid") or "") if isinstance(commit, Mapping) else ""
+    actor = last.get("actor")
+    login = str(actor.get("login") or "") if isinstance(actor, Mapping) else ""
+    if reason == "failed_checks" and COMMIT_SHA.fullmatch(sha):
+        what, link = _failed_on_entry(client, repo, sha)
+        return QueueView("removed", f"{words}: {what}" if what else words, False, link)
+    if reason == "merge_conflict":
+        return QueueView("removed", f"{words}: it no longer merges cleanly into its base branch, update it", False)
+    if by_person and login and not login.endswith("[bot]"):
+        return QueueView("removed", f"taken out by {login}", True)
+    return QueueView("removed", words, by_person)
+
+
+def _failed_on_entry(client: GitHubClient, repo: str, sha: str) -> tuple[str, str]:
+    """(what failed, where to read it) on the commit of a queue entry. The controller's ``CI Autopilot`` check names it
+    (``Failed: unit``, or ``Cancelled: stopped, CI failed`` when another workflow's failure stopped the entry); without
+    it, the failed checks of the commit. Empty when the commit cannot be read."""
+    try:
+        runs = list(paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/check-runs", key="check_runs"))
+    except GitHubError:
+        return "", ""
+    gates = [
+        r
+        for r in runs
+        if r.get("name") == AUTOPILOT_CHECK and (r.get("app") or {}).get("slug") == LINE_APP and r.get("conclusion")
+    ]
+    if gates:
+        gate = max(gates, key=lambda r: int(r["id"]))
+        title = str((gate.get("output") or {}).get("title") or "")
+        for prefix in ("Failed: ", "Cancelled: "):
+            if title.startswith(prefix):
+                return title.removeprefix(prefix), str(gate.get("details_url") or gate.get("html_url") or "")
+    failed = [r for r in runs if r.get("conclusion") in FAILED_CONCLUSIONS]
+    names = list(dict.fromkeys(str(r.get("name")) for r in failed))
+    if not names:
+        return "", ""
+    more = f" and {len(names) - FAILED_SHOWN} more" if len(names) > FAILED_SHOWN else ""
+    return ", ".join(names[:FAILED_SHOWN]) + more, str(failed[0].get("details_url") or failed[0].get("html_url") or "")
 
 
 def code_owner_groups(
@@ -955,7 +1022,13 @@ def code_owner_groups(
 
 
 def status_of(
-    client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    pr: Mapping[str, object],
+    runs: Sequence[Mapping[str, object]],
+    cheap_workflows: Sequence[str] = (),
+    ci_check: str = DEFAULT_SUM,
 ) -> PrStatus:
     """The status of a pull request, reading its reviews and the role of each reviewer as the decision does. When the
     roles cannot be read (no right to), the approval row says so instead of guessing from the raw reviews."""
@@ -974,7 +1047,15 @@ def status_of(
             owners, checked = code_owner_groups(client, repo, number, pr, approvers)
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
-    return replace(status, queue=queue, code_owners=owners, owners_checked=checked)
+    cheap: tuple[CheapJob, ...] = ()
+    if _closed_of(pr) == "":
+        # the jobs of the repository's own workflows (when it lists them) and the cheap jobs the controller started
+        head = pr.get("head")
+        sha = str(head.get("sha") or "") if isinstance(head, Mapping) else ""
+        cheap = read_cheap_jobs(client, repo, runs, cheap_workflows) + (
+            read_dispatched_jobs(client, repo, sha, runs, (ci_check,)) if sha else ()
+        )
+    return replace(status, queue=queue, code_owners=owners, owners_checked=checked, cheap=cheap)
 
 
 # What a refused quiet edit answers (no `pull-requests: write` for the job): not an error, the app edits.
@@ -997,7 +1078,13 @@ def edit_comment(
 
 
 def refresh_status(
-    client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN, edit_client: GitHubClient | None = None
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    *,
+    bot: str = BOT_LOGIN,
+    edit_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
     the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
@@ -1019,7 +1106,7 @@ def refresh_status(
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
-    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs)))
+    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs, cheap_workflows)))
     new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
     if new == body:
         return "unchanged"
@@ -1039,6 +1126,7 @@ def refresh(
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
     edit_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> str:
     """Create or update the control comment of the pull request from the state of its head commit. Nothing is written
     when the pull request is closed or its author is not a member of the organization, or when the text is the same
@@ -1048,7 +1136,7 @@ def refresh(
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     if str(pr.get("state")) != "open":
         # Nothing to list or start any more; a comment that is there still shows where the pull request ended.
-        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client)
+        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client, cheap_workflows=cheap_workflows)
     suites = suites_of(policy)
     if not suites:
         return "skipped: the policy has no E2E suite"
@@ -1067,7 +1155,11 @@ def refresh(
     lines = suite_line_runs_if_readable(client, repo, sha, [s.check for s in suites], CHECK_APP)
     every = [*runs, *lines]
     body = render_comment(
-        sha, views_for(suites, every), kept, status_of(client, repo, number, pr, runs), history_for(suites, every)
+        sha,
+        views_for(suites, every),
+        kept,
+        status_of(client, repo, number, pr, runs, cheap_workflows, policy.ci_check or DEFAULT_SUM),
+        history_for(suites, every),
     )
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})

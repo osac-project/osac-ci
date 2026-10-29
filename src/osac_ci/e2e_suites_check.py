@@ -143,7 +143,7 @@ def _result(job: Job | None) -> str:
     return {"success": "success", "cancelled": "cancelled"}.get(job.conclusion, "failure")
 
 
-def run_state(client: GitHubClient, repo: str, run_id: int) -> tuple[str, str, str, bool]:
+def run_state(client: GitHubClient, repo: str, run_id: int, prefer: str = "") -> tuple[str, str, str, bool]:
     """Where a suite that is a run of its own stands: (what its line says, the state of the line, where the line links,
     whether the run is over). Waiting for a runner until a job of it runs, running until it ends, then its result by how
     the run ended (a cancel and a crash count: the run is over and the suite did not pass)."""
@@ -160,6 +160,8 @@ def run_state(client: GitHubClient, repo: str, run_id: int) -> tuple[str, str, s
     # the deepest job that ran, the one a person wants the logs of; the run when none is there yet
     ran = [j for j in jobs if j.get("conclusion") != "skipped"]
     best = max(ran, key=lambda j: (str(j.get("name", "")).count(" / "), str(j.get("started_at") or "")), default=None)
+    # a run whose own job is named (a cheap job: ``prefer``) links to that job, not to the deeper job that verified it
+    best = next((j for j in ran if prefer and j.get("name") == prefer), best)
     url = str(best.get("html_url") or run_url) if best else run_url
     if run.get("status") == "completed":
         result = {"success": "success", "cancelled": "cancelled"}.get(str(run.get("conclusion")), "failure")

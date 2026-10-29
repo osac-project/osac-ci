@@ -1,5 +1,5 @@
 ---
-# Deletes, from here, the runs of the service workflows of the repositories that osac-ci serves that ended *skipped*.
+# Deletes, from here, the runs of the service workflows (the E2E callers, and `autopilot.yml`, the one entry point) of the repositories that osac-ci serves that ended *skipped*.
 # The E2E decision, the early comment and the review relay wake up on every comment, review and CI event of a
 # repository, and most wake-ups have nothing to do: they would fill the Actions tab of a repository whose people never
 # asked for them (on a busy day about half of the runs of osac were of that kind). Running the cleaner from the service
@@ -68,5 +68,5 @@ jobs:
           set -euo pipefail
           # shellcheck disable=SC2086  # DRY_RUN is empty or one flag
           uv run osac-ci clean-runs --repo "osac-project/${REPO}" \
-            --workflow e2e-pr.yml --workflow e2e-comment.yml --workflow e2e-review-relay.yml ${DRY_RUN} \
+            --workflow e2e-pr.yml --workflow e2e-comment.yml --workflow autopilot.yml --workflow e2e-review-relay.yml ${DRY_RUN} \
             | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

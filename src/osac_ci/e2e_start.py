@@ -29,12 +29,13 @@ from enum import StrEnum
 from typing import Any
 from urllib.parse import quote
 
+from osac_ci.cheap_jobs import DEFAULT_SUM, CheapJob, read_cheap_jobs, read_dispatched_jobs
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
-from osac_ci.planner import latest_checks
+from osac_ci.planner import check_outcome, latest_checks
 from osac_ci.policy import Policy
 from osac_ci.suite_lines import suite_line_runs, suite_line_runs_if_readable
 
@@ -62,6 +63,7 @@ class Action(StrEnum):
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
+    WAIT_CI = "wait-ci"  # the policy has the E2E wait for the CI check, and it has not passed yet
     ALREADY_PASSED = "already-passed"  # every suite the change needs has already passed on this commit
     NOTHING_TO_START = "nothing-to-start"  # a person asked for suites by hand, and none needs to start
     RUNNING_BY_HAND = "running-by-hand"  # every suite the change needs that has not passed is being run by hand
@@ -136,6 +138,14 @@ class Inputs:
     # The workflow runs that still go among those the suite lines on the commit link to (read by ``fetch_inputs``): a
     # line that waits or runs is only believed when the run it links to is alive.
     live_runs: frozenset[int] = frozenset()
+    # The jobs of the repository's own workflows on the head commit (see cheap_jobs), read only when a comment asks for
+    # a name that is not a suite: ``/test ci-unit`` runs a failed job of CI again.
+    cheap_jobs: tuple[CheapJob, ...] = ()
+    # The name of the CI check when the controller owns it (the policy has cheap jobs that run as runs of their own): it
+    # is the OSAC CI app's check that adds them up, so it is read from the app's check runs, not the ruleset's app.
+    ci_check: str = ""
+    # The policy has the suites start only after the CI check of the controller has passed (``E2E.wait_for_ci``).
+    wait_for_ci: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,6 +180,8 @@ class Decision:
     # (suite, workflow file) of the suites to start that run as a run of their own: the caller does not run them as jobs
     # of its run, the decision dispatches them (see e2e_dispatch)
     workflows: tuple[tuple[str, str], ...] = ()
+    # (job name, job id) of the failed jobs of the repository's own workflows to run again, asked for by a comment
+    reruns: tuple[tuple[str, int], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -329,6 +341,13 @@ def decide(inputs: Inputs) -> Decision:
     approvers, stale, blocking = approvals(inputs)
     snapshot = Snapshot(repo="", number=inputs.number, head_sha=inputs.head_sha, check_runs=inputs.check_runs)
     gaps = unmet(snapshot, inputs.cheap, inputs.statuses)
+    if inputs.ci_check:
+        # the CI check of the controller (the app's own): failed holds the start back, one that goes or is not written
+        # yet does not delay it, like the required checks above
+        ci = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP and r.name == inputs.ci_check))
+        status, detail = check_outcome(ci.get(inputs.ci_check))
+        if status is not JobStatus.PASSED:
+            gaps = (*gaps, (f"{inputs.ci_check}: {detail}", status))
     failed = tuple(g for g, s in gaps if s is JobStatus.FAILED)
     pending = tuple(g for g, s in gaps if s is not JobStatus.FAILED)
     base = {
@@ -437,6 +456,14 @@ def decide(inputs: Inputs) -> Decision:
             suite_checks=checks,
             **base,
         )
+    if inputs.wait_for_ci and inputs.ci_check and pending:
+        return Decision(
+            action=Action.WAIT_CI,
+            reason=f"{', '.join(g.split(':')[0] for g in pending)} has not passed yet: the suites start when it does",
+            suites=names,
+            suite_checks=checks,
+            **base,
+        )
     return Decision(
         action=Action.START,
         reason=f"approved by {', '.join(approvers)}"
@@ -473,6 +500,8 @@ def _decide_by_hand(
     tiers: dict[str, str] = {}
     cancel: list[int] = []
     notes: list[tuple[str, str]] = []
+    reruns: list[tuple[str, int]] = []
+    jobs = {j.command: j for j in inputs.cheap_jobs if j.command}
     if inputs.request_refused:
         notes.append(("", inputs.request_refused))
     names: list[str] = []
@@ -493,6 +522,9 @@ def _decide_by_hand(
     ] = {}  # suite -> (the suite, the tier asked of it; a variant wins over the suite)
     for name in dict.fromkeys(names):
         suite = known.get(name)
+        if suite is None and name in jobs:
+            _ask_for_job(jobs[name], inputs.requested_by, reruns, notes)
+            continue
         if suite is None:
             notes.append((name, f"is not a suite of this repository (suites: {', '.join(known)})"))
             continue
@@ -548,6 +580,7 @@ def _decide_by_hand(
             manual=True,
             selected_checks=selected,
             notes=tuple(notes),
+            reruns=tuple(reruns),
             **base,
         )
     return Decision(
@@ -561,8 +594,23 @@ def _decide_by_hand(
         tiers=tuple(tiers.items()),
         cancel=tuple(cancel),
         workflows=_workflows(inputs.suites, starts),
+        reruns=tuple(reruns),
         **base,
     )
+
+
+def _ask_for_job(job: CheapJob, by: str, reruns: list[tuple[str, int]], notes: list[tuple[str, str]]) -> None:
+    """``/test ci-<job>``: a failed or cancelled job of a run that has ended is run again; anything else is told why
+    not, and nothing is started (a job that passed or runs is left alone: the person can see it in the status)."""
+    if job.can_run_again:
+        reruns.append((job.name, job.job_id))
+        notes.append((job.command, f"{job.name} was run again by {by}"))
+    elif job.state == "passed":
+        notes.append((job.command, f"{job.name} already passed on this commit; it was not run again"))
+    elif job.state == "active":
+        notes.append((job.command, f"{job.name} is already running on this commit; it was not started again"))
+    else:
+        notes.append((job.command, f"{job.name} cannot be run again while the rest of its run still goes"))
 
 
 # reading GitHub -------------------------------------------------------------------------------------------------
@@ -640,6 +688,7 @@ def fetch_inputs(
     request_sha: str = "",
     comment_given: bool = False,
     statuses_client: GitHubClient | None = None,
+    cheap_workflows: Sequence[str] = (),
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -652,9 +701,14 @@ def fetch_inputs(
     if required is None:
         required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
     not_cheap = extend(flow(), policy.flow).not_cheap  # the central rules plus what this repository added
-    cheap = tuple(r for r in required if r.context not in gates and r.context not in not_cheap)
+    owned = any(j.kind == "cheap" and j.workflow for j in policy.jobs.values())
+    ci_check = (policy.ci_check or DEFAULT_SUM) if owned else ""
+    cheap = tuple(
+        r for r in required if r.context not in gates and r.context not in not_cheap and r.context != ci_check
+    )
     author = str((pr.get("user") or {}).get("login", ""))
     reviews = reviews_with_roles(client, repo, paginate(client, f"{base}/pulls/{number}/reviews"), author)
+    raw_runs = list(paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs"))
     runs = tuple(
         CheckRun(
             raw["name"],
@@ -666,7 +720,7 @@ def fetch_inputs(
             title=str((raw.get("output") or {}).get("title") or ""),
             url=str(raw.get("details_url") or ""),
         )
-        for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
+        for raw in raw_runs
     )
     # The line of a suite may be a commit status instead of a check run (see ``suite_lines``), read as the same thing.
     # With a client given for it the statuses must be readable (a suite whose line cannot be seen could be started
@@ -698,6 +752,15 @@ def fetch_inputs(
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
     requested, request_refused = refuse_stale_request(requested, request_refused, request_sha, head_sha)
+    # The jobs of the repository's own workflows cost a request per run, so they are read only for a request that names
+    # something that is not a suite.
+    others = [n for n in requested if n != NEEDED and n not in {s.name for s in suites}]
+    jobs = (
+        read_cheap_jobs(client, repo, raw_runs, cheap_workflows)
+        + read_dispatched_jobs(client, repo, head_sha, raw_runs, (policy.ci_check or DEFAULT_SUM,))
+        if others
+        else ()
+    )
     # One more request, and only when a requirement exists that a commit status could also satisfy.
     statuses = fetch_statuses(client, repo, head_sha) if any(r.integration_id is None for r in cheap) else {}
     return Inputs(
@@ -720,6 +783,9 @@ def fetch_inputs(
         request_refused=request_refused,
         comment_ignored=comment_given and not requested and not request_refused,
         live_runs=live,
+        cheap_jobs=jobs,
+        ci_check=ci_check,
+        wait_for_ci=bool(ci_check) and policy.e2e.wait_for_ci,
     )
 
 
@@ -847,6 +913,7 @@ def to_json(decision: Decision) -> str:
             "cancel": list(decision.cancel),
             "by_hand": dict(decision.by_hand),
             "workflows": dict(decision.workflows),
+            "reruns": [{"name": n, "job": j} for n, j in decision.reruns],
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

@@ -113,3 +113,42 @@ def render(results: list[Cleaned], *, dry_run: bool) -> str:
                 + (f", {len(r.failed)} refused" if r.failed else "")
             )
     return "\n".join(lines) + "\n"
+
+
+START_TITLE = re.compile(
+    r"Autopilot #(?P<number>[0-9]+) \("
+)  # the title the caller gives its run for a pull request event
+
+
+def clean_start_runs(
+    client: GitHubClient, repo: str, workflow: str, number: int, *, keep_failed: bool = True
+) -> list[int]:
+    """Delete the finished runs of the entry workflow that were started by an event of pull request ``number`` (titled
+    ``Autopilot #<number> (<action>) · <branch>``). They did their work (the cheap jobs are started, the comment is
+    written) and every one adds rows to the pull request page: the run that started the jobs, the comment, and the jobs
+    of the other events as skipped. What the app wrote (the lines, the CI and E2E checks, the CI Autopilot summary)
+    belongs to no run and stays. A run that failed stays, as evidence. Returns the ids deleted."""
+    repo = check_repo(repo)
+    if not WORKFLOW_FILE.fullmatch(workflow):
+        raise ValueError(f"not a workflow file name: {workflow!r}")
+    if number < 1:
+        raise ValueError("the pull request number must be positive")
+    gone: list[int] = []
+    runs = paginate(
+        client,
+        f"/repos/{repo}/actions/workflows/{workflow}/runs",
+        key="workflow_runs",
+        params={"event": "pull_request_target", "status": "completed"},
+    )
+    for run in islice(runs, MAX_RUNS):
+        if not isinstance(run, Mapping):
+            continue
+        found = START_TITLE.match(str(run.get("display_title") or ""))
+        if found is None or int(found["number"]) != number:
+            continue
+        if keep_failed and run.get("conclusion") not in ("success", "skipped"):
+            continue
+        response = client.request("DELETE", f"/repos/{repo}/actions/runs/{int(run['id'])}")
+        if response.status in (204, 404):
+            gone.append(int(run["id"]))
+    return gone

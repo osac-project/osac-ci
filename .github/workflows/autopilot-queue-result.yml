@@ -1,0 +1,148 @@
+---
+# Shared workflow: ONE job that looks after a merge queue entry from the moment the plan has chosen the jobs, and writes the
+# `CI Autopilot` check of the entry (the gate a ruleset can require alone, on the pull request and on the queue commit).
+# It is e2e-queue-result.yml for the controller: what it watches is the cheap jobs of the policy and the E2E suites, which
+# run inline as jobs of the same run, and the required checks of other workflows that may still be there.
+#   * it writes the gate as in progress as soon as it starts, with the jobs the plan chose;
+#   * the first failure settles the entry: the gate is written as failed at once, naming what failed (or as cancelled when
+#     the cause was another workflow), and only then it stops everything that still runs for the commit, so the entry
+#     leaves the queue without waiting for the suites' clusters to shut down;
+#   * when every job passed the gate is written as passed; when the run is cancelled (a newer entry replaced it) its
+#     closing steps still run and the gate is closed as cancelled.
+# The gate is written with the app's token, made at the start and again at the end (the watch can outlive the hour an app
+# token lives).
+#
+# The caller gives it its own job, started by the plan and running next to the jobs of the entry (a call only completes when
+# all its jobs do), and no job needs it:
+#   result:
+#     needs: plan
+#     if: always()
+#     uses: osac-project/osac-ci/.github/workflows/autopilot-queue-result.yml@<sha>
+#     permissions:
+#       actions: write
+#       contents: read
+#     with:
+#       sha: ${{ github.event.merge_group.head_sha }}
+#       branch: ${{ github.event.merge_group.base_ref }}
+#       plan-result: ${{ needs.plan.result }}
+#       jobs: ${{ needs.plan.outputs.jobs }}    # the ids of the cheap jobs and of the suites of the plan
+#     secrets:
+#       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+name: Autopilot queue result
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The queue entry's commit (`github.event.merge_group.head_sha`)
+        type: string
+        required: true
+      branch:
+        description: The branch the merge group is built on (`github.event.merge_group.base_ref`)
+        type: string
+        required: true
+      plan-result:
+        description: The result of the caller's plan job (`needs.plan.result`)
+        type: string
+        required: true
+      jobs:
+        description: >-
+          JSON list of the ids of the jobs of the entry, the cheap jobs and the suites the plan selected (a job id is the
+          name of its job in the run)
+        type: string
+        default: "[]"
+      timeout:
+        description: Seconds to watch before giving up
+        type: string
+        default: "14400"
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  result:
+    name: Record the CI Autopilot check
+    runs-on: ubuntu-latest
+    timeout-minutes: 250
+    permissions:
+      actions: write  # read the jobs of the runs of the commit, and cancel them
+      contents: read
+    steps:
+      # `$/` is this workflow's own repository at the exact commit the caller pinned.
+      - name: Token of the OSAC CI app, to open the check
+        id: start-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - uses: $/.github/actions/autopilot-queue-gate
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.start-token.outputs.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          jobs: ${{ inputs.jobs }}
+          result: start
+      - name: Watch the jobs and the required checks
+        id: watch
+        if: inputs.plan-result == 'success' && inputs.jobs != '[]'
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: watch
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suites: ${{ inputs.jobs }}
+          branch: ${{ inputs.branch }}
+          timeout: ${{ inputs.timeout }}
+      # From here on the steps run whatever happened to the watch, a cancel of the run included.
+      - name: What the check should say
+        id: verdict
+        if: always()
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: verdict
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suites: ${{ inputs.jobs }}
+          branch: ${{ inputs.branch }}
+          plan-result: ${{ inputs.plan-result }}
+          # What the watch found when it ended (failed, done or timeout: its output), else how the step itself ended
+          # (cancelled, failure, skipped).
+          watch-outcome: ${{ steps.watch.outcome == 'success' && steps.watch.outputs.outcome || steps.watch.outcome }}
+      - name: Token of the OSAC CI app, for the answer
+        id: app-token
+        if: always()
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - uses: $/.github/actions/autopilot-queue-gate
+        if: always()
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          jobs: ${{ inputs.jobs }}
+          result: ${{ steps.verdict.outputs.result || 'cancelled' }}
+          detail: ${{ steps.verdict.outputs.detail }}
+      # After the check is written: stop what still runs for the commit (the other jobs, other workflows), this run last.
+      - name: Stop what still runs
+        if: always() && steps.verdict.outputs.stop == 'true'
+        uses: $/.github/actions/e2e-queue-guard
+        with:
+          phase: stop
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}

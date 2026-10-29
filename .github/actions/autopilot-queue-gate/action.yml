@@ -1,0 +1,65 @@
+name: Write the CI Autopilot check of a merge queue entry
+description: >-
+  Write the `CI Autopilot` check of the OSAC CI app on the commit of a merge queue entry: in progress when the plan has
+  chosen the jobs, then passed, failed (naming what failed) or cancelled, with the state of every job of the entry. The
+  same check, name and table as on a pull request, so a ruleset can require it alone on both. Called from the shared
+  autopilot-queue-result workflow of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: checks write, actions read). This action never checks out the
+# calling repository, so it cannot run its code. Every input reaches the shell through an environment variable, never
+# through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (checks write, actions read)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The commit of the queue entry (github.event.merge_group.head_sha)
+    required: true
+  run-id:
+    description: The run that holds the jobs of the entry
+    default: ${{ github.run_id }}
+  jobs:
+    description: JSON list of the ids of the jobs of the entry, the cheap jobs and the suites
+    required: true
+  result:
+    description: start, success, failure or cancelled
+    required: true
+  detail:
+    description: What failed, or why the entry was cancelled
+    default: ""
+  run-url:
+    description: Link of the run, the details link of the check
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Write the check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        RUN_ID: ${{ inputs.run-id }}
+        JOBS: ${{ inputs.jobs }}
+        RESULT: ${{ inputs.result }}
+        DETAIL: ${{ inputs.detail }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
+        case "$SHA" in
+          "" | *[!0-9a-f]*) echo "::error::The commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+        esac
+        if [ "${#SHA}" -ne 40 ]; then echo "::error::The commit must be 40 characters."; exit 1; fi
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci autopilot-queue-gate --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
+          --jobs "$JOBS" --result "$RESULT" --detail "$DETAIL" --run-url "$RUN_URL" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

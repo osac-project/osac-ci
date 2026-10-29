@@ -24,15 +24,20 @@ from pathlib import Path
 from typing import Any
 
 from osac_ci import (
+    autopilot_summary,
     bot_approve,
     cancel_older,
+    cheap_jobs,
+    cheap_stage,
     clean_runs,
     e2e_check,
     e2e_dispatch,
     e2e_start,
     e2e_suites_check,
+    jira_reference,
     lockfacts,
     manual_run,
+    queue_gate,
     queue_guard,
 )
 from osac_ci import compare as compare_mod
@@ -155,6 +160,12 @@ def build_client(*, anonymous_ok: bool = False) -> GitHubClient:
     if anonymous_ok:
         return HttpClient("", anonymous=True)
     raise SystemExit(f"error: set one of {' or '.join(TOKEN_ENV)} (for example GH_TOKEN=$(gh auth token))")
+
+
+CHEAP_WORKFLOWS_HELP = (
+    "JSON list of the names of the repository's own workflows whose jobs the status lists next to the E2E suites "
+    "(empty: none)"
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -391,6 +402,12 @@ def _parser() -> argparse.ArgumentParser:
         "--manual-by", default="", help="who edited or wrote the comment (a member of the organization may ask)"
     )
     dec.add_argument(
+        "--cheap-workflows",
+        default="",
+        metavar="JSON",
+        help=CHEAP_WORKFLOWS_HELP + "; a /test comment may then run a failed job of them again",
+    )
+    dec.add_argument(
         "--manual-comment-body-file",
         type=Path,
         help=(
@@ -398,6 +415,17 @@ def _parser() -> argparse.ArgumentParser:
             "(the live comment may have been rewritten by the app since)"
         ),
     )
+
+    rerun = sub.add_parser(
+        "e2e-rerun",
+        help="run failed jobs of the repository's own workflows again, as a /test comment asked (each is checked)",
+    )
+    rerun.add_argument("--repo", required=True, help="owner/name")
+    rerun.add_argument("--sha", required=True, help="the head commit whose jobs they are")
+    rerun.add_argument("--jobs", required=True, metavar="JSON", help="JSON list of the ids of the jobs")
+    rerun.add_argument("--cheap-workflows", required=True, metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
+    rerun.add_argument("--policy", type=Path, required=True, help="the policy: its cheap jobs may be run again too")
+    rerun.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
 
     suites_cmd = sub.add_parser(
         "e2e-suites",
@@ -410,6 +438,25 @@ def _parser() -> argparse.ArgumentParser:
     suites_cmd.add_argument(
         "--checks", action="store_true", help="print a JSON object, suite -> line name, instead of the list of suites"
     )
+    suites_cmd.add_argument(
+        "--cheap",
+        action="store_true",
+        help="print the list of the cheap jobs the controller runs (kind cheap with a workflow) that the change needs",
+    )
+
+    qgate = sub.add_parser(
+        "autopilot-queue-gate",
+        help="write the CI Autopilot check of a merge queue entry (in progress, passed, failed or cancelled)",
+    )
+    qgate.add_argument("--repo", required=True, help="owner/name")
+    qgate.add_argument("--sha", required=True, help="the commit of the queue entry")
+    qgate.add_argument("--run-id", type=int, required=True, help="the run that holds the jobs of the entry")
+    qgate.add_argument(
+        "--jobs", required=True, metavar="JSON", help="JSON list of the ids of the jobs (cheap and suites)"
+    )
+    qgate.add_argument("--result", required=True, choices=queue_gate.RESULTS)
+    qgate.add_argument("--detail", default="", help="what failed or why it was cancelled")
+    qgate.add_argument("--run-url", default="", help="link of the run, the details link of the check")
 
     erep = sub.add_parser(
         "e2e-report",
@@ -471,6 +518,57 @@ def _parser() -> argparse.ArgumentParser:
     eend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
     eend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
 
+    cstart = sub.add_parser(
+        "cheap-start",
+        help="a pull request opened or got a commit: start its cheap jobs as runs of their own and write their lines",
+    )
+    cstart.add_argument("--policy", type=Path, required=True)
+    cstart.add_argument("--repo", required=True, help="owner/name")
+    cstart.add_argument("--number", type=int, required=True, help="the pull request")
+    cstart.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+    cstart.add_argument("--run-url", default="", help="link of this workflow run, shown on a line that could not start")
+
+    cend = sub.add_parser(
+        "cheap-ended",
+        help="a cheap job that ran as a run of its own has ended: complete its line and add up the CI check",
+    )
+    cend.add_argument("--policy", type=Path, required=True)
+    cend.add_argument("--repo", required=True, help="owner/name")
+    cend.add_argument("--run-id", type=int, required=True, help="the run of the job that ended")
+    cend.add_argument("--title", required=True, help="the name of that run (its display title)")
+    cend.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
+    cend.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+    cend.add_argument(
+        "--json-file", type=Path, help="write {number, wake} here: wake is true when the CI check just got its answer"
+    )
+
+    jira = sub.add_parser(
+        "jira-reference",
+        help="write the Jira reference line of a pull request (from Prow's label, or from the title)",
+    )
+    jira.add_argument("--policy", type=Path, required=True)
+    jira.add_argument("--repo", required=True, help="owner/name")
+    jira.add_argument("--number", type=int, required=True, help="the pull request")
+    jira.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+
+    asum = sub.add_parser(
+        "autopilot-summary",
+        help="say what just happened on a pull request in the CI Autopilot check (the app's own summary of every line)",
+    )
+    asum.add_argument("--policy", type=Path, required=True)
+    asum.add_argument("--repo", required=True, help="owner/name")
+    asum.add_argument("--number", type=int, required=True, help="the pull request")
+    asum.add_argument("--event", default="", help="what happened, in a line (added to the events of the check)")
+    asum.add_argument("--run-url", default="", help="link of the workflow run, the details link of the check")
+
+    cstr = sub.add_parser(
+        "clean-start-runs",
+        help="delete the finished runs of the controller's entry workflow for a pull request (they add rows to it)",
+    )
+    cstr.add_argument("--repo", required=True, help="owner/name")
+    cstr.add_argument("--number", type=int, required=True, help="the pull request")
+    cstr.add_argument("--workflow", required=True, help="the entry workflow file, such as autopilot.yml")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -514,6 +612,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mcom.add_argument("--by", default="", help="who asked, for the answer")
     mcom.add_argument("--run-url", default="", help="link of the workflow run, shown with the answer")
+    mcom.add_argument("--cheap-workflows", default="", metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
 
     cold = sub.add_parser(
         "cancel-older",
@@ -540,6 +639,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     mstat.add_argument("--repo", required=True, help="owner/name")
     mstat.add_argument("--number", type=int, required=True, help="the pull request")
+    mstat.add_argument("--cheap-workflows", default="", metavar="JSON", help=CHEAP_WORKFLOWS_HELP)
 
     strack = sub.add_parser(
         "e2e-suites-track",
@@ -805,6 +905,27 @@ def main(argv: list[str] | None = None) -> int:
             )
         return 3 if failed else 0
 
+    if args.command == "e2e-rerun":
+        try:
+            ids = json.loads(args.jobs)
+            if not isinstance(ids, list):
+                raise ValueError("--jobs must be a JSON list of ids")
+            done = cheap_stage.rerun(
+                build_client(),
+                args.repo,
+                args.sha,
+                ids,
+                cheap_jobs.parse_workflows(args.cheap_workflows),
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: e2e-rerun failed: {exc}", file=sys.stderr)
+            return 3
+        for name, started, what in done:
+            print(f"{'Ran again' if started else 'error:'} {name}: {what}", file=None if started else sys.stderr)
+        return 0 if all(started for _, started, _ in done) else 3
+
     if args.command == "suite-inputs":
         try:
             author, association = e2e_dispatch.verify_suite_inputs(
@@ -832,6 +953,92 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "autopilot-queue-gate":
+        try:
+            jobs = json.loads(args.jobs)
+            if not isinstance(jobs, list) or not all(isinstance(j, str) for j in jobs):
+                raise ValueError("--jobs must be a JSON list of ids")
+            said = queue_gate.write(
+                build_client(), args.repo, args.sha, args.run_id, jobs, args.result, args.detail, args.run_url
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: autopilot-queue-gate failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"{autopilot_summary.NAME} (queue entry): {said}")
+        return 0
+
+    if args.command == "jira-reference":
+        try:
+            said = jira_reference.update(
+                build_client(), args.repo, args.number, load_policy(args.policy), args.lines_kind
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: jira-reference failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Jira reference: {said}")
+        return 0
+
+    if args.command == "autopilot-summary":
+        try:
+            said = autopilot_summary.update(
+                build_client(), args.repo, args.number, load_policy(args.policy), args.event, args.run_url
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: autopilot-summary failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"{autopilot_summary.NAME}: {said}")
+        return 0
+
+    if args.command == "clean-start-runs":
+        try:
+            gone = clean_runs.clean_start_runs(build_client(), args.repo, args.workflow, args.number)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: clean-start-runs failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Removed {len(gone)} finished run(s) of the entry workflow for pull request #{args.number}.")
+        return 0
+
+    if args.command == "cheap-start":
+        try:
+            done = cheap_stage.start(
+                build_client(),
+                args.repo,
+                args.number,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+                run_url=args.run_url,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: cheap-start failed: {exc}", file=sys.stderr)
+            return 3
+        for s in done.started:
+            print(f"Started {s.suite} as run {s.run}: {s.url}")
+        for job in done.failed:
+            print(f"error: {job} could not be started", file=sys.stderr)
+        print(f"CI check: {done.sum}")
+        return 3 if done.failed else 0
+
+    if args.command == "cheap-ended":
+        try:
+            said, number, summed = cheap_stage.ended_detail(
+                build_client(),
+                args.repo,
+                args.run_id,
+                args.title,
+                args.workflow_path,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: cheap-ended failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Cheap job: {said}")
+        if args.json_file is not None:
+            # the answer of the CI check is news for the E2E decision (a pass starts it, a failure holds it back)
+            wake = number is not None and summed in ("success", "failure")
+            args.json_file.write_text(json.dumps({"number": number, "wake": wake}), encoding="utf-8")
         return 0
 
     if args.command == "e2e-finish":
@@ -925,7 +1132,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "manual-status":
         try:
-            result = manual_run.refresh_status(build_client(), args.repo, args.number, edit_client=build_edit_client())
+            result = manual_run.refresh_status(
+                build_client(),
+                args.repo,
+                args.number,
+                edit_client=build_edit_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
+            )
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-status failed: {exc}", file=sys.stderr)
             return 3
@@ -948,7 +1161,9 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"error: cannot read {args.files_from}: {exc}", file=sys.stderr)
             return 3
-        if args.checks:
+        if args.cheap:
+            print(json.dumps([j.name for j in cheap_stage.needed_jobs(policy, names)]))
+        elif args.checks:
             print(json.dumps(dict(e2e_start.suite_checks_for_files(policy, names))))
         else:
             print(json.dumps(list(e2e_start.suites_for_files(policy, names))))
@@ -1157,6 +1372,7 @@ def main(argv: list[str] | None = None) -> int:
                 notes=notes,
                 org_client=build_org_client(),
                 edit_client=build_edit_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
             )
         except (OSError, GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-comment failed: {exc}", file=sys.stderr)
@@ -1191,6 +1407,7 @@ def main(argv: list[str] | None = None) -> int:
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
                 statuses_client=build_statuses_client(),
+                cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
             )  # fmt: skip
 
         return _decide_command(

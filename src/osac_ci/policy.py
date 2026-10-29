@@ -150,10 +150,8 @@ class Job(_Strict):
 
     @model_validator(mode="after")
     def _workflow_only_for_a_suite(self) -> Job:
-        if self.workflow is not None and (self.kind != "e2e" or self.variant_of is not None):
-            raise ValueError(
-                "workflow is only valid for a kind: e2e suite that is not a variant (a variant uses its suite's)"
-            )
+        if self.workflow is not None and self.variant_of is not None:
+            raise ValueError("workflow is only valid for a job that is not a variant (a variant uses its suite's)")
         return self
 
     @model_validator(mode="after")
@@ -298,8 +296,40 @@ class E2EUnlock(_Strict):
         return self.per_suite.get(suite or "", self.any_of)
 
 
+class JiraReference(_Strict):
+    """The Jira reference of a pull request as a line of the controller (it replaces a workflow that makes it a check).
+
+    ``label``: Prow's jira plugin checks that the title names an existing Jira issue (``OSAC-1234:``) or says
+    ``NO-ISSUE:``, and sets a label on the pull request; the line is green when the label is there. ``title``: for a
+    repository without Prow, the line is green when the title starts with a key or ``NO-ISSUE:``."""
+
+    check: str = Field(default="Jira reference", min_length=1, max_length=100, description="Name of the line")
+    mode: Literal["label", "title"] = "label"
+    label: str = Field(default="jira/valid-reference", min_length=1, max_length=100)
+    title_pattern: str = Field(
+        default=r"(NO-ISSUE|[A-Z][A-Z0-9]*-[0-9]+): ", description="With mode title: what the title must start with"
+    )
+
+    @field_validator("title_pattern")
+    @classmethod
+    def _compiles(cls, value: str) -> str:
+        try:
+            re.compile(value)
+        except re.error as exc:
+            raise ValueError(f"title_pattern is not a regular expression: {exc}") from exc
+        return value
+
+
 class E2E(_Strict):
     unlock: E2EUnlock = E2EUnlock()
+    wait_for_ci: bool = Field(
+        default=False,
+        description=(
+            "Start the suites only after the CI check has passed: while the cheap jobs the controller started (kind: "
+            "cheap with a workflow) run, or before CI has an answer, the E2E waits (and starts by itself when CI "
+            "passes). Absent: the suites start in parallel with the cheap jobs, as the E2E always did"
+        ),
+    )
 
 
 class Trust(_Strict):
@@ -350,6 +380,12 @@ class Policy(_Strict):
     locks: dict[str, Lock] = Field(default_factory=dict)
     default_locks: tuple[str, ...] = ()
     jobs: dict[str, Job]
+    # The check that adds up the cheap jobs that run as runs of their own (a kind: cheap job that names a `workflow`):
+    # the required check the repository calls its CI. Absent: `CI`.
+    ci_check: str | None = Field(default=None, min_length=1, max_length=100)
+    # The Jira reference of the pull request, as a line of the controller (see JiraReference). Absent: the repository's
+    # own workflow for it stays.
+    jira_reference: JiraReference | None = None
     # What the repository adds to the central rules of policy/flow.yml: only `checks.not_cheap_extra` (check names that
     # are not "cheap"). Anything else is refused when the policy loads.
     flow: dict[str, Any] | None = None

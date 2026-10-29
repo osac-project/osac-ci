@@ -39,7 +39,14 @@ def test_the_default_policy_exists_in_this_repository() -> None:
 
 
 def run(  # type: ignore[no-untyped-def]
-    tmp_path: Path, *, number: str = "", sha: str = "", uv_exit: int = 0, decisions: str = "[]", policy_file: str = ""
+    tmp_path: Path,
+    *,
+    number: str = "",
+    sha: str = "",
+    uv_exit: int = 0,
+    decisions: str = "[]",
+    policy_file: str = "",
+    cheap: str = "",
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
@@ -57,6 +64,7 @@ def run(  # type: ignore[no-untyped-def]
         "POLICY_FILE": policy_file, "NUMBER": number, "HEAD_SHA": sha, "ACTION_PATH": "/a/b/c",
         "OUT_DIR": str(tmp_path),
         "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary), "DECISIONS": decisions,
+        **({"CHEAP_WORKFLOWS": cheap} if cheap else {}),
     }  # fmt: skip
     done = subprocess.run(["bash", "-c", script()], env=env, capture_output=True, text=True, check=False)
     read = lambda p: p.read_text() if p.exists() else ""  # noqa: E731
@@ -80,6 +88,15 @@ def test_a_policy_file_replaces_the_policy_of_this_repository(tmp_path: Path) ->
 def test_a_head_commit_is_passed_instead_when_there_is_no_number(tmp_path: Path) -> None:
     code, args, _, _, _ = run(tmp_path, sha=SHA)
     assert code == 0 and f"--head-sha {SHA}" in args and "--number" not in args
+
+
+def test_the_workflows_whose_jobs_may_be_run_again_go_to_the_program_and_default_to_none(tmp_path: Path) -> None:
+    _, args, _, _, _ = run(tmp_path, number="3", cheap='["CI"]')
+    assert '--cheap-workflows=["CI"]' in args
+    other = tmp_path / "other"
+    other.mkdir()
+    _, args, _, _, _ = run(other, number="3")
+    assert "--cheap-workflows=[]" in args
 
 
 def test_a_number_wins_over_a_head_commit(tmp_path: Path) -> None:

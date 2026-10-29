@@ -63,6 +63,7 @@ WAITING_TITLES = {
     "wait-approval": "Waiting for an approval",
     "blocked-changes-requested": "Waiting: changes were requested",
     "blocked-cheap-checks-failed": "Waiting: CI failed",
+    "wait-ci": "Waiting for CI",
 }
 
 
