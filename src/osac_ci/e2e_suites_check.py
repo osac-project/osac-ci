@@ -194,7 +194,7 @@ def track(
     ``runs`` (suite -> (run id, line name)) are the suites that run as a run of their own: their lines follow that run
     instead of a job of this one, in the same loop, and end as the jobs do: running, or over with ``follow``.
 
-    A poll that fails in transit (no answer, or a gateway error) is tried again on the next tick, up to
+    A read of a poll that fails in transit (no answer, or a gateway error) is tried again on the next tick, up to
     ``TOLERATED_FAILURES`` in a row, so a dropped connection does not end the follower of a run that lasts an hour."""
     sha = check_sha(sha)
     own = {suite: (rid, validate_lines({suite: line})[suite]) for suite, (rid, line) in (runs or {}).items()}
@@ -203,6 +203,15 @@ def track(
     shown: dict[str, tuple[str, str]] = {}
     newer: set[str] = set()  # suites whose line a newer run has taken over: this run leaves them alone
     deadline = clock() + timeout
+    writing = (
+        False  # a failed write is not tried again by the loop: it may have gone through, and would be written twice
+    )
+
+    def write(line: str, state: str, says: str, url: str) -> None:
+        nonlocal writing
+        writing = True
+        post_status(client, repo, sha, line, state, says, url, kind)
+        writing = False
 
     def poll() -> bool:
         jobs = find_jobs(client, repo, run_id, suites)
@@ -218,7 +227,7 @@ def track(
                 newer.add(suite)
                 continue
             says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
-            post_status(client, repo, sha, lines[suite], state, says, url, kind)
+            write(lines[suite], state, says, url)
             shown[suite] = (description, url)
         over = True
         for suite, (rid, line) in own.items():
@@ -232,7 +241,7 @@ def track(
                 newer.add(suite)  # a newer run of the suite has the line (it was run again): this run leaves it alone
                 continue
             says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
-            post_status(client, repo, sha, line, state, says, url, kind)
+            write(line, state, says, url)
             shown[suite] = (description, url)
         if follow:
             finished = all(s in jobs and jobs[s].status == "completed" for s in suites)
@@ -246,9 +255,10 @@ def track(
             ended = poll()
         except GitHubError as exc:
             # One read that fails in transit is no reason to stop following a run that lasts an hour (the client has
-            # already tried it again); a refusal (a status below 500) is an answer, and the same on every try.
+            # already tried it again); a refusal (a status below 500) is an answer, and the same on every try. A write
+            # that failed is not repeated by going round again, and a failure at the deadline gives way to its return.
             failures += 1
-            if exc.status not in TRANSIENT or failures > TOLERATED_FAILURES or clock() >= deadline:
+            if writing or exc.status not in TRANSIENT or failures > TOLERATED_FAILURES:
                 raise
         else:
             failures = 0
