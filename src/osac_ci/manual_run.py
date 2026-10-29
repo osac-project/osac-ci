@@ -43,7 +43,7 @@ from osac_ci.e2e_start import (
     unqualified_approvers,
 )
 from osac_ci.github.api import GitHubClient, GitHubError, Response, check_repo, get, paginate
-from osac_ci.github.snapshot import fetch_codeowners, fetch_team_members
+from osac_ci.github.snapshot import COMMIT_SHA, fetch_codeowners, fetch_team_members
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
@@ -128,6 +128,8 @@ CHECK_WORD = {
 }
 FAILED_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure", "action_required"})
 FAILED_SHOWN = 5  # how many failed checks the CI row names
+# The checks of the app that speak for a queue entry: ``E2E``, which the queue's result job writes (``Failed: unit``).
+ENTRY_CHECKS = ("E2E",)
 # The merge queue of a pull request: its entry (where it is in the queue) and its last events (added, removed and why).
 QUEUE_QUERY = """
 query($owner: String!, $name: String!, $number: Int!) {
@@ -136,7 +138,7 @@ query($owner: String!, $name: String!, $number: Int!) {
     timelineItems(last: 30, itemTypes: [ADDED_TO_MERGE_QUEUE_EVENT, REMOVED_FROM_MERGE_QUEUE_EVENT]) {
       nodes { __typename
         ... on AddedToMergeQueueEvent { createdAt }
-        ... on RemovedFromMergeQueueEvent { createdAt reason } } } } } }
+        ... on RemovedFromMergeQueueEvent { createdAt reason beforeCommit { oid } actor { login } } } } } } }
 """
 QUEUE_ENTRY_WORDS = {
     "QUEUED": "waiting its turn",
@@ -202,6 +204,7 @@ class QueueView:
     state: str
     detail: str = ""
     by_person: bool = False
+    url: str = ""  # where to read what failed (the run of the entry), when it is known
 
 
 @dataclass(frozen=True)
@@ -316,7 +319,8 @@ def _queue_row(queue: QueueView) -> str:
     if queue.state == "removed":
         if queue.by_person:
             return f"{lead('neutral')}**Merge queue:** {queue.detail}"
-        return f"{lead('error')}**Merge queue:** removed from the queue: {queue.detail}"
+        why = f"[{queue.detail}]({queue.url})" if queue.url else queue.detail
+        return f"{lead('error')}**Merge queue:** removed from the queue: {why}"
     return f"{lead('neutral')}**Merge queue:** not queued"
 
 
@@ -896,9 +900,45 @@ def queue_view(client: GitHubClient, repo: str, number: int) -> QueueView | None
         return QueueView("none")
     reason = str(last.get("reason") or "")
     by_person = reason == "manual"
-    return QueueView(
-        "removed", QUEUE_REMOVAL_WORDS.get(reason, reason.replace("_", " ")) or "no reason given", by_person
-    )
+    words = QUEUE_REMOVAL_WORDS.get(reason, reason.replace("_", " ")) or "no reason given"
+    commit = last.get("beforeCommit")
+    sha = str(commit.get("oid") or "") if isinstance(commit, Mapping) else ""
+    actor = last.get("actor")
+    login = str(actor.get("login") or "") if isinstance(actor, Mapping) else ""
+    if reason == "failed_checks" and COMMIT_SHA.fullmatch(sha):
+        what, link = _failed_on_entry(client, repo, sha)
+        return QueueView("removed", f"{words}: {what}" if what else words, False, link)
+    if reason == "merge_conflict":
+        return QueueView("removed", f"{words}: it no longer merges cleanly into its base branch, update it", False)
+    if by_person and login and not login.endswith("[bot]"):
+        return QueueView("removed", f"taken out by {login}", True)
+    return QueueView("removed", words, by_person)
+
+
+def _failed_on_entry(client: GitHubClient, repo: str, sha: str) -> tuple[str, str]:
+    """(what failed, where to read it) on the commit of a queue entry. The check of the app on the entry names it
+    (``Failed: unit``, or ``Cancelled: stopped, CI failed`` when another workflow's failure stopped the entry); without
+    it, the failed checks of the commit. Empty when the commit cannot be read."""
+    try:
+        runs = list(paginate(client, f"/repos/{check_repo(repo)}/commits/{sha}/check-runs", key="check_runs"))
+    except GitHubError:
+        return "", ""
+    gates = [
+        r
+        for r in runs
+        if r.get("name") in ENTRY_CHECKS and (r.get("app") or {}).get("slug") == CHECK_APP and r.get("conclusion")
+    ]
+    for gate in sorted(gates, key=lambda r: -int(r["id"])):
+        title = str((gate.get("output") or {}).get("title") or "")
+        for prefix in ("Failed: ", "Cancelled: "):
+            if title.startswith(prefix):
+                return title.removeprefix(prefix), str(gate.get("details_url") or gate.get("html_url") or "")
+    failed = [r for r in runs if r.get("conclusion") in FAILED_CONCLUSIONS]
+    names = list(dict.fromkeys(str(r.get("name")) for r in failed))
+    if not names:
+        return "", ""
+    more = f" and {len(names) - FAILED_SHOWN} more" if len(names) > FAILED_SHOWN else ""
+    return ", ".join(names[:FAILED_SHOWN]) + more, str(failed[0].get("details_url") or failed[0].get("html_url") or "")
 
 
 def code_owner_groups(
