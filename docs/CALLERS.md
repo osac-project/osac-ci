@@ -319,9 +319,53 @@ did. No workflow runs for it, so there are no rows and no old runs to tidy. The 
 for its entries (a `merge_group` workflow that only says it was checked on the pull request) until the queue is under
 Autopilot.
 
-Not yet: the merge queue is not under Autopilot (its entries get `CI` and `E2E` from `ci.yml` and `e2e-queue.yml`, so those
-two names are still required); the lines show waiting and then the result, with no live "running"; the old runs of the
-Jira reference check are tidied only on a completion of the repository's `CI` workflow.
+**The merge queue.** A queue entry is a commit GitHub builds from the pull request on top of the latest base, and the
+ruleset requires the same checks on it as on the pull request head. Under Autopilot it gets the same `CI Autopilot` check,
+so a ruleset can require that check alone. The cheap jobs cannot be dispatched for it (their inputs are checked against a
+pull request, and a queue commit is not one), so they run inline as jobs of the `merge_group` run, as the suites do. The
+entry workflow gets one more trigger and these jobs, for that event only:
+
+```yaml
+on:
+  merge_group:
+jobs:
+  queue-plan:   # lists the cheap jobs and the suites the change needs: outputs `cheap`, `suites` and `jobs` (both lists)
+    if: github.event_name == 'merge_group'
+    uses: osac-project/osac-ci/.github/workflows/e2e-queue-plan.yml@<sha>
+    permissions: {contents: read, actions: write}
+  queue-lint:   # one job per cheap job and per suite, named by its id (the guard finds a job by the id at the start of its name)
+    name: lint
+    needs: queue-plan
+    if: contains(needs.queue-plan.outputs.cheap, '"lint"')
+    permissions: {contents: read, pull-requests: read}   # the nested verify job of the workflow asks for pull-requests
+    uses: ./.github/workflows/ci-lint.yml                  # it also has `workflow_call`; verify is skipped without a pull request number
+    with: {repo: "${{ github.repository }}", sha: "${{ github.event.merge_group.head_sha }}"}
+  queue-result: # one job: opens the check, watches the jobs, writes the check on the first failure, then stops the rest
+    needs: queue-plan
+    if: always() && github.event_name == 'merge_group'
+    uses: osac-project/osac-ci/.github/workflows/autopilot-queue-result.yml@<sha>
+    permissions: {actions: write, contents: read}
+    with:
+      sha: ${{ github.event.merge_group.head_sha }}
+      branch: ${{ github.event.merge_group.base_ref }}
+      plan-result: ${{ needs.queue-plan.result }}
+      jobs: ${{ needs.queue-plan.outputs.jobs }}
+    secrets: {OSAC_CI_APP_PRIVATE_KEY: "${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}"}
+```
+
+The result job opens `CI Autopilot` on the queue commit as in progress with the jobs the plan chose. The first failure settles
+the entry: the check is written as failed, naming what failed, and only then are the other runs of the commit stopped, so the
+entry leaves the queue without waiting for the suites' clusters to shut down. When every job passed the check is written as
+passed, and a cancelled entry (a newer one replaced it) is closed as cancelled. The `Merge queue` row of the control comment
+says why a pull request was taken out: the failed job named by that check (and linked), "merge conflict: update the
+branch", or who took it out. A workflow that is called from the queue run must grant its nested jobs' permissions, or GitHub
+fails the whole workflow at startup, even when the nested job is skipped.
+
+Not yet: the repository's own `ci.yml`, `jira-reference.yml` and the old queue workflow can go once the ruleset requires only
+`CI Autopilot` (the old plan of the queue does not read a policy with the new keys, so it fails next to the new flow, which
+does no harm); the `CI` and `E2E` sums are still written on pull requests; the lines show waiting and then the result, with
+no live "running"; the old runs of the Jira reference check are tidied only on a completion of the repository's `CI`
+workflow, which a repository that moved its Jira reference into Autopilot does not have.
 
 ## Suites started by hand
 
