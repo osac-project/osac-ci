@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,9 @@ API_ROOT = "https://api.github.com"
 _REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 DEFAULT_PER_PAGE = 100
 MAX_PAGES = 50  # same cap as the legacy readiness script, to avoid looping on a bad pagination answer
+READ_ATTEMPTS = 3  # a GET that fails in transit or with a gateway error is tried this many times in all
+RETRY_STATUSES = frozenset({502, 503, 504})
+RETRY_DELAY = 1.0  # seconds before the second try; doubled before the third
 
 
 class GitHubError(RuntimeError):
@@ -99,6 +103,7 @@ class HttpClient:
         root: str = API_ROOT,
         timeout: float = 30.0,
         opener: Callable[..., Any] = urllib.request.urlopen,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         if not token and not anonymous:
             raise ValueError("a GitHub token is required")
@@ -106,6 +111,7 @@ class HttpClient:
         self._root = root.rstrip("/")
         self._timeout = timeout
         self._opener = opener
+        self._sleep = sleep
         self._remaining: dict[str, int] = {}
 
     def rate_limit_remaining(self, resource: str = "core") -> int | None:
@@ -143,6 +149,23 @@ class HttpClient:
         if data is not None:
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(url, data=data, headers=headers, method=method)  # noqa: S310 - https root only
+        # Only a read is tried again: a write that failed in transit may have been applied, and writing it twice is
+        # worse than failing. A connection that drops once (RemoteDisconnected) must not end a run that follows a
+        # suite for an hour.
+        attempts = READ_ATTEMPTS if method == "GET" else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self._send(request, f"{method} {path}")
+            except GitHubError:
+                if attempt == attempts:
+                    raise
+            else:
+                if response.status not in RETRY_STATUSES or attempt == attempts:
+                    return response
+            self._sleep(RETRY_DELAY * 2 ** (attempt - 1))
+        raise AssertionError("unreachable")  # pragma: no cover - the last attempt returns or raises
+
+    def _send(self, request: urllib.request.Request, what: str) -> Response:
         try:
             with self._opener(request, timeout=self._timeout) as raw:
                 seen = _headers(getattr(raw, "headers", None))
@@ -153,7 +176,7 @@ class HttpClient:
             self._note_rate_limit(seen)
             return Response(exc.code, _parse(exc.read()), seen)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise GitHubError(0, f"{method} {path}: {type(exc).__name__}") from exc
+            raise GitHubError(0, f"{what}: {type(exc).__name__}") from exc
 
 
 def _headers(raw: Any) -> dict[str, str]:
