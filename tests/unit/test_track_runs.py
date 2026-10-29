@@ -248,3 +248,34 @@ def test_a_refusal_is_not_tried_again(status: int) -> None:
     with pytest.raises(GitHubError):
         follow(gh)
     assert gh.dropped == 1
+
+
+class LosingWrites(Gh):
+    """A GitHub whose first write of a line goes through but whose answer is lost (a dropped connection)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts = 0
+
+    def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
+        if method == "POST" and "/statuses/" in path:
+            self.posts += 1
+            super().request(method, path, params=params, body=body)
+            if self.posts == 1:
+                raise GitHubError(0, f"POST {path}: RemoteDisconnected")
+            return Response(201, {}, {})
+        return super().request(method, path, params=params, body=body)
+
+
+def test_a_write_that_failed_is_not_written_again_by_another_poll() -> None:
+    gh = LosingWrites()
+    _both_passed(gh)
+    with pytest.raises(GitHubError):
+        follow(gh)
+    assert gh.posts == 1  # the line is on the commit once; going round again would have written it a second time
+
+
+def test_a_poll_that_fails_in_transit_after_the_deadline_gives_way_to_the_return() -> None:
+    gh = Dropping(fail=1)
+    _both_passed(gh)
+    assert follow(gh, timeout=-1) == []  # no line was written yet: the time was up before the first poll worked
