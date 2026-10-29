@@ -1944,8 +1944,10 @@ def test_a_pull_request_taken_out_by_a_person_names_them_and_one_taken_out_by_th
 
 
 def test_the_row_links_what_failed_when_it_knows_where_to_read_it() -> None:
-    view = manual_run.QueueView("removed", "checks failed: unit", False, "https://x/run")
-    assert manual_run._queue_row(view).endswith("removed from the queue: [checks failed: unit](https://x/run)")
+    view = manual_run.QueueView("removed", "checks failed: unit", False, "https://github.com/o/r/actions/runs/5")
+    assert manual_run._queue_row(view).endswith(
+        "removed from the queue: [checks failed: unit](https://github.com/o/r/actions/runs/5)"
+    )
     plain = manual_run.QueueView("removed", "checks failed")
     assert manual_run._queue_row(plain).endswith("removed from the queue: checks failed")
 
@@ -1975,3 +1977,48 @@ def test_the_e2e_check_of_the_queue_names_what_failed_and_a_passed_one_leaves_it
         entry_run("CI / unit-tests", "failure", run=7),
     ]
     assert removed_view("failed_checks", passed_e2e).detail == "checks failed: CI / unit-tests"  # type: ignore[union-attr]
+
+
+def test_a_check_name_cannot_inject_markdown_into_the_queue_row() -> None:
+    hostile = "x](https://evil.example/p) [y"
+    row = manual_run._queue_row(manual_run.QueueView("removed", f"checks failed: {hostile}", False))
+    assert row.endswith(r"checks failed: x\]\(https://evil\.example/p\) \[y".replace("\\.", "."))
+    assert "](https://evil" not in row.replace("\\]", "").replace("\\(", ""), "no link of the hostile text is made"
+    linked = manual_run._queue_row(
+        manual_run.QueueView("removed", hostile, False, "https://github.com/o/r/actions/runs/5")
+    )
+    assert linked.count("](") == 1 and linked.endswith("](https://github.com/o/r/actions/runs/5)")
+
+
+def test_a_newline_or_a_control_character_in_a_name_cannot_break_the_row_and_a_long_one_is_cut() -> None:
+    row = manual_run._queue_row(manual_run.QueueView("removed", "a\nb\r\n| c\x00d", False))
+    assert "\n" not in row.split("removed from the queue: ", 1)[1] and "\x00" not in row
+    long = manual_run._queue_row(manual_run.QueueView("removed", "n" * 500, False))
+    assert long.endswith("…") and len(long.split("removed from the queue: ", 1)[1]) <= manual_run.MD_TEXT_MAX
+
+
+def test_only_a_page_of_github_with_safe_characters_is_linked() -> None:
+    hostile = (
+        "https://evil.example/x",
+        "http://github.com/o",
+        "javascript:alert(1)",
+        "https://github.com.evil.example/",
+        "https://github.com/o/r/runs/5)(x",
+        "https://github.com/a b",
+        'https://github.com/a"b',
+        "https://github.com/a<b>",
+    )
+    for bad in hostile:
+        plain = manual_run._queue_row(manual_run.QueueView("removed", "checks failed: unit", False, bad))
+        assert "](" not in plain and plain.endswith("checks failed: unit"), bad
+    ok = "https://github.com/o/r/actions/runs/5/job/9?pr=1#step:3:1"
+    assert manual_run._md_url(ok) == ok
+
+
+def test_the_other_queue_rows_are_escaped_too() -> None:
+    assert manual_run._queue_row(manual_run.QueueView("queued", "position 1, [x](y)")).endswith(
+        r"(position 1, \[x\]\(y\))"
+    )
+    assert manual_run._queue_row(manual_run.QueueView("removed", "taken out by a_b", True)).endswith(
+        r"taken out by a\_b"
+    )
