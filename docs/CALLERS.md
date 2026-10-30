@@ -324,6 +324,68 @@ change the pin and the permissions in one pull request. Both jobs run code of th
 request text in a shell, so the wider token is not reachable from a pull request. A token that is refused makes the edit
 fall back to the app's, as before, so nothing is lost but the quiet.
 
+## Fast track: skip every test of one pull request
+
+A person of one team (`fast_track.team` of the policy, for example `ci-duty`) skips every test of one pull request, and the
+merge queue entry of that pull request is not tested either. It is the exception for a change that cannot wait, so it is not on
+the page of the pull request: the person opens the repository's **Actions** page, picks the workflow `Fast track`, and runs it
+(**Run workflow**) with the number of the pull request and a reason. Nothing is added to the checks of any pull request that
+does not use it, and the run belongs to the default branch, so it is not a row on the pull request either.
+
+Policy (read from the default branch, so a pull request cannot change it):
+
+```yaml
+fast_track:
+  team: ci-duty              # slug of the organization team; only its members may
+  allow_author: false        # a member may not fast-track a pull request they wrote (default)
+  protected_paths: [".github/**", CODEOWNERS]   # a change to these is reviewed, never fast-tracked (the default)
+  ci_workflow: ci.yml        # the repository's workflow that makes the CI check (default)
+```
+
+The caller is a workflow of the repository with a `workflow_dispatch` form that calls the shared one (see the header of
+`fast-track.yml`). The shared workflow runs only from the default branch, takes the person from `github.actor`, and refuses,
+with the sentence the person reads in the log: a person who is not in the team, the author (unless allowed), a pull request
+that is not open, a reason of less than 5 characters, and a pull request that changes a protected path.
+
+What it does, in this order:
+
+1. It writes the `E2E` check of the commit (the app's check, so it needs `E2E` as check runs, `kind: checks`) as passed, with
+   `Fast track: skipped by <login>: <reason>` as its title and a mark in its text that names the commit. Only the app can write
+   that check, so it is its own proof; a new commit of the pull request has no mark, and so no fast track. Nothing written
+   afterwards replaces it (the suites it stops would end as Cancelled), and the decision starts no suites for the commit.
+2. It cancels the E2E suites that run as runs of their own for that pull request and commit.
+3. It stops the runs of the repository's CI workflow (`fast_track.ci_workflow`) for the commit and runs it again. The workflow
+   asks `fast-track-check` in its `plan` job and skips every test when the pull request is fast-tracked, so the `CI` check
+   passes. Without that step in the workflow the `CI` check is not affected (see below). The `Jira reference` check is not a
+   test and is not skipped.
+
+The CI workflow asks like this, in its plan job (job permissions `contents: read`, `pull-requests: read`, `checks: read`),
+for a pull request and for a merge queue entry, and runs no leg when the answer is `true`:
+
+```yaml
+      - uses: osac-project/osac-ci/.github/actions/fast-track-check@<sha>
+        id: fast
+        continue-on-error: true      # if the answer is not known, the tests run
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          number: ${{ github.event.pull_request.number }}          # a pull request
+          head-ref: ${{ github.event.merge_group.head_ref }}        # a merge queue entry
+```
+
+(an empty `number` or `head-ref` is the other case: give exactly one of them). The merge queue: `e2e-queue-plan.yml` asks the
+same of the pull request of the entry (its branch, `gh-readonly-queue/<base>/pr-<N>-<sha>`, names it) and, when it is fast-tracked,
+lists no suite and gives `fast-track: "<login>: <reason>"`; the caller passes it to `e2e-queue-result.yml`
+(`fast-track: ${{ needs.plan.outputs.fast-track }}`), which writes the `E2E` check of the entry as passed with the same words.
+The plan job now reads pull requests and checks, so **the caller must give its `plan` job `pull-requests: read` and
+`checks: read`** (a job of a called workflow that asks for more than its caller grants fails the whole run at startup). If the
+lookup fails, the entry is tested as always.
+
+Getting into the queue: the fast track makes the checks pass, and the repository's auto-merge (turned on when the pull request has
+an approval that counts) puts the pull request in the queue as soon as GitHub allows it. A queue entry that is already being
+tested is left alone; it is planned again when it is rebuilt. It does not approve the pull request: the review the repository
+requires is still needed to enter the queue.
+
 ## Running service jobs from osac-ci for another repository
 
 A repository does not have to carry the workflows that only keep things in order. Two run from osac-ci itself, for the

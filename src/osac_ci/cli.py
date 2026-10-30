@@ -14,6 +14,7 @@ whether the planner agrees they were ready (the parity evidence). None of them w
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -31,6 +32,7 @@ from osac_ci import (
     e2e_dispatch,
     e2e_start,
     e2e_suites_check,
+    fast_track,
     lockfacts,
     manual_run,
     queue_guard,
@@ -534,6 +536,34 @@ def _parser() -> argparse.ArgumentParser:
     crun.add_argument("--min-age-minutes", type=int, default=clean_runs.MIN_AGE_MINUTES, help="only runs this old")
     crun.add_argument("--dry-run", action="store_true", help="list what would be deleted; delete nothing")
 
+    ftrack = sub.add_parser(
+        "fast-track",
+        help="skip every test of a pull request, for a member of the policy's fast-track team (run by a workflow)",
+    )
+    ftrack.add_argument("--policy", type=Path, required=True)
+    ftrack.add_argument("--repo", required=True, help="owner/name")
+    ftrack.add_argument("--number", type=int, required=True, help="the pull request")
+    ftrack.add_argument("--actor", required=True, help="who runs it (github.actor of the run, never typed by a person)")
+    ftrack.add_argument("--reason", required=True, help="why, in a few words (shown on the pull request)")
+    ftrack.add_argument("--run-url", default="", help="link of the workflow run, the details link of the check")
+
+    fcheck = sub.add_parser(
+        "fast-track-check",
+        help="say whether a pull request, or the pull request of a merge queue entry, is fast-tracked (prints JSON)",
+    )
+    fcheck.add_argument("--repo", required=True, help="owner/name")
+    which = fcheck.add_mutually_exclusive_group(required=True)
+    which.add_argument("--number", type=int, help="the pull request (a workflow of a pull request)")
+    which.add_argument("--head-ref", help="the branch of the entry (github.event.merge_group.head_ref)")
+
+    fentry = sub.add_parser(
+        "fast-track-entry", help="write the E2E check of a merge queue entry that is not tested (a fast track)"
+    )
+    fentry.add_argument("--repo", required=True, help="owner/name")
+    fentry.add_argument("--sha", required=True, help="the commit of the queue entry")
+    fentry.add_argument("--detail", required=True, help='who and why, "login: reason" (from fast-track-check)')
+    fentry.add_argument("--run-url", default="", help="link of the run, the details link of the check")
+
     mstat = sub.add_parser(
         "manual-status",
         help="rewrite only the status block of the control comment (for what changed after the comment was written)",
@@ -832,6 +862,40 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "fast-track":
+        try:
+            said = fast_track.apply(
+                build_client(), args.repo, args.number, args.actor, args.reason, load_policy(args.policy), args.run_url
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+        print(f"Fast track: {said}")
+        return 0
+
+    if args.command == "fast-track-check":
+        try:
+            client = build_client()
+            found = (
+                fast_track.current(client, args.repo, args.number)
+                if args.number is not None
+                else fast_track.for_queue(client, args.repo, args.head_ref)
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: fast-track-check failed: {exc}", file=sys.stderr)
+            return 3
+        print(json.dumps(fast_track.outputs(found)))
+        return 0
+
+    if args.command == "fast-track-entry":
+        try:
+            fast_track.entry_check(build_client(), args.repo, args.sha, args.detail, args.run_url)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: fast-track-entry failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"E2E (queue entry): Fast track: skipped by {args.detail}")
         return 0
 
     if args.command == "e2e-finish":
@@ -1186,12 +1250,14 @@ def main(argv: list[str] | None = None) -> int:
                     client, args.repo, n, args.manual_comment_id, args.manual_by,
                     org_client=build_org_client(), event_body=given,
                 )  # fmt: skip
-            return e2e_start.fetch_inputs(
+            inputs = e2e_start.fetch_inputs(
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
                 statuses_client=build_statuses_client(),
             )  # fmt: skip
+            fast = fast_track.current(client, args.repo, n) if policy.fast_track is not None else None
+            return dataclasses.replace(inputs, fast_tracked=f"{fast.login}: {fast.reason}") if fast else inputs
 
         return _decide_command(
             args,

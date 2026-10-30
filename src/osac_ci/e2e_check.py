@@ -33,6 +33,7 @@ from enum import StrEnum
 from typing import Any
 
 from osac_ci.e2e_start import CHECK_APP, TIER, line_state, run_of_url, tier_of, tiered  # noqa: F401
+from osac_ci.fast_mark import FastTrack, decode
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
 from osac_ci.model import CheckRun
@@ -348,6 +349,8 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
     action = str(entry.get("action", ""))
     if action == "skip-closed":
         return Outcome("ignored", False, note="the pull request is closed")
+    if action == "skip-fast-tracked":
+        return Outcome("ignored", False, note=str(entry.get("reason", "")))
     if action == "skip-not-applicable":
         return _not_affected(existing)
     if action == "already-passed":
@@ -426,6 +429,22 @@ def existing_from(status: Mapping[str, Any]) -> Existing:
     return Existing(state, description, external)
 
 
+def fast_track_on(client: GitHubClient, repo: str, sha: str) -> FastTrack | None:
+    """The fast track that the newest ``E2E`` check run of the app on the commit carries, if any (see fast_mark.py).
+    Only a check run of the OSAC CI app can carry one, so nothing else can make a commit look fast-tracked."""
+    runs = paginate(
+        client,
+        f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs",
+        key="check_runs",
+        params={"check_name": CONTEXT, "filter": "all"},
+    )
+    mine = [r for r in runs if r.get("name") == CONTEXT and (r.get("app") or {}).get("slug") == CHECK_APP]
+    if not mine:
+        return None
+    output = max(mine, key=lambda r: int(r["id"])).get("output")
+    return decode(str(output.get("text") or ""), sha) if isinstance(output, Mapping) else None
+
+
 def latest_check(client: GitHubClient, repo: str, sha: str, kind: str = "statuses") -> Existing | None:
     status = newest_status(client, repo, sha, CONTEXT, kind)
     return existing_from(status) if status is not None else None
@@ -487,6 +506,8 @@ def post_status(
 
 
 def write_status(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str, kind: str = "statuses") -> None:
+    if kind == "checks" and fast_track_on(client, repo, sha) is not None:
+        return  # a fast track passed the check: nothing is written over it (the suites it stopped would say Cancelled)
     post_status(client, repo, sha, CONTEXT, write.state, write.description, run_url if write.link else "", kind)
 
 

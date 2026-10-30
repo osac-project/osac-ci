@@ -1,0 +1,66 @@
+---
+name: Is the pull request fast-tracked
+description: >-
+  Say whether a pull request, or the pull request of a merge queue entry, was fast-tracked for its current commit (see
+  fast-track.yml). Called from the CI workflow of the repository and from the queue plan of osac-ci (e2e-queue-plan.yml),
+  pinned to a commit, like the other actions.
+
+# The token is the workflow's own (pull requests read, checks read). The proof is the E2E check of the pull request's head
+# commit, which only the OSAC CI app can write; nothing the event says is believed. Give exactly one of `number` (a workflow of
+# a pull request) and `head-ref` (a merge queue entry). Every input reaches the shell through an environment variable, never
+# through the script text.
+inputs:
+  github-token:
+    description: A token that can read pull requests and check runs of the repository
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number, for a workflow of a pull request
+    default: ""
+  head-ref:
+    description: The branch of the entry (`github.event.merge_group.head_ref`), for a merge queue entry
+    default: ""
+
+outputs:
+  fast:
+    description: "true when it is fast-tracked, else false"
+    value: ${{ steps.ask.outputs.fast }}
+  detail:
+    description: 'Who skipped the tests and why ("login: reason"), empty when it is not fast-tracked'
+    value: ${{ steps.ask.outputs.detail }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Ask
+      id: ask
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        if [ -n "$NUMBER" ] && [ -z "$HEAD_REF" ]; then
+          case "$NUMBER" in *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;; esac
+          answer=$(uv run --locked --project "$root" osac-ci fast-track-check --repo "$REPO" --number "$NUMBER")
+        elif [ -z "$NUMBER" ] && [ -n "$HEAD_REF" ]; then
+          answer=$(uv run --locked --project "$root" osac-ci fast-track-check --repo "$REPO" --head-ref "$HEAD_REF")
+        else
+          echo "::error::Give exactly one of number and head-ref."; exit 1
+        fi
+        echo "fast=$(jq -r '.fast' <<<"$answer")" >> "$GITHUB_OUTPUT"
+        if [ "$(jq -r '.fast' <<<"$answer")" = true ]; then
+          echo "detail=$(jq -r '.login + ": " + .reason' <<<"$answer")" >> "$GITHUB_OUTPUT"
+          echo "Fast track: $(jq -r '.login + ": " + .reason' <<<"$answer")" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        else
+          echo "detail=" >> "$GITHUB_OUTPUT"
+        fi

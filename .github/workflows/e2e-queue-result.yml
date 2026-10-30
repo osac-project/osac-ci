@@ -49,6 +49,11 @@ on:
         description: The suites the plan selected (`needs.plan.outputs.suites`, a JSON list)
         type: string
         default: "[]"
+      fast-track:
+        description: >-
+          Who skipped the tests of the entry and why (`needs.plan.outputs.fast-track`); the E2E check then passes and says so
+        type: string
+        default: ""
       timeout:
         description: Seconds to watch before giving up
         type: string
@@ -111,8 +116,16 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+      - uses: $/.github/actions/fast-track-entry
+        if: inputs.plan-result == 'success' && inputs.fast-track != ''
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          detail: ${{ inputs.fast-track }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       - uses: $/.github/actions/e2e-finish
-        if: always()
+        if: always() && !(inputs.plan-result == 'success' && inputs.fast-track != '')
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           kind: checks
