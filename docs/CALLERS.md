@@ -527,8 +527,10 @@ request that is not open, a reason of less than 5 characters, and a pull request
 What it writes: one write, to the `CI Autopilot` check of the commit (an update of the check the controller already keeps), with
 `Fast track: skipped by <login>: <reason>` as its title, the same in its summary and its events, and a mark in its text that
 names the commit. Only the app can write that check, so it is its own proof; a new commit of the pull request has no mark, and
-so no fast track. The cheap jobs and suites that already run are not stopped, and their lines may still go red: the gate stays
-passed. The decision does not start suites for a fast-tracked commit, and `cheap-start` starts no job.
+so no fast track. The cheap jobs and suites the controller started as runs of their own for that commit and that still run are
+cancelled (the app needs `actions: write`; the events of the check say what was stopped), so they stop holding runners; their lines
+end as cancelled and the gate stays passed. The decision does not start suites for a fast-tracked commit, and `cheap-start`
+starts no job.
 
 The merge queue: `e2e-queue-plan.yml` finds the pull request of the entry from its branch (`gh-readonly-queue/<base>/pr-<N>-<sha>`),
 reads the gate check of the pull request's current head commit, and when it carries a fast track for that commit lists no job
@@ -537,6 +539,10 @@ and no suite and gives `fast-track: "<login>: <reason>"`; the caller passes it t
 The plan job now reads pull requests and checks, so **the caller must give its `queue-plan` job `pull-requests: read` and
 `checks: read`** (a job of a called workflow that asks for more than its caller grants fails the whole run at startup). If the
 lookup fails, the entry is tested as always.
+
+Getting into the queue: the fast track makes the gate pass, and the repository's auto-merge (turned on when the pull request has
+an approval that counts) puts the pull request in the queue as soon as GitHub allows it. A queue entry that is already being tested
+is left alone; it is planned again when it is rebuilt.
 
 What it does not do: it does not approve the pull request (a pull request still needs the review the repository requires to
 enter the queue), and it is not a way around a required check of another name that the repository did not give to the

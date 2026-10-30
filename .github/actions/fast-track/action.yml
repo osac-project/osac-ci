@@ -5,8 +5,8 @@ description: >-
   passes with the person and the reason in its title, and the merge queue entry is not tested either. Called from the
   fast-track workflow of osac-ci (fast-track.yml), pinned to a commit, like the other actions.
 
-# The calling workflow holds the token (the OSAC CI app: pull requests read, members read, checks write and, for the lines
-# the gate adds up, statuses read) and runs from the default branch. Nothing of the pull request is checked out. Every
+# The calling workflow holds the token (the OSAC CI app: pull requests read, members read, checks write, actions write to
+# stop the jobs that still run, and statuses read for the lines the gate adds up) and runs from the default branch. Nothing of the pull request is checked out. Every
 # input reaches the shell through an environment variable, never through the script text; the person who runs the
 # workflow is `github.actor`, which the caller passes as `actor`.
 inputs:

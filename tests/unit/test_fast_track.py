@@ -34,6 +34,9 @@ class Gh:
         self.author, self.files, self.state, self.head = author, files, state, HEAD
         self.team = {"duty-person"}
         self.checks: list[dict[str, Any]] = []
+        self.runs: list[dict[str, Any]] = []
+        self.cancelled: list[int] = []
+        self.cancel_status = 202
 
     def line(self, name: str, conclusion: str, sha: str = HEAD) -> None:
         self.checks.append({"id": len(self.checks) + 1, "name": name, "status": "completed", "conclusion": conclusion,
@@ -55,6 +58,12 @@ class Gh:
             return Response(
                 200, {"check_runs": [c for c in self.checks if c["head_sha"] == sha and name in (None, c["name"])]}, {}
             )
+        if method == "GET" and path == "/repos/o/r/actions/runs":
+            status = (params or {}).get("status")
+            return Response(200, {"workflow_runs": [r for r in self.runs if r["status"] == status]}, {})
+        if method == "POST" and path.startswith("/repos/o/r/actions/runs/") and path.endswith("/cancel"):
+            self.cancelled.append(int(path.split("/")[-2]))
+            return Response(self.cancel_status, {}, {})
         if method == "GET" and path.endswith("/statuses"):
             return Response(200, [], {})
         if method in ("POST", "PATCH") and "/check-runs" in path:
@@ -69,6 +78,10 @@ class Gh:
 
     def gate(self, sha: str = HEAD) -> dict[str, Any]:
         return [c for c in self.checks if c["name"] == autopilot_summary.NAME and c["head_sha"] == sha][-1]
+
+
+def run(gh: Gh, id_: int, title: str, status: str = "in_progress") -> None:
+    gh.runs.append({"id": id_, "display_title": title, "status": status})
 
 
 def go(gh: Gh, actor: str = "duty-person", reason: str = REASON) -> str:
@@ -274,3 +287,45 @@ def test_the_command_fast_tracks_and_a_refusal_is_an_error(
     monkeypatch.setattr(cli, "load_policy", lambda _p: POLICY)
     assert cli.main(["fast-track-queue", "--repo", "o/r", "--head-ref", f"gh-readonly-queue/main/pr-7-{'c' * 40}"]) == 0
     assert '"fast": true' in capsys.readouterr().out
+
+
+# what still runs --------------------------------------------------------------------------------------------------
+
+
+def test_the_jobs_and_suites_that_still_run_for_the_commit_are_cancelled_and_the_gate_says_so() -> None:
+    gh = Gh()
+    run(gh, 11, f"CI job · unit · #7 · {HEAD}")
+    run(gh, 12, f"CI job · integration · #7 · {HEAD}", "queued")
+    run(gh, 13, f"E2E suite · alpha · #7 · {HEAD}")
+    run(gh, 21, f"CI job · unit · #7 · {OTHER}")  # an older commit: not this one
+    run(gh, 22, f"CI job · unit · #8 · {HEAD}")  # another pull request
+    run(gh, 23, "Some other workflow")
+    said = go(gh)
+    assert sorted(gh.cancelled) == [11, 12, 13]
+    assert said.endswith("(commit aaaaaaa, stopped alpha, integration, unit)")
+    assert "; stopped alpha, integration, unit" in gh.gate()["output"]["text"]
+    assert gh.gate()["conclusion"] == "success"
+
+
+def test_a_run_that_cannot_be_cancelled_is_named_and_does_not_undo_the_fast_track() -> None:
+    gh = Gh()
+    run(gh, 11, f"CI job · unit · #7 · {HEAD}")
+    gh.cancel_status = 403
+    said = go(gh)
+    assert "stopped" not in said and "could not stop unit" in gh.gate()["output"]["text"]
+    assert gh.gate()["conclusion"] == "success"
+
+
+def test_a_run_that_has_just_ended_counts_as_stopped() -> None:
+    gh = Gh()
+    run(gh, 11, f"CI job · unit · #7 · {HEAD}")
+    gh.cancel_status = 409
+    assert "stopped unit" in go(gh)
+
+
+def test_nothing_is_cancelled_when_the_fast_track_is_refused() -> None:
+    gh = Gh()
+    run(gh, 11, f"CI job · unit · #7 · {HEAD}")
+    with pytest.raises(ValueError):
+        go(gh, "somebody")
+    assert gh.cancelled == []

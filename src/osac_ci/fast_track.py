@@ -7,8 +7,10 @@ the refusals are the ones below. A fast track is for one commit: the ``CI Autopi
 the person and the reason in its title (see fast_mark.py), and the merge queue entry of the pull request is not tested
 either (``for_queue``). A new commit of the pull request has no fast track.
 
-What it does not do: it does not approve the pull request (the review rule is the repository's), and it does not stop
-what already runs.
+It stops what still runs for the commit: the cheap jobs and the E2E suites that the controller started as runs of their
+own (named after the pull request and the commit). What it does not do: it does not approve the pull request (the review
+rule is the repository's, and once it is met the repository's auto-merge puts the pull request in the merge queue), and
+it leaves a merge queue entry that is already being tested alone (it is planned again when it is rebuilt).
 """
 
 from __future__ import annotations
@@ -18,10 +20,10 @@ import urllib.parse
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from osac_ci import autopilot_summary
+from osac_ci import autopilot_summary, cheap_jobs, e2e_dispatch
 from osac_ci.e2e_check import check_sha
 from osac_ci.fast_mark import REASON_MIN, FastTrack, clean_reason
-from osac_ci.github.api import GitHubClient, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.paths import matches
 from osac_ci.policy import Policy
 
@@ -76,6 +78,41 @@ def _files(client: GitHubClient, repo: str, number: int) -> list[str]:
     return files
 
 
+def cancel_running(client: GitHubClient, repo: str, number: int, sha: str) -> tuple[list[str], list[str]]:
+    """Ask GitHub to cancel the cheap jobs and the E2E suites that run as runs of their own for this pull request and
+    this commit, found by the name of the run (the same name their lines and their end events use). Returns the names of
+    what was stopped and the names of what could not be (a failure to cancel one run does not stop the rest)."""
+    stopped: list[str] = []
+    failed: list[str] = []
+    for status in ("queued", "in_progress"):
+        runs = paginate(
+            client,
+            f"/repos/{repo}/actions/runs",
+            key="workflow_runs",
+            params={"event": "workflow_dispatch", "status": status},
+        )
+        for run in runs:
+            if not isinstance(run, Mapping) or not isinstance(run.get("id"), int):
+                continue
+            title = str(run.get("display_title") or "")
+            cheap = cheap_jobs.RUN_NAME.fullmatch(title)
+            suite = e2e_dispatch.RUN_NAME.fullmatch(title)
+            found = cheap or suite
+            if found is None or int(found["number"]) != number or found["sha"] != sha:
+                continue
+            name = found["job"] if cheap else found["suite"]
+            try:
+                response = client.request("POST", f"/repos/{repo}/actions/runs/{run['id']}/cancel")
+            except GitHubError:
+                failed.append(name)
+                continue
+            if response.status in (202, 404, 409):  # accepted; already gone; already finished
+                stopped.append(name)
+            else:
+                failed.append(name)
+    return stopped, failed
+
+
 def apply(
     client: GitHubClient,
     repo: str,
@@ -113,9 +150,15 @@ def apply(
     if stop is not None:
         raise ValueError(f"fast track refused: {stop}")
     fast = FastTrack(sha, actor, why)
+    stopped, failed = cancel_running(client, repo, number, sha)
     event = f"Fast track by {actor}: {why}"
+    if stopped:
+        event += f"; stopped {', '.join(sorted(set(stopped)))}"
+    if failed:
+        event += f"; could not stop {', '.join(sorted(set(failed)))}"
     autopilot_summary.update(client, repo, number, policy, event, run_url, fast=fast)
-    return f"{fast.title} (commit {sha[:7]})"
+    more = f", stopped {', '.join(sorted(set(stopped)))}" if stopped else ""
+    return f"{fast.title} (commit {sha[:7]}{more})"
 
 
 def for_queue(client: GitHubClient, repo: str, head_ref: str) -> FastTrack | None:
