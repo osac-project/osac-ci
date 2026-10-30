@@ -34,7 +34,7 @@ from osac_ci.e2e_check import (
     tiered,
     validate_lines,
 )
-from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, TransportError, check_repo, get, paginate
 
 
 @dataclass(frozen=True)
@@ -132,7 +132,7 @@ def _state(job: Job | None, *, final: bool = False) -> tuple[str, str]:
     return "Running", "pending"
 
 
-TRANSIENT = frozenset({0, 500, 502, 503, 504})  # statuses of a failure in transit: the next poll may well work
+TRANSIENT = frozenset({500, 502, 503, 504})  # statuses of GitHub failing (a failure in transit is a TransportError)
 TOLERATED_FAILURES = 5  # polls in a row that may fail this way (about two and a half minutes) before the follower stops
 RESULT_TITLES = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}
 RESULT_STATES = {"success": "success", "failure": "failure", "cancelled": "error"}
@@ -258,7 +258,8 @@ def track(
             # already tried it again); a refusal (a status below 500) is an answer, and the same on every try. A write
             # that failed is not repeated by going round again, and a failure at the deadline gives way to its return.
             failures += 1
-            if writing or exc.status not in TRANSIENT or failures > TOLERATED_FAILURES:
+            transient = isinstance(exc, TransportError) or exc.status in TRANSIENT  # not too many pages: it stays so
+            if writing or not transient or failures > TOLERATED_FAILURES:
                 raise
         else:
             failures = 0
