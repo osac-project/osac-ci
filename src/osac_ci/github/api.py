@@ -7,6 +7,7 @@ caller can treat 404 as an answer (for example "not an org member"); only transp
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import time
@@ -32,6 +33,15 @@ class GitHubError(RuntimeError):
     def __init__(self, status: int, message: str) -> None:
         super().__init__(f"GitHub API error (HTTP {status}): {message}")
         self.status = status
+
+
+class TransportError(GitHubError):
+    """The request or its answer did not get through (a dropped connection, a timeout, an answer cut short): status 0,
+    and the same request may well work again. Other ``GitHubError``s say that GitHub answered, or that the caller asked
+    for too much."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(0, message)
 
 
 @dataclass(frozen=True)
@@ -167,16 +177,19 @@ class HttpClient:
 
     def _send(self, request: urllib.request.Request, what: str) -> Response:
         try:
-            with self._opener(request, timeout=self._timeout) as raw:
-                seen = _headers(getattr(raw, "headers", None))
+            try:
+                with self._opener(request, timeout=self._timeout) as raw:
+                    seen = _headers(getattr(raw, "headers", None))
+                    self._note_rate_limit(seen)
+                    return Response(raw.status, _parse(raw.read()), seen)
+            except urllib.error.HTTPError as exc:
+                seen = _headers(exc.headers)
                 self._note_rate_limit(seen)
-                return Response(raw.status, _parse(raw.read()), seen)
-        except urllib.error.HTTPError as exc:
-            seen = _headers(exc.headers)
-            self._note_rate_limit(seen)
-            return Response(exc.code, _parse(exc.read()), seen)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise GitHubError(0, f"{what}: {type(exc).__name__}") from exc
+                return Response(exc.code, _parse(exc.read()), seen)
+        # Reading the answer fails like sending the request does, and an answer cut short (IncompleteRead) is an
+        # HTTPException, not an OSError, so it is named here. The outer try also covers reading an error answer.
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as exc:
+            raise TransportError(f"{what}: {type(exc).__name__}") from exc
 
 
 def _headers(raw: Any) -> dict[str, str]:

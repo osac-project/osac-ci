@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from osac_ci.github.api import GitHubError, HttpClient
+from osac_ci.github.api import GitHubError, HttpClient, TransportError
 
 pytestmark = pytest.mark.contract
 
@@ -135,6 +135,47 @@ def test_a_gateway_error_is_tried_again_and_the_last_one_is_returned_when_it_sta
     assert len(seen) == 3
     opener, seen = _flaky(502, "ok")
     assert _client(opener, []).request("GET", "/x").status == 200
+
+
+class _Cut(_Raw):
+    """An answer whose body is cut short: the status is fine, the read is not."""
+
+    def read(self, *args: Any) -> bytes:
+        raise http.client.IncompleteRead(b"{", 10)
+
+
+def test_an_answer_cut_short_is_a_transport_failure_that_is_tried_again() -> None:
+    calls = iter([_Cut(), _Raw(b'{"ok": true}')])
+    waits: list[float] = []
+    client = _client(lambda request, timeout: next(calls), waits)
+    assert client.request("GET", "/x").data == {"ok": True} and waits == [1.0]
+    with pytest.raises(TransportError) as err:
+        _client(lambda request, timeout: _Cut(), []).request("GET", "/x")
+    assert err.value.status == 0 and "IncompleteRead" in str(err.value)
+
+
+def test_an_error_answer_whose_body_cannot_be_read_is_a_transport_failure() -> None:
+    class Body(io.BytesIO):
+        def read(self, *args: Any) -> bytes:
+            raise ConnectionResetError("reset")
+
+    def opener(request: urllib.request.Request, timeout: float) -> _Raw:
+        raise urllib.error.HTTPError(request.full_url, 502, "Bad Gateway", {}, Body())  # type: ignore[arg-type]
+
+    with pytest.raises(TransportError):
+        _client(opener, []).request("GET", "/x")
+
+
+def test_a_write_whose_answer_is_cut_short_still_makes_one_attempt() -> None:
+    seen: list[object] = []
+
+    def opener(request: urllib.request.Request, timeout: float) -> _Raw:
+        seen.append(request)
+        return _Cut()
+
+    with pytest.raises(TransportError):
+        _client(opener, []).request("POST", "/x", body={})
+    assert len(seen) == 1
 
 
 @pytest.mark.parametrize("status", [401, 403, 404, 409, 422, 429, 500])

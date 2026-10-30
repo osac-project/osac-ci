@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 
 from osac_ci import e2e_suites_check as tracker
-from osac_ci.github.api import GitHubError, Response
+from osac_ci.github.api import GitHubError, Response, TransportError
 
 pytestmark = pytest.mark.unit
 HEAD = "a" * 40
@@ -199,7 +199,9 @@ class Dropping(Gh):
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
         if method == "GET" and path.endswith("/jobs") and self.dropped < self.fail:
             self.dropped += 1
-            raise GitHubError(self.status, f"GET {path}: RemoteDisconnected")
+            if self.status == 0:
+                raise TransportError(f"GET {path}: RemoteDisconnected")
+            raise GitHubError(self.status, f"GET {path}")
         return super().request(method, path, params=params, body=body)
 
 
@@ -262,7 +264,7 @@ class LosingWrites(Gh):
             self.posts += 1
             super().request(method, path, params=params, body=body)
             if self.posts == 1:
-                raise GitHubError(0, f"POST {path}: RemoteDisconnected")
+                raise TransportError(f"POST {path}: RemoteDisconnected")
             return Response(201, {}, {})
         return super().request(method, path, params=params, body=body)
 
@@ -279,3 +281,14 @@ def test_a_poll_that_fails_in_transit_after_the_deadline_gives_way_to_the_return
     gh = Dropping(fail=1)
     _both_passed(gh)
     assert follow(gh, timeout=-1) == []  # no line was written yet: the time was up before the first poll worked
+
+
+def test_a_failure_that_is_not_one_in_transit_is_not_tolerated_even_at_the_deadline() -> None:
+    gh = Dropping(fail=1, status=0)
+
+    def too_many_pages(*args: Any, **kwargs: Any) -> Response:
+        raise GitHubError(0, "too many pages for /x (more than 50)")  # what paginate raises: the same on every try
+
+    gh.request = too_many_pages  # type: ignore[method-assign]
+    with pytest.raises(GitHubError, match="too many pages"):
+        follow(gh, timeout=-1)
