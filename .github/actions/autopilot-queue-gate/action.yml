@@ -25,7 +25,7 @@ inputs:
     description: JSON list of the ids of the jobs of the entry, the cheap jobs and the suites
     required: true
   result:
-    description: start, success, failure, cancelled or fast-track (then detail is "login: reason")
+    description: 'start, success, failure, cancelled or fast-track (then detail is "login: reason")'
     required: true
   detail:
     description: What failed, or why the entry was cancelled
