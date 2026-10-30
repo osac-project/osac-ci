@@ -1,0 +1,60 @@
+---
+name: Fast-track a pull request
+description: >-
+  Skip every test of one pull request for a member of the policy's fast-track team: the E2E check of the commit passes with
+  the person and the reason in its title, the CI workflow of the repository is stopped and run again (its plan skips its
+  tests), and the merge queue entry is not tested either. Called from the fast-track workflow of osac-ci (fast-track.yml),
+  pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: pull requests read, members read, checks write, and actions write
+# to stop the suites that still run and to run the CI workflow again) and runs from the default branch. Nothing of the
+# pull request is checked out. Every input reaches the shell through an environment variable, never through the script
+# text; the person who runs the workflow is `github.actor`, which the caller passes as `actor`.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  actor:
+    description: Who runs it (github.actor of the run)
+    required: true
+  reason:
+    description: Why, in a few words
+    required: true
+  policy-file:
+    description: The repository's policy, read from its default branch (a path of the workspace)
+    required: true
+  run-url:
+    description: Link of the run, the details link of the check
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Fast-track
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        ACTOR: ${{ inputs.actor }}
+        REASON: ${{ inputs.reason }}
+        POLICY: ${{ inputs.policy-file }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        uv run --locked --project "$root" osac-ci fast-track --policy "$POLICY" --repo "$REPO" --number "$NUMBER" \
+          --actor "$ACTOR" --reason "$REASON" --run-url "$RUN_URL" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -440,7 +440,7 @@ def steps_of_the_workflow() -> list[dict]:
 
 
 def test_one_job_watches_then_always_tells_the_check_and_stops_what_runs_after_the_check_is_written() -> None:
-    watch_step, verdict_step, token, finish, stop = steps_of_the_workflow()
+    watch_step, verdict_step, token, entry, finish, stop = steps_of_the_workflow()
     assert watch_step["if"] == "inputs.plan-result == 'success' && inputs.suites != '[]'"
     assert watch_step["with"]["phase"] == "watch" and watch_step["id"] == "watch"
     assert verdict_step["if"] == "always()" and verdict_step["with"]["phase"] == "verdict"
@@ -448,7 +448,11 @@ def test_one_job_watches_then_always_tells_the_check_and_stops_what_runs_after_t
         "what the watch returned, not only its step"
     )
     assert token["if"] == "always()" and "create-github-app-token" in token["uses"]
-    assert finish["if"] == "always()" and finish["uses"] == "$/.github/actions/e2e-finish"
+    fast = "inputs.plan-result == 'success' && inputs.fast-track != ''"
+    assert entry["if"] == fast and entry["uses"] == "$/.github/actions/fast-track-entry"
+    assert entry["with"]["detail"] == "${{ inputs.fast-track }}", "a fast-tracked entry says who and why"
+    assert finish["if"] == f"always() && !({fast})", "and then nothing else writes the check"
+    assert finish["uses"] == "$/.github/actions/e2e-finish"
     assert finish["with"]["result"] == "${{ steps.verdict.outputs.result || 'cancelled' }}"
     assert (
         finish["with"]["kind"] == "checks" and finish["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"

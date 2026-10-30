@@ -353,3 +353,10 @@ def test_a_commit_status_does_not_satisfy_a_requirement_that_names_an_app() -> N
     cheap = (Requirement("legacy-status", APP),)
     d = decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": "success"}))
     assert d.cheap_pending and d.starts
+
+
+def test_a_fast_tracked_commit_starts_nothing_whatever_else_is_true() -> None:
+    d = decide(inputs(fast_tracked="duty-person: production is down"))
+    assert d.action is Action.SKIP_FAST_TRACKED and not d.starts
+    assert "fast track, duty-person" in d.reason
+    assert decide(inputs(state="closed", fast_tracked="x: y z")).action is Action.SKIP_CLOSED

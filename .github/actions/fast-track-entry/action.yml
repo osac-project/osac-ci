@@ -1,0 +1,49 @@
+---
+name: Write the E2E check of a fast-tracked merge queue entry
+description: >-
+  Write the E2E check of a merge queue entry that is not tested because its pull request was fast-tracked: passed, with the
+  person and the reason. Called from the queue result of osac-ci (e2e-queue-result.yml), pinned to a commit.
+
+# The calling workflow holds the token (the OSAC CI app: checks write). Every input reaches the shell through an environment
+# variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (checks write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The commit of the queue entry
+    required: true
+  detail:
+    description: 'Who and why, "login: reason" (the output of fast-track-check)'
+    required: true
+  run-url:
+    description: Link of the run, the details link of the check
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Write the check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        DETAIL: ${{ inputs.detail }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$SHA" in
+          "" | *[!0-9a-f]*) echo "::error::The commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+        esac
+        if [ "${#SHA}" -ne 40 ]; then echo "::error::The commit must be 40 characters."; exit 1; fi
+        uv run --locked --project "$root" osac-ci fast-track-entry --repo "$REPO" --sha "$SHA" --detail "$DETAIL" \
+          --run-url "$RUN_URL" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

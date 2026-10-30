@@ -58,6 +58,7 @@ class Action(StrEnum):
     SKIP_CLOSED = "skip-closed"
     SKIP_DRAFT = "skip-draft"
     SKIP_NOT_APPLICABLE = "skip-not-applicable"
+    SKIP_FAST_TRACKED = "skip-fast-tracked"  # a person of the fast-track team skipped every test of this commit
     SKIP_NOT_A_REQUEST = "skip-not-a-request"  # a comment woke the decision and asks for nothing: nothing is decided
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
@@ -133,6 +134,9 @@ class Inputs:
     # only starts like the command (`/testing`) would fall through to the automatic path, which starts every suite
     # again once the E2E check has an answer.
     comment_ignored: bool = False
+    # "login: reason" when a person of the fast-track team skipped every test of this commit (the app's E2E check says
+    # so, see fast_track.py): the suites do not start. Read by the caller, not by ``fetch_inputs``.
+    fast_tracked: str = ""
     # The workflow runs that still go among those the suite lines on the commit link to (read by ``fetch_inputs``): a
     # line that waits or runs is only believed when the run it links to is alive.
     live_runs: frozenset[int] = frozenset()
@@ -343,6 +347,8 @@ def decide(inputs: Inputs) -> Decision:
     }
     if inputs.state != "open":
         return Decision(action=Action.SKIP_CLOSED, reason="the pull request is not open", **base)
+    if inputs.fast_tracked:
+        return Decision(action=Action.SKIP_FAST_TRACKED, reason=f"fast track, {inputs.fast_tracked}", **base)
     # Only the app's own check runs say what a suite or the E2E did: another app (or a workflow) that posts a check with
     # the same name must not make a suite look passed or running.
     latest = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP))
