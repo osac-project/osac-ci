@@ -1,0 +1,53 @@
+---
+name: Is the merge queue entry fast-tracked
+description: >-
+  Say whether the merge queue entry belongs to a pull request whose current commit was fast-tracked (see fast-track.yml).
+  Called from the queue plan of osac-ci (e2e-queue-plan.yml), pinned to a commit, like the other actions.
+
+# The token is the workflow's own (pull requests read, checks read). The proof is the gate check of the pull request's head
+# commit, which only the OSAC CI app can write; nothing the entry says is believed. Every input reaches the shell through an
+# environment variable, never through the script text.
+inputs:
+  github-token:
+    description: A token that can read pull requests and check runs of the repository
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  head-ref:
+    description: The branch of the entry (`github.event.merge_group.head_ref`)
+    required: true
+
+outputs:
+  fast:
+    description: "true when the entry is fast-tracked, else false"
+    value: ${{ steps.ask.outputs.fast }}
+  detail:
+    description: 'Who skipped the tests and why ("login: reason"), empty when the entry is not fast-tracked'
+    value: ${{ steps.ask.outputs.detail }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Ask
+      id: ask
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        HEAD_REF: ${{ inputs.head-ref }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        answer=$(uv run --locked --project "$root" osac-ci fast-track-queue --repo "$REPO" --head-ref "$HEAD_REF")
+        echo "fast=$(jq -r '.fast' <<<"$answer")" >> "$GITHUB_OUTPUT"
+        if [ "$(jq -r '.fast' <<<"$answer")" = true ]; then
+          echo "detail=$(jq -r '.login + ": " + .reason' <<<"$answer")" >> "$GITHUB_OUTPUT"
+          echo "Fast track: $(jq -r '.login + ": " + .reason' <<<"$answer")" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        else
+          echo "detail=" >> "$GITHUB_OUTPUT"
+        fi

@@ -14,6 +14,7 @@ whether the planner agrees they were ready (the parity evidence). None of them w
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -34,6 +35,7 @@ from osac_ci import (
     e2e_dispatch,
     e2e_start,
     e2e_suites_check,
+    fast_track,
     jira_reference,
     lockfacts,
     manual_run,
@@ -551,6 +553,24 @@ def _parser() -> argparse.ArgumentParser:
     jira.add_argument("--number", type=int, required=True, help="the pull request")
     jira.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
 
+    ftrack = sub.add_parser(
+        "fast-track",
+        help="skip every test of a pull request, for a member of the policy's fast-track team (run by a workflow)",
+    )
+    ftrack.add_argument("--policy", type=Path, required=True)
+    ftrack.add_argument("--repo", required=True, help="owner/name")
+    ftrack.add_argument("--number", type=int, required=True, help="the pull request")
+    ftrack.add_argument("--actor", required=True, help="who runs it (github.actor of the run, never typed by a person)")
+    ftrack.add_argument("--reason", required=True, help="why, in a few words (shown on the pull request)")
+    ftrack.add_argument("--run-url", default="", help="link of the workflow run, the details link of the check")
+
+    fqueue = sub.add_parser(
+        "fast-track-queue",
+        help="say whether a merge queue entry is fast-tracked (prints JSON: fast, login, reason)",
+    )
+    fqueue.add_argument("--repo", required=True, help="owner/name")
+    fqueue.add_argument("--head-ref", required=True, help="the branch of the entry (github.event.merge_group.head_ref)")
+
     asum = sub.add_parser(
         "autopilot-summary",
         help="say what just happened on a pull request in the CI Autopilot check (the app's own summary of every line)",
@@ -980,6 +1000,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Jira reference: {said}")
         return 0
 
+    if args.command == "fast-track":
+        try:
+            said = fast_track.apply(
+                build_client(), args.repo, args.number, args.actor, args.reason, load_policy(args.policy), args.run_url
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 3
+        print(f"Fast track: {said}")
+        return 0
+
+    if args.command == "fast-track-queue":
+        try:
+            found = fast_track.for_queue(build_client(), args.repo, args.head_ref)
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: fast-track-queue failed: {exc}", file=sys.stderr)
+            return 3
+        print(json.dumps(fast_track.queue_outputs(found)))
+        return 0
+
     if args.command == "autopilot-summary":
         try:
             said = autopilot_summary.update(
@@ -1002,11 +1042,17 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "cheap-start":
         try:
+            client = build_client()
+            policy_ = load_policy(args.policy)
+            fast = fast_track.current(client, args.repo, args.number) if policy_.fast_track is not None else None
+            if fast is not None:
+                print(f"Fast track by {fast.login}: no cheap job is started")
+                return 0
             done = cheap_stage.start(
-                build_client(),
+                client,
                 args.repo,
                 args.number,
-                load_policy(args.policy),
+                policy_,
                 lines_kind=args.lines_kind,
                 run_url=args.run_url,
             )
@@ -1402,13 +1448,15 @@ def main(argv: list[str] | None = None) -> int:
                     client, args.repo, n, args.manual_comment_id, args.manual_by,
                     org_client=build_org_client(), event_body=given,
                 )  # fmt: skip
-            return e2e_start.fetch_inputs(
+            inputs = e2e_start.fetch_inputs(
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
                 statuses_client=build_statuses_client(),
                 cheap_workflows=cheap_jobs.parse_workflows(args.cheap_workflows),
             )  # fmt: skip
+            fast = fast_track.current(client, args.repo, n) if policy.fast_track is not None else None
+            return dataclasses.replace(inputs, fast_tracked=f"{fast.login}: {fast.reason}") if fast else inputs
 
         return _decide_command(
             args,

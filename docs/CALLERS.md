@@ -501,6 +501,47 @@ change the pin and the permissions in one pull request. Both jobs run code of th
 request text in a shell, so the wider token is not reachable from a pull request. A token that is refused makes the edit
 fall back to the app's, as before, so nothing is lost but the quiet.
 
+## Fast track: skip every test of one pull request
+
+A person of one team (`fast_track.team` of the policy, for example `ci-duty`) skips every test of one pull request: the
+`CI Autopilot` check of the commit passes, and the merge queue entry of that pull request is not tested either. It is
+the exception for a change that cannot wait, so it is not on the page of the pull request: the person opens the
+repository's **Actions** page, picks the workflow `Fast track`, and runs it (**Run workflow**) with the number of the
+pull request and a reason. Nothing is added to the checks of any pull request that does not use it, and the run belongs to the
+default branch, so it is not a row on the pull request either.
+
+Policy (read from the default branch, so a pull request cannot change it):
+
+```yaml
+fast_track:
+  team: ci-duty              # slug of the organization team; only its members may
+  allow_author: false        # a member may not fast-track a pull request they wrote (default)
+  protected_paths: [".github/**", CODEOWNERS]   # a change to these is reviewed, never fast-tracked (the default)
+```
+
+The caller is a workflow of the repository with a `workflow_dispatch` form that calls the shared one (see the header of
+`fast-track.yml`). The shared workflow runs only from the default branch, takes the person from `github.actor`, and
+refuses, with the sentence the person reads in the log: a person who is not in the team, the author (unless allowed), a pull
+request that is not open, a reason of less than 5 characters, and a pull request that changes a protected path.
+
+What it writes: one write, to the `CI Autopilot` check of the commit (an update of the check the controller already keeps), with
+`Fast track: skipped by <login>: <reason>` as its title, the same in its summary and its events, and a mark in its text that
+names the commit. Only the app can write that check, so it is its own proof; a new commit of the pull request has no mark, and
+so no fast track. The cheap jobs and suites that already run are not stopped, and their lines may still go red: the gate stays
+passed. The decision does not start suites for a fast-tracked commit, and `cheap-start` starts no job.
+
+The merge queue: `e2e-queue-plan.yml` finds the pull request of the entry from its branch (`gh-readonly-queue/<base>/pr-<N>-<sha>`),
+reads the gate check of the pull request's current head commit, and when it carries a fast track for that commit lists no job
+and no suite and gives `fast-track: "<login>: <reason>"`; the caller passes it to `autopilot-queue-result.yml`
+(`fast-track: ${{ needs.queue-plan.outputs.fast-track }}`), which writes the gate of the entry as passed with the same words.
+The plan job now reads pull requests and checks, so **the caller must give its `queue-plan` job `pull-requests: read` and
+`checks: read`** (a job of a called workflow that asks for more than its caller grants fails the whole run at startup). If the
+lookup fails, the entry is tested as always.
+
+What it does not do: it does not approve the pull request (a pull request still needs the review the repository requires to
+enter the queue), and it is not a way around a required check of another name that the repository did not give to the
+controller.
+
 ## Running service jobs from osac-ci for another repository
 
 A repository does not have to carry the workflows that only keep things in order. Two run from osac-ci itself, for the

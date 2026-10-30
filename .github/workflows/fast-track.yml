@@ -1,0 +1,88 @@
+---
+# Shared workflow: a person of the policy's fast-track team skips every test of one pull request. The repository's own
+# workflow (`workflow_dispatch`, "Run workflow" on the Actions page, with the pull request number and a reason) calls it:
+#
+#   name: Fast track
+#   on:
+#     workflow_dispatch:
+#       inputs:
+#         number: {description: Pull request number, required: true}
+#         reason: {description: Why (shown on the pull request), required: true}
+#   permissions: {}
+#   jobs:
+#     fast-track:
+#       uses: osac-project/osac-ci/.github/workflows/fast-track.yml@<sha>
+#       permissions:
+#         contents: read
+#       with:
+#         number: ${{ inputs.number }}
+#         reason: ${{ inputs.reason }}
+#       secrets:
+#         OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+#
+# It runs only from the default branch (a run from any other branch is refused first thing), reads the policy from there,
+# and the person is `github.actor`: the team check, the author rule and the protected files are in fast_track.py. The
+# `CI Autopilot` check of the commit passes with the person and the reason in its title; the merge queue plan then
+# skips the entry's tests (e2e-queue-plan.yml). A fast track is for one commit: a new commit has none.
+name: Fast track
+
+on:
+  workflow_call:
+    inputs:
+      number:
+        description: The pull request number
+        type: string
+        required: true
+      reason:
+        description: Why, in a few words (shown on the pull request)
+        type: string
+        required: true
+      policy-file:
+        description: The repository's policy
+        type: string
+        default: .github/e2e-policy.yml
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  fast-track:
+    name: Fast track
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      # The default branch of the calling repository, for the policy only (the run is from that branch already).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: .github
+      - name: Token of the OSAC CI app
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-pull-requests: read
+          permission-members: read
+          permission-statuses: read
+      - uses: $/.github/actions/fast-track
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ inputs.number }}
+          actor: ${{ github.actor }}
+          reason: ${{ inputs.reason }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

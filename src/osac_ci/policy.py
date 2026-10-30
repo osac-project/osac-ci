@@ -320,6 +320,31 @@ class JiraReference(_Strict):
         return value
 
 
+class FastTrack(_Strict):
+    """A way to skip every test of one pull request, for the people who may (see fast_track.py): one of ``team`` runs
+    the repository's fast-track workflow with the number of the pull request and a reason, and the ``CI Autopilot``
+    check of the commit passes with that said in its title. The merge queue entry of that commit is not tested either.
+
+    The policy is read from the default branch, so a pull request cannot change who may do it or what is out of
+    reach."""
+
+    team: str = Field(min_length=1, max_length=100, description="Slug of the organization team that may fast-track")
+    allow_author: bool = Field(
+        default=False, description="Whether a member of the team may fast-track a pull request they wrote"
+    )
+    protected_paths: tuple[str, ...] = Field(
+        default=(".github/**", "CODEOWNERS"),
+        description="Globs of files a fast-tracked pull request cannot change: they decide how a change is judged",
+    )
+
+    @field_validator("team")
+    @classmethod
+    def _slug(cls, value: str) -> str:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            raise ValueError("team must be a team slug (letters, digits, dot, dash, underscore)")
+        return value
+
+
 class E2E(_Strict):
     unlock: E2EUnlock = E2EUnlock()
     wait_for_ci: bool = Field(
@@ -386,6 +411,8 @@ class Policy(_Strict):
     # The Jira reference of the pull request, as a line of the controller (see JiraReference). Absent: the repository's
     # own workflow for it stays.
     jira_reference: JiraReference | None = None
+    # Who may skip every test of a pull request, and what a fast track may not touch (see FastTrack). Absent: nobody.
+    fast_track: FastTrack | None = None
     # What the repository adds to the central rules of policy/flow.yml: only `checks.not_cheap_extra` (check names that
     # are not "cheap"). Anything else is refused when the policy loads.
     flow: dict[str, Any] | None = None

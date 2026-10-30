@@ -50,6 +50,11 @@ on:
           name of its job in the run)
         type: string
         default: "[]"
+      fast-track:
+        description: >-
+          Who skipped the tests of the entry and why (`needs.plan.outputs.fast-track`); the check then passes and says so
+        type: string
+        default: ""
       timeout:
         description: Seconds to watch before giving up
         type: string
@@ -135,8 +140,8 @@ jobs:
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           jobs: ${{ inputs.jobs }}
-          result: ${{ steps.verdict.outputs.result || 'cancelled' }}
-          detail: ${{ steps.verdict.outputs.detail }}
+          result: ${{ inputs.plan-result == 'success' && inputs.fast-track != '' && 'fast-track' || steps.verdict.outputs.result || 'cancelled' }}
+          detail: ${{ inputs.plan-result == 'success' && inputs.fast-track != '' && inputs.fast-track || steps.verdict.outputs.detail }}
       # After the check is written: stop what still runs for the commit (the other jobs, other workflows), this run last.
       - name: Stop what still runs
         if: always() && steps.verdict.outputs.stop == 'true'

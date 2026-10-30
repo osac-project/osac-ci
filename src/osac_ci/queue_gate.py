@@ -18,7 +18,7 @@ from osac_ci.e2e_check import SUITE_ID, check_sha, describe
 from osac_ci.e2e_suites_check import suite_progress
 from osac_ci.github.api import GitHubClient, check_repo, paginate
 
-RESULTS = ("start", "success", "failure", "cancelled")
+RESULTS = ("start", "success", "failure", "cancelled", "fast-track")
 ICONS = {"passed": "✅", "failed": "❌", "running": "⏳", "waiting": "▫️", "cancelled": "⛔", "skipped": "▫️"}
 WORDS = {"waiting": "waiting", "running": "running", "passed": "passed", "failed": "failed", "cancelled": "cancelled"}
 
@@ -43,6 +43,9 @@ def _body(
     elif result == "success":
         status, conclusion, said = "completed", "success", "queue entry passed"
         title = describe(f"Passed: {', '.join(jobs)}" if jobs else "Passed")
+    elif result == "fast-track":
+        status, conclusion, said = "completed", "success", f"queue entry not tested: fast track ({detail})"
+        title = describe(f"Fast track: skipped by {detail}")
     elif result == "failure":
         status, conclusion, said = "completed", "failure", f"queue entry failed{named}"
         title = describe(f"Failed: {detail}" if detail else "Failed")

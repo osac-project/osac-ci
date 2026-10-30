@@ -10,7 +10,8 @@
 #   cancel-stale  a queue entry is rebuilt when the entries ahead of it change; the run of the old entry is of no use
 #                 any more and holds runners, so it is cancelled (only older runs of the same `pr-<N>`).
 #
-# The caller triggers on `merge_group` and gives the calling job contents read and actions write.
+# The caller triggers on `merge_group` and gives the calling job contents read, actions write, and (for a fast track)
+# pull requests read and checks read.
 name: E2E queue plan
 
 on:
@@ -32,6 +33,11 @@ on:
       jobs:
         description: JSON list of the cheap jobs and the suites the entry needs together
         value: ${{ jobs.plan.outputs.jobs }}
+      fast-track:
+        description: >-
+          Who skipped the tests of the entry and why ("login: reason") when its pull request was fast-tracked (see
+          fast-track.yml); then the lists above are all `[]`. Empty otherwise
+        value: ${{ jobs.plan.outputs.fast-track }}
 
 permissions: {}
 
@@ -42,10 +48,14 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: read  # the pull request the entry is built from, for a fast track
+      checks: read  # its gate check
     outputs:
-      suites: ${{ steps.suites.outputs.suites }}
-      cheap: ${{ steps.suites.outputs.cheap }}
-      jobs: ${{ steps.suites.outputs.jobs }}
+      # A fast-tracked entry is not tested: every list is empty.
+      suites: ${{ steps.fast.outputs.fast == 'true' && '[]' || steps.suites.outputs.suites }}
+      cheap: ${{ steps.fast.outputs.fast == 'true' && '[]' || steps.suites.outputs.cheap }}
+      jobs: ${{ steps.fast.outputs.fast == 'true' && '[]' || steps.suites.outputs.jobs }}
+      fast-track: ${{ steps.fast.outputs.detail }}
     steps:
       # The queue entry itself (the merged result) with its history, to list what changed against the base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -64,6 +74,14 @@ jobs:
         with:
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
           files-file: ${{ runner.temp }}/changed-files
+      # Whatever goes wrong here, the entry is tested: not knowing is not a fast track.
+      - uses: $/.github/actions/fast-track-queue
+        id: fast
+        continue-on-error: true
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          head-ref: ${{ github.event.merge_group.head_ref }}
 
   cancel-stale:
     name: Cancel superseded runs
