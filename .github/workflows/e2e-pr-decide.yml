@@ -71,6 +71,13 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         description: Path of the repository's Jira reference workflow (its older runs are deleted)
         type: string
         default: .github/workflows/jira-reference.yml
+      review-sink:
+        description: >-
+          Login of the account that stands in for a team's review request (osac-ci-bot in osac: see github-config, review
+          assignment of the maintainers team). Its request is taken off a pull request once a person who may approve has
+          approved the current commit. Empty: nothing is done
+        type: string
+        default: ""
       app-id:
         description: Id of the OSAC CI app
         type: string
@@ -608,6 +615,16 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ needs.decide.outputs.approved-number }}
           head-sha: ${{ needs.decide.outputs.approved-sha }}
+      # The review sink (an account that only stood in for the team's request, so nobody is picked or notified) has done its
+      # part once a person approved: take its request off. A failure here must not matter.
+      - uses: $/.github/actions/review-sink-clear
+        if: inputs.review-sink != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ needs.decide.outputs.approved-number }}
+          sink: ${{ inputs.review-sink }}
       # The control comment was written by the decision a moment ago, before auto-merge was on: show it now. A failure
       # here must not matter (the next refresh of the comment shows it too).
       - uses: $/.github/actions/manual-status

@@ -34,6 +34,7 @@ from osac_ci import (
     lockfacts,
     manual_run,
     queue_guard,
+    review_sink,
 )
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
@@ -534,6 +535,14 @@ def _parser() -> argparse.ArgumentParser:
     crun.add_argument("--min-age-minutes", type=int, default=clean_runs.MIN_AGE_MINUTES, help="only runs this old")
     crun.add_argument("--dry-run", action="store_true", help="list what would be deleted; delete nothing")
 
+    rsink = sub.add_parser(
+        "review-sink-clear",
+        help="take the review sink (the account assigned in a team's place) off a pull request a person approved",
+    )
+    rsink.add_argument("--repo", required=True, help="owner/name")
+    rsink.add_argument("--number", type=int, required=True, help="the pull request")
+    rsink.add_argument("--sink", required=True, help="the login of the account that is assigned in the team's place")
+
     mstat = sub.add_parser(
         "manual-status",
         help="rewrite only the status block of the control comment (for what changed after the comment was written)",
@@ -832,6 +841,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: e2e-suite-ended failed: {exc}", file=sys.stderr)
             return 3
         print(f"E2E suite: {said}")
+        return 0
+
+    if args.command == "review-sink-clear":
+        try:
+            said = review_sink.clear(build_client(), args.repo, args.number, args.sink)
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: review-sink-clear failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"Review sink: {said}")
         return 0
 
     if args.command == "e2e-finish":
