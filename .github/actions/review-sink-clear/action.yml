@@ -1,0 +1,49 @@
+---
+name: Take the review sink off an approved pull request
+description: >-
+  Remove the review request of the account that stands in for a team (the review sink, for example osac-ci-bot) once a
+  person who may approve has approved the current commit of the pull request. Called from the auto-merge job of
+  e2e-pr-decide.yml, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: pull requests write). This action never checks out the calling
+# repository, so it cannot run pull request code. Every input reaches the shell through an environment variable, never
+# through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (pull requests write)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: The pull request number
+    required: true
+  sink:
+    description: The login of the review sink
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Take the sink off
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        SINK: ${{ inputs.sink }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        case "$SINK" in
+          "" | *[!A-Za-z0-9-]*) echo "::error::The sink must be a login."; exit 1 ;;
+        esac
+        uv run --locked --project "$root" osac-ci review-sink-clear --repo "$REPO" --number "$NUMBER" --sink "$SINK" \
+          | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

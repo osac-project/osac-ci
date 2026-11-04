@@ -121,6 +121,18 @@ jobs:
 The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay` that does nothing on
 `pull_request_review` and on `pull_request` `ready_for_review`/`converted_to_draft`; finishing wakes `e2e-pr.yml`.
 
+### The review sink (`review-sink`, optional)
+
+A repository whose CODEOWNERS sends paths to a team can give GitHub's review assignment for that team one account to assign
+(the `maintainers` team and `osac-ci-bot` in osac: github-config sets it), so that nobody is picked and the team is not
+notified. That account approves nothing, so its request would stay pending on every pull request. Pass its login as
+`review-sink` to `e2e-pr-decide.yml` (empty by default: nothing is done) and the auto-merge job takes its request off as
+soon as the pull request has an approval that counts on its head commit (the same approval that turns auto-merge on: a
+person with write access, or CodeRabbit on a branch of the repository). Only that account's request goes; the team's request
+and the other people's stay. When the sink itself approved, there is nothing to remove (GitHub clears a request when the
+person asked reviews). A new commit that asks for a review again may assign the sink again, and the next approval takes it
+off again. The step is `continue-on-error`, uses the app's token (pull requests write) and never fails the job.
+
 ### Merge queue entries start no run
 
 The CI run of a merge queue entry is on a branch GitHub names `gh-readonly-queue/...`. It is no pull request, the decision
