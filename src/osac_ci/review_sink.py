@@ -34,20 +34,27 @@ def clear(client: GitHubClient, repo: str, number: int, sink: str) -> str:
     pull = get(client, f"/repos/{repo}/pulls/{number}")
     if pull.get("state") != "open":
         return "the pull request is not open: nothing to do"
-    requested = [str(r.get("login")) for r in pull.get("requested_reviewers") or [] if isinstance(r, Mapping)]
-    if sink not in requested:
+    # GitHub logins and repository names are case-insensitive: the account is found as GitHub spells it, and that
+    # spelling is the one used from here on.
+    asked = {
+        str(r.get("login")).casefold(): str(r.get("login"))
+        for r in pull.get("requested_reviewers") or []
+        if isinstance(r, Mapping)
+    }
+    if sink.casefold() not in asked:
         return f"{sink} is not asked to review: nothing to do"
+    sink = asked[sink.casefold()]
     head = pull.get("head")
     sha = check_sha(str(head.get("sha", ""))) if isinstance(head, Mapping) else ""
     author = str((pull.get("user") or {}).get("login", ""))
     head_repo = str(((head or {}).get("repo") or {}).get("full_name") or "") if isinstance(head, Mapping) else ""
-    fork = head_repo != repo
+    fork = head_repo.casefold() != repo.casefold()
     raw: list[Mapping[str, Any]] = [
         r for r in paginate(client, f"/repos/{repo}/pulls/{number}/reviews") if isinstance(r, Mapping)
     ]
     reviews = reviews_with_roles(client, repo, raw, author)
     approvers, _stale, _blocking = approvals_of(reviews, sha, author, fork)
-    others = [a for a in approvers if a != sink]
+    others = [a for a in approvers if a.casefold() != sink.casefold()]
     if not others:
         return f"nobody but {sink} has approved {sha[:7]}: it stays"
     response = client.request("DELETE", f"/repos/{repo}/pulls/{number}/requested_reviewers", body={"reviewers": [sink]})

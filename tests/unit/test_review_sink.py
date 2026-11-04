@@ -141,3 +141,17 @@ def test_the_decide_workflow_takes_the_sink_off_in_the_job_that_turns_auto_merge
     assert step["if"] == "inputs.review-sink != ''" and step["continue-on-error"] is True
     assert step["with"]["github-token"] == "${{ steps.app-token.outputs.token }}"
     assert step["with"]["sink"] == "${{ inputs.review-sink }}"
+
+
+def test_logins_and_repository_names_are_compared_without_regard_to_case() -> None:
+    gh = Gh(requested=("Osac-CI-Bot",), head_repo="O/R")  # GitHub spells the login and the repository its own way
+    gh.review("maintainer")
+    said = clear(gh, "osac-ci-bot")
+    assert gh.removed == [{"reviewers": ["Osac-CI-Bot"]}], "the request is removed under the spelling GitHub uses"
+    assert "removed the request of Osac-CI-Bot" in said
+    gh = Gh(requested=("Osac-CI-Bot",))
+    gh.review("OSAC-ci-bot", kind="Bot")  # the sink approving, spelled another way: nothing left to remove
+    assert "stays" in clear(gh, "osac-ci-bot") and gh.removed == []
+    gh = Gh(head_repo="O/R")
+    gh.review("coderabbitai[bot]", kind="Bot")  # the same repository, so not a fork: a bot's approval counts
+    assert "removed the request" in clear(gh)
