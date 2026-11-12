@@ -659,6 +659,36 @@ def finish_from_lines(
     return result
 
 
+def wait_for_rerun(
+    client: GitHubClient, repo: str, sha: str, suite_checks: Mapping[str, str], run_url: str, kind: str = "checks"
+) -> str:
+    """A suite that had ended is going again (GitHub's "Re-run" of its run, or a retest): the E2E check waits for it
+    (``Waiting: <suites> running again``), so the page does not keep saying ``Failed`` while the suite goes. The end of
+    the suite writes the answer (``sum_from_lines``).
+
+    Only a check that is a wait or a failure is changed: a run that is alive writes its own answer, a pass stays (a
+    suite run again for a flake does not take a pass away), and a commit whose E2E has not started has nothing to
+    change. Idempotent: a check that already says what would be written is left as it is."""
+    lines = validate_lines(suite_checks)
+    if not lines:
+        return "nothing to wait for: the E2E check is left as it is"
+    existing = latest_check(client, repo, sha, kind)
+    if existing is None:
+        return "the E2E has not started on this commit: the check is left as it is"
+    if existing.phase is Phase.RUNNING and existing.run_id is not None and run_is_alive(client, repo, existing.run_id):
+        return "a run that goes writes the E2E answer itself: the check is left as it is"
+    if existing.phase is Phase.DONE and existing.state == "success":
+        return "the E2E check passed: it is left as it is"
+    again = _running_again(client, repo, _latest_lines(client, repo, sha, lines), lines, None)
+    if not again:
+        return "no suite is going: the check is left as it is"
+    text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+    if existing.phase is Phase.WAITING and waiting_part(existing.description) == text:
+        return "the check already waits for it"
+    write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
+    return "waiting"
+
+
 RUNNING_SUFFIX = " running"  # the end of the text of a check that waits for suites that run as runs of their own
 
 

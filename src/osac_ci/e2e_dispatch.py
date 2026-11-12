@@ -7,8 +7,9 @@ again the moment it ends, by GitHub's own button (which waits for the whole run 
 
 What is verified on GitHub (see docs/RULES.md): the dispatch answers with the id of the run it started when it is
 asked to (``return_run_details``), the run starts within seconds, and ``workflow_run`` fires for it when it is
-requested and when it completes (also for a re-run and a cancel) *provided the run was not started by the workflow's
-own token*: the actor of such a run is github-actions[bot] and GitHub sends no event for its end, so the decision starts
+requested and when it completes (also for a cancel). A re-run sends ``in_progress`` for the new attempt and no
+``requested`` (see ``suite_restarted``). All of it holds *provided the run was not started by the workflow's own
+token*: the actor of such a run is github-actions[bot] and GitHub sends no event for its end, so the decision starts
 the suites with a token of the OSAC CI app. The
 workflow runs from the default branch, like the suites called by the decision, with the inputs the decision gives: the
 commit that was approved, nothing else.
@@ -35,6 +36,7 @@ from osac_ci.e2e_check import (
     sum_from_lines,
     tier_of,
     validate_lines,
+    wait_for_rerun,
 )
 from osac_ci.e2e_start import TIER, suite_checks_for_files, suites_of, tiered
 from osac_ci.e2e_suites_check import run_state
@@ -149,24 +151,23 @@ def dispatch_suites(
     return started, failed
 
 
-def suite_ended(
-    client: GitHubClient,
-    repo: str,
-    run_id: int,
-    title: str,
-    workflow_path: str,
-    policy: Policy,
-    *,
-    lines_kind: str = "statuses",
-) -> str:
-    """A suite that ran as a run of its own has ended (the ``workflow_run`` event of its workflow): its line gets the
-    result, then the E2E check is added up from the lines of the suites the pull request needs (see ``sum_from_lines``).
+@dataclass(frozen=True)
+class SuiteRun:
+    """A run that is, as far as the event can be believed, the run of a suite of a pull request."""
+
+    suite: str
+    check: str  # the line of the suite
+    number: int
+    sha: str
+    base: str  # the API path of the pull request
+
+
+def _suite_run(client: GitHubClient, repo: str, title: str, workflow_path: str, policy: Policy) -> SuiteRun | str:
+    """Check what a ``workflow_run`` event says about a suite that runs as a run of its own, or say why it is not one.
 
     What the event says is not believed on its own, since a person with write access can start the workflow with any
     inputs: the title must be the one the suite's workflow gives its run, the workflow must be the one the policy names
-    for that suite, and the commit must still be the head of the pull request. A line that a newer run of the suite
-    owns is left alone."""
-    repo = check_repo(repo)
+    for that suite, and the commit must still be the head of the pull request."""
     found = read_run_name(title)
     if found is None:
         return "not the run of a suite: nothing to do"
@@ -179,23 +180,90 @@ def suite_ended(
     pr = get(client, base)
     if str((pr.get("head") or {}).get("sha", "")) != sha:
         return "the pull request has moved on to another commit: nothing to do"
-    description, state, url, over = run_state(client, repo, run_id)
-    if not over:
-        return "the run has not ended: nothing to do"
-    current = newest_status(client, repo, sha, mine.check, lines_kind)
-    owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
-    if owner is not None and owner != run_id:
-        return "a newer run of the suite owns its line: nothing to do"
-    says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
-    post_status(client, repo, sha, mine.check, state, says, url, lines_kind)
+    return SuiteRun(suite, mine.check, number, sha, base)
+
+
+def _needed_lines(client: GitHubClient, run: SuiteRun, policy: Policy) -> dict[str, str]:
+    """The lines of the suites the pull request needs, this suite's line included."""
     files: list[str] = []
-    for raw in paginate(client, f"{base}/files"):
+    for raw in paginate(client, f"{run.base}/files"):
         files.append(str(raw["filename"]))
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
     needed = dict(suite_checks_for_files(policy, files))
-    needed.setdefault(mine.name, mine.check)
-    return sum_from_lines(client, repo, sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
+    needed.setdefault(run.suite, run.check)
+    return needed
+
+
+def suite_ended(
+    client: GitHubClient,
+    repo: str,
+    run_id: int,
+    title: str,
+    workflow_path: str,
+    policy: Policy,
+    *,
+    lines_kind: str = "statuses",
+) -> str:
+    """A suite that ran as a run of its own has ended (the ``workflow_run`` event of its workflow): its line gets the
+    result, then the E2E check is added up from the lines of the suites the pull request needs (see ``sum_from_lines``).
+    A line that a newer run of the suite owns is left alone."""
+    repo = check_repo(repo)
+    run = _suite_run(client, repo, title, workflow_path, policy)
+    if isinstance(run, str):
+        return run
+    description, state, url, over = run_state(client, repo, run_id)
+    if not over:
+        return "the run has not ended: nothing to do"
+    current = newest_status(client, repo, run.sha, run.check, lines_kind)
+    owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
+    if owner is not None and owner != run_id:
+        return "a newer run of the suite owns its line: nothing to do"
+    says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
+    post_status(client, repo, run.sha, run.check, state, says, url, lines_kind)
+    needed = _needed_lines(client, run, policy)
+    return sum_from_lines(client, repo, run.sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
+
+
+def suite_restarted(
+    client: GitHubClient,
+    repo: str,
+    run_id: int,
+    title: str,
+    workflow_path: str,
+    policy: Policy,
+    *,
+    lines_kind: str = "statuses",
+) -> str:
+    """A suite that had ended is going again (the ``workflow_run`` event ``in_progress`` of a second attempt, which is
+    what GitHub's "Re-run" sends: it sends no ``requested``): its line says it is going and links to the job of the new
+    attempt, and the E2E check waits for it (see ``wait_for_rerun``). The end of the attempt is added up by
+    ``suite_ended``. Idempotent: the event can come more than once (a job of the attempt starting), and one that finds
+    the line already saying what it would write changes nothing. A run that is already over, or whose line a newer run
+    of the suite owns, is left alone."""
+    repo = check_repo(repo)
+    run = _suite_run(client, repo, title, workflow_path, policy)
+    if isinstance(run, str):
+        return run
+    description, state, url, over = run_state(client, repo, run_id)
+    if over:
+        return "the run is already over: its end writes the result"
+    current = newest_status(client, repo, run.sha, run.check, lines_kind)
+    owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
+    if owner is not None and owner != run_id:
+        return "a newer run of the suite owns its line: nothing to do"
+    says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
+    already = (
+        current is not None
+        and owner == run_id
+        and current.get("state") == ("pending" if state == "waiting" else state)
+        and str(current.get("description") or "") == describe(says)
+        and str(current.get("target_url") or "") == url
+    )
+    if not already:
+        post_status(client, repo, run.sha, run.check, state, says, url, lines_kind)
+    needed = _needed_lines(client, run, policy)
+    return wait_for_rerun(client, repo, run.sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
 
 
 def verify_suite_inputs(client: GitHubClient, repo: str, number: int, sha: str, head_repo: str) -> tuple[str, str]:

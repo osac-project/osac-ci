@@ -22,6 +22,7 @@ an approver, which bots may be approved without a person, which checks are not "
 | `e2e-pr-decide.yml` | the repo's `e2e-pr.yml` | decides whether the E2E may start and keeps the `E2E` check; housekeeping: auto-merge for an approved pull request, deletes the finished review relay run, early comment run and the superseded Jira check runs |
 | `e2e-pr-track.yml` | `e2e-pr.yml`, next to the suites | one check per suite on the pull request |
 | `e2e-pr-finish.yml` | `e2e-pr.yml`, after the suites | records the result, also after a cancel |
+| `e2e-pr-rerun.yml` | the repo's `e2e-pr-rerun.yml` | a suite that runs as a run of its own and had ended is run again with GitHub's "Re-run": its line shows the new attempt and the `E2E` check waits for it, instead of both saying `Failed` until it ends |
 | `e2e-queue-plan.yml` | `e2e-queue.yml` | plans the suites of a merge queue entry; cancels superseded entries |
 | `e2e-queue-result.yml` | `e2e-queue.yml`, next to the suites | one job that looks after the queue entry: watches the suites and the other required checks of the commit (`CI`'s unit and integration tests, the Jira check), writes the required `E2E` check at once when one fails and stops everything that still runs |
 | `e2e-queue-finish.yml` | `e2e-queue.yml`, after the suites | the older way: writes the required `E2E` check once every suite has ended (use `e2e-queue-result.yml` instead) |
@@ -244,12 +245,33 @@ is still the sum of the lines of the suites the change needs. To make a suite on
   trust: the dispatch inputs `fork-pr-author` and `fork-pr-author-association` (the decision sends them, so the workflow
   must declare them) are ignored, and the suite gets the verified outputs `fork-author` and `fork-association` instead
   (empty for a commit of the repository itself);
-- the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end), drops
+- the caller adds the name of the workflow to the `workflow_run` list above (the decision workflow listens to its end) and to
+  the `workflows` list of its own `e2e-pr-rerun.yml` (below), drops
   the suite's job from `finish`'s `needs`, and passes `dispatched-runs` to `track` and `dispatched` and `all-suite-checks` to
   `finish` (without them a dispatched suite is started but not followed);
 - nothing to add to `decide`'s permissions: the runs are started with a token of the app (actions write, nothing else), not
   the workflow's own, because GitHub sends no `workflow_run` event for the end of a run that the workflow's own token
   started (its actor is `github-actions[bot]`), not even for a re-run of it by a person.
+GitHub's "Re-run" of a suite's run sends `workflow_run` `in_progress` for the new attempt and no `requested`, so it needs a
+workflow of its own in the caller (not the decision workflow: `in_progress` is also sent for every job of CI, and each would
+wake it). It lists the workflows of the suites, `types: [in_progress]` only, and calls `e2e-pr-rerun.yml`:
+```yaml
+name: E2E suite goes again
+on:  # zizmor: ignore[dangerous-triggers] -- no pull request code is checked out
+  workflow_run:
+    workflows: ["E2E VMaaS PR suite", "E2E CaaS PR suite"]  # the same names as the suites' workflows
+    types: [in_progress]
+permissions: {}
+jobs:
+  restarted:
+    permissions: {contents: read, pull-requests: write}
+    uses: osac-project/osac-ci/.github/workflows/e2e-pr-rerun.yml@<sha>  # <tag>
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+```
+The first attempt also sends `in_progress` (once per job that starts), which the workflow ignores; for a second attempt it
+writes the line (`Running`, linked to the job of the new attempt) and, when `E2E` is a wait or a failure, makes it
+`Waiting: <suite> running again`. A pass stays. The end of the attempt is heard as before by the `suite-ended` job.
 While a dispatched suite goes, the `E2E` check says `Waiting: <suite> running`; whoever sees the last suite end (the run that
 started them, or the end of the suite's run, heard by the `suite-ended` job of the decision workflow) writes the answer, and
 a suite that could not be started has a failed line saying so. A newer commit stops the dispatched runs of the older one.
