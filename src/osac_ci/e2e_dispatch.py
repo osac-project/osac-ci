@@ -183,15 +183,17 @@ def _suite_run(client: GitHubClient, repo: str, title: str, workflow_path: str, 
     return SuiteRun(suite, mine.check, number, sha, base)
 
 
-def _needed_lines(client: GitHubClient, run: SuiteRun, policy: Policy) -> dict[str, str]:
-    """The lines of the suites the pull request needs, this suite's line included."""
+def _needed_lines(client: GitHubClient, run: SuiteRun, policy: Policy, *, with_own: bool = True) -> dict[str, str]:
+    """The lines of the suites the pull request needs. This suite's own line is added when ``with_own`` (it ended: its
+    result is part of the sum, even for a suite the change does not need, which a person ran by hand)."""
     files: list[str] = []
     for raw in paginate(client, f"{run.base}/files"):
         files.append(str(raw["filename"]))
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
     needed = dict(suite_checks_for_files(policy, files))
-    needed.setdefault(run.suite, run.check)
+    if with_own:
+        needed.setdefault(run.suite, run.check)
     return needed
 
 
@@ -262,7 +264,9 @@ def suite_restarted(
     )
     if not already:
         post_status(client, repo, run.sha, run.check, state, says, url, lines_kind)
-    needed = _needed_lines(client, run, policy)
+    needed = _needed_lines(client, run, policy, with_own=False)
+    if run.suite not in needed:
+        return "the change does not need this suite: only its line shows the new attempt"
     return wait_for_rerun(client, repo, run.sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
 
 
