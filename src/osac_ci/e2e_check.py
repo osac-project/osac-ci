@@ -666,9 +666,9 @@ def wait_for_rerun(
     (``Waiting: <suites> running again``), so the page does not keep saying ``Failed`` while the suite goes. The end of
     the suite writes the answer (``sum_from_lines``).
 
-    Only a check that is a wait or a failure is changed: a run that is alive writes its own answer, a pass stays (a
-    suite run again for a flake does not take a pass away), and a commit whose E2E has not started has nothing to
-    change. Idempotent: a check that already says what would be written is left as it is."""
+    Only a failure, or a wait for suites, is changed: a run that is alive writes its own answer, a pass stays (a suite
+    run again for a flake does not take a pass away), a wait for something else (an approval, the CI) keeps its reason,
+    and a commit whose E2E has not started has nothing to change. Idempotent: a check that already says what would be written is left as it is."""
     lines = validate_lines(suite_checks)
     if not lines:
         return "nothing to wait for: the E2E check is left as it is"
@@ -679,6 +679,8 @@ def wait_for_rerun(
         return "a run that goes writes the E2E answer itself: the check is left as it is"
     if existing.phase is Phase.DONE and existing.state == "success":
         return "the E2E check passed: it is left as it is"
+    if existing.phase is Phase.WAITING and not _waits_for_suites(existing):
+        return "the E2E check waits for something else (an approval, the CI): it is left as it is"
     again = _running_again(client, repo, _latest_lines(client, repo, sha, lines), lines, None)
     if not again:
         return "no suite is going: the check is left as it is"
