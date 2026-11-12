@@ -98,6 +98,18 @@ def test_a_check_that_passed_stays_and_the_line_still_shows_the_new_attempt() ->
     assert gh.line(VM)[:2] == ("in_progress", "Running")
 
 
+@pytest.mark.parametrize(
+    "waiting", ["Waiting for an approval: nobody has approved the head commit", "By hand: vmaas running"]
+)
+def test_a_check_that_waits_for_something_else_keeps_its_reason(waiting: str) -> None:
+    gh = GhWithJobs()
+    gh.add(VM, "completed", "failure", RUN_VM, "Failed")
+    gh.add("E2E", "in_progress", None, DECISION, waiting)
+    restarted(gh)
+    assert gh.check() == ("in_progress", waiting)
+    assert gh.line(VM)[:2] == ("in_progress", "Running")
+
+
 def test_the_claim_of_a_run_that_goes_is_left_alone() -> None:
     gh = GhWithJobs()
     gh.add(CA, "completed", "success", RUN_CA, "Passed")
