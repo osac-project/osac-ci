@@ -668,7 +668,8 @@ def wait_for_rerun(
 
     Only a failure, or a wait for suites, is changed: a run that is alive writes its own answer, a pass stays (a suite
     run again for a flake does not take a pass away), a wait for something else (an approval, the CI) keeps its reason,
-    and a commit whose E2E has not started has nothing to change. Idempotent: a check that already says what would be written is left as it is."""
+    and a commit whose E2E has not started has nothing to change. Idempotent: a check that already says what would be
+    written is left as it is."""
     lines = validate_lines(suite_checks)
     if not lines:
         return "nothing to wait for: the E2E check is left as it is"
