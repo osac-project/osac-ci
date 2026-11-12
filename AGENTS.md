@@ -24,7 +24,7 @@ Two systems share the repository:
 
 | Piece | Where |
 |---|---|
-| Shared workflows (what callers `uses:`) | `.github/workflows/e2e-pr-{comment,decide,track,finish}.yml`, `e2e-queue-{plan,result}.yml`, `bot-sweep.yml`. `e2e-queue-finish.yml` stays for callers on old pins. |
+| Shared workflows (what callers `uses:`) | `.github/workflows/e2e-pr-{comment,decide,track,finish,rerun}.yml`, `e2e-queue-{plan,result}.yml`, `bot-sweep.yml`. `e2e-queue-finish.yml` stays for callers on old pins. |
 | Composite actions | `.github/actions/*` (reached from a shared workflow as `uses: $/.github/actions/<name>`, the called workflow's own repository at the pinned commit) |
 | E2E start decision (pure) | `src/osac_ci/e2e_start.py` (`decide`, `Decision`, `Action`) |
 | The `E2E` check, suite lines, hand-run sums | `e2e_check.py`, `e2e_suites_check.py`, `suite_lines.py` |

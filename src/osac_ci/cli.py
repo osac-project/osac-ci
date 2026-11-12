@@ -589,6 +589,17 @@ def _parser() -> argparse.ArgumentParser:
     cstr.add_argument("--number", type=int, required=True, help="the pull request")
     cstr.add_argument("--workflow", required=True, help="the entry workflow file, such as autopilot.yml")
 
+    erst = sub.add_parser(
+        "e2e-suite-restarted",
+        help="a suite that had ended is going again (a re-run): show it on its line and make the E2E check wait for it",
+    )
+    erst.add_argument("--policy", type=Path, required=True)
+    erst.add_argument("--repo", required=True, help="owner/name")
+    erst.add_argument("--run-id", type=int, required=True, help="the run of the suite that goes again")
+    erst.add_argument("--title", required=True, help="the name of that run (its display title)")
+    erst.add_argument("--workflow-path", required=True, help="the workflow file of that run (.github/workflows/...)")
+    erst.add_argument("--lines-kind", choices=e2e_check.KINDS, default="statuses")
+
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
@@ -1085,6 +1096,23 @@ def main(argv: list[str] | None = None) -> int:
             # the answer of the CI check is news for the E2E decision (a pass starts it, a failure holds it back)
             wake = number is not None and summed in ("success", "failure")
             args.json_file.write_text(json.dumps({"number": number, "wake": wake}), encoding="utf-8")
+        return 0
+
+    if args.command == "e2e-suite-restarted":
+        try:
+            said = e2e_dispatch.suite_restarted(
+                build_client(),
+                args.repo,
+                args.run_id,
+                args.title,
+                args.workflow_path,
+                load_policy(args.policy),
+                lines_kind=args.lines_kind,
+            )
+        except (GitHubError, KeyError, PolicyError, ValueError) as exc:
+            print(f"error: e2e-suite-restarted failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"E2E suite: {said}")
         return 0
 
     if args.command == "e2e-finish":
