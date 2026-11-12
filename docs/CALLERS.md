@@ -266,6 +266,8 @@ jobs:
   restarted:
     permissions: {contents: read, pull-requests: write}
     uses: osac-project/osac-ci/.github/workflows/e2e-pr-rerun.yml@<sha>  # <tag>
+    with:
+      lines-kind: statuses  # the same value as decide, track and finish of e2e-pr.yml (the default is checks)
     secrets:
       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
 ```

@@ -34,8 +34,41 @@ class GhWithJobs(Gh):
         return (last.get("conclusion") or last["status"], last["output"]["title"], last["output"]["summary"])
 
 
-def restarted(gh: Gh, title: str = VM_TITLE, path: str = VM_FILE) -> str:
-    return e2e_dispatch.suite_restarted(gh, "o/r", RUN_VM, title, path, POLICY, lines_kind="checks")  # type: ignore[arg-type]
+class GhWithStatuses(GhWithJobs):
+    """The same, with the lines of the suites kept as commit statuses (newest first, as GitHub lists them), which is how
+    osac writes them; the E2E check stays a check run."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.statuses: list[dict[str, Any]] = []
+
+    def status(self, context: str, state: str, run: int, text: str) -> None:
+        self.statuses.insert(
+            0,
+            {
+                "context": context, "state": state, "description": text, "creator": {"login": "osac-ci[bot]"},
+                "target_url": f"https://github.com/o/r/actions/runs/{run}/job/1",
+                "created_at": f"2026-10-10T10:{len(self.statuses):02d}:00Z",
+            },
+        )  # fmt: skip
+
+    def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
+        if method == "GET" and path.endswith("/statuses"):
+            return Response(200, self.statuses, {})
+        if method == "POST" and path == f"/repos/o/r/statuses/{HEAD}":
+            self.writes += 1
+            self.status(body["context"], body["state"], RUN_VM, body.get("description", ""))
+            self.statuses[0]["target_url"] = body.get("target_url", "")
+            return Response(201, {}, {})
+        return super().request(method, path, params=params, body=body)
+
+    def line_status(self, name: str) -> tuple[str, str, str]:
+        last = next(s for s in self.statuses if s["context"] == name)
+        return last["state"], last["description"], last["target_url"]
+
+
+def restarted(gh: Gh, title: str = VM_TITLE, path: str = VM_FILE, kind: str = "checks") -> str:
+    return e2e_dispatch.suite_restarted(gh, "o/r", RUN_VM, title, path, POLICY, lines_kind=kind)  # type: ignore[arg-type]
 
 
 def failed_before(gh: GhWithJobs, e2e: tuple[str, str] = ("failure", "Failed: vmaas")) -> None:
@@ -53,6 +86,20 @@ def test_a_rerun_shows_on_the_line_and_the_failed_check_waits_for_it() -> None:
     status, title, summary = gh.line(VM)
     assert (status, title) == ("in_progress", "Running") and JOB in summary  # the job of the new attempt, not the first
     assert gh.check() == ("in_progress", "Waiting: vmaas running again")
+
+
+def test_a_rerun_with_the_lines_as_commit_statuses_shows_the_new_attempt_and_waits() -> None:
+    gh = GhWithStatuses()
+    gh.status(CA, "success", RUN_CA, "Passed")
+    gh.status(VM, "failure", RUN_VM, "Failed")  # the first attempt, linked to its own job
+    gh.add("E2E", "completed", "failure", DECISION, "Failed: vmaas")
+    gh.runs[DECISION] = ("completed", "failure")
+    restarted(gh, kind="statuses")
+    assert gh.line_status(VM) == ("pending", "Running", JOB)
+    assert gh.check() == ("in_progress", "Waiting: vmaas running again")
+    writes = gh.writes
+    restarted(gh, kind="statuses")
+    assert gh.writes == writes
 
 
 def test_the_second_event_of_the_same_attempt_changes_nothing() -> None:
@@ -160,6 +207,15 @@ def test_what_is_not_the_run_of_a_suite_is_ignored(title: str, path: str) -> Non
     writes = gh.writes
     restarted(gh, title, path)
     assert gh.writes == writes
+
+
+def test_a_suite_the_change_does_not_need_shows_its_line_and_leaves_the_check_alone() -> None:
+    gh = GhWithJobs()
+    failed_before(gh, ("failure", "Failed: caas"))
+    gh.files = ["README.md"]  # the policy's filter for the suites is **/*.go
+    said = restarted(gh)
+    assert gh.line(VM)[:2] == ("in_progress", "Running")
+    assert gh.check() == ("failure", "Failed: caas") and "does not need this suite" in said
 
 
 def test_without_an_e2e_check_only_the_line_is_written() -> None:
