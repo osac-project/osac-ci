@@ -20,6 +20,22 @@ def _code_list(values: Sequence[str]) -> str:
     return ", ".join(f"`{v}`" for v in values)
 
 
+def _fork_rule(bots_on_member_forks: bool) -> str:
+    """What a pull request from a fork needs, as the end of the sentence about the trusted bots."""
+    if bots_on_member_forks:
+        return (
+            "those bots count only when it is the **own fork of a member of the organization**\n"
+            "  (the head repository belongs to the author, and GitHub calls the author a member or the owner).\n"
+            "  The author of a fork controls what CodeRabbit reads, so a fork of anyone else needs a person with\n"
+            "  write access, and the suites refuse an outsider's fork without the `ok-to-test` label whatever\n"
+            "  the approval says."
+        )
+    return (
+        "they never count: the author of a fork controls what CodeRabbit reads, so a fork needs a person\n"
+        "  with write access, and the run starts only after that approval."
+    )
+
+
 def _bullets(values: Sequence[str]) -> str:
     return "\n".join(f"- `{v}`" for v in values)
 
@@ -70,8 +86,7 @@ only from:
 - a person whose **effective permission on the repository** is one of: {_code_list(approval.write_permissions)}.
   Being a member of the organization, or a collaborator with `triage` or `read` access, is not enough.
 - on a pull request from a **branch of the repository itself**, also these bots: {_code_list(approval.trusted_bots)}.
-  Never on a pull request from a **fork**: the author of a fork controls what CodeRabbit reads, so a fork needs a person
-  with write access, and the run starts only after that approval.
+  On a pull request from a **fork** {_fork_rule(approval.bots_count_on_member_forks)}
 
 The author cannot approve their own pull request. A push after the approval dismisses it; a rebase that changes nothing
 of the pull request's own changes keeps it, a rebase with conflict resolution drops it.

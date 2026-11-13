@@ -39,8 +39,9 @@ from osac_ci.policy import Policy
 from osac_ci.suite_lines import suite_line_runs, suite_line_runs_if_readable
 
 # The rules below are read from policy/flow.yml (see osac_ci.flow), where each one is explained and pinned by a test:
-# TRUSTED_BOTS  bots whose approval counts on a branch of the repository itself, never on a fork (the author of a fork
-#               controls what CodeRabbit reads, and the approval starts a run of that code with secrets);
+# TRUSTED_BOTS  bots whose approval counts on a branch of the repository itself, and on a fork only when it is the own
+#               fork of a member of the organization and BOTS_ON_MEMBER_FORKS says so (the author of a fork controls
+#               what CodeRabbit reads, and the approval starts a run of that code with secrets);
 # WRITE_PERMISSIONS  the effective repository roles that make a person's approval count;
 # NOT_CHEAP  required checks that say nothing about the quality of the change (the E2E cannot wait for its own result;
 #            the OSAC CI check, a verdict on the others, is already left out by ``required_contexts``).
@@ -51,6 +52,8 @@ _FLOW = flow()
 TRUSTED_BOTS = _FLOW.trusted_bots
 WRITE_PERMISSIONS = _FLOW.write_permissions
 NOT_CHEAP = _FLOW.not_cheap
+BOTS_ON_MEMBER_FORKS = _FLOW.bots_count_on_member_forks
+MEMBER_ASSOCIATIONS = frozenset({"MEMBER", "OWNER"})  # what GitHub calls the author of a member's pull request
 
 
 class Action(StrEnum):
@@ -120,8 +123,10 @@ class Inputs:
     # Legacy commit statuses (context -> state) on the head commit. Read only when a cheap requirement names no app, as
     # only such a requirement can be met by a status.
     statuses: Mapping[str, str] = field(default_factory=dict)
-    # The head commit is in a fork (or in a repository that no longer exists): no bot approval counts.
+    # The head commit is in a fork (or in a repository that no longer exists): no bot approval counts, unless it is the
+    # own fork of a member of the organization (``member_fork``) and the rules say that a bot counts there.
     fork: bool = False
+    member_fork: bool = False
     # Suites a member of the organization asked for by hand, through the control comment, and who asked. The caller has
     # already checked the member and the comment; the decision only checks that each suite exists and is not running.
     requested: tuple[str, ...] = ()
@@ -187,11 +192,36 @@ def _latest_reviews(reviews: Iterable[Review]) -> dict[str, Review]:
     return latest
 
 
-def _qualifies(review: Review, author: str, fork: bool) -> bool:
+def member_fork(pr: Mapping[str, Any], repo: str) -> bool:
+    """Whether the head commit is in the own fork of the pull request's author, who is a member of the organization, and
+    the rules let a bot approval count there (``approval.bots_count_on_member_forks``). The owner of the head repository
+    must be the author, so a fork owned by another account, or by an organization, does not qualify; a deleted fork
+    has no repository to read. The association is the one GitHub gives the author, not something the pull request
+    says."""
+    if not BOTS_ON_MEMBER_FORKS:
+        return False
+    head = pr.get("head")
+    source = head.get("repo") if isinstance(head, Mapping) else None
+    user = pr.get("user")
+    if not isinstance(source, Mapping) or not isinstance(user, Mapping):
+        return False
+    owner = source.get("owner")
+    owner_login = str(owner.get("login", "")) if isinstance(owner, Mapping) else ""
+    author = str(user.get("login", ""))
+    return (
+        bool(owner_login)
+        and owner_login.lower() == author.lower()
+        and str(source.get("full_name", "")).lower() != repo.lower()
+        and user.get("type") == "User"
+        and pr.get("author_association") in MEMBER_ASSOCIATIONS
+    )
+
+
+def _qualifies(review: Review, author: str, fork: bool, member_fork: bool = False) -> bool:
     if review.user == author:
         return False
     if review.user in TRUSTED_BOTS:
-        return not fork
+        return not fork or member_fork
     if fork and review.user_type != "User":
         # on a fork only a person counts, not some other app that happens to hold write access
         return False
@@ -201,7 +231,7 @@ def _qualifies(review: Review, author: str, fork: bool) -> bool:
 def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """(approvers on the head commit, approvals left on an older commit, people whose latest review requests changes).
     Only people who may approve are listed; CodeRabbit never blocks (its changes-requested review is advice)."""
-    return approvals_of(inputs.reviews, inputs.head_sha, inputs.author, inputs.fork)
+    return approvals_of(inputs.reviews, inputs.head_sha, inputs.author, inputs.fork, inputs.member_fork)
 
 
 def bot_blockers(reviews: Iterable[Review]) -> tuple[str, ...]:
@@ -216,7 +246,7 @@ def bot_blockers(reviews: Iterable[Review]) -> tuple[str, ...]:
 
 
 def approvals_of(
-    reviews: Iterable[Review], head_sha: str, author: str, fork: bool
+    reviews: Iterable[Review], head_sha: str, author: str, fork: bool, member_fork: bool = False
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """``approvals`` for the given reviews (each with the reviewer's role in ``permission``): the one rule that the
     decision and the status of the control comment share."""
@@ -224,7 +254,7 @@ def approvals_of(
     stale: list[str] = []
     blocking: list[str] = []
     for user, review in sorted(_latest_reviews(reviews).items()):
-        if not _qualifies(review, author, fork):
+        if not _qualifies(review, author, fork, member_fork):
             continue
         if review.state == "CHANGES_REQUESTED" and user not in TRUSTED_BOTS:
             blocking.append(user)
@@ -422,7 +452,7 @@ def decide(inputs: Inputs) -> Decision:
             reason=(
                 f"no approval from a person with write access on the head commit{extra} "
                 "(CodeRabbit's approval does not count for a pull request from a fork)"
-                if inputs.fork
+                if inputs.fork and not inputs.member_fork
                 else f"no approval from a person with write access or CodeRabbit on the head commit{extra}"
             ),
             suites=names,
@@ -715,6 +745,7 @@ def fetch_inputs(
         filters=policy.path_filters.filters,
         statuses=statuses,
         fork=str(((pr["head"].get("repo")) or {}).get("full_name", "")).lower() != repo.lower(),
+        member_fork=member_fork(pr, repo),
         requested=requested,
         requested_by=requested_by,
         request_refused=request_refused,
@@ -723,13 +754,15 @@ def fetch_inputs(
     )
 
 
-def unqualified_approvers(reviews: Iterable[Review], author: str, fork: bool) -> tuple[str, ...]:
-    """People whose latest review is an approval that does not count: the author, CodeRabbit on a fork, someone without
-    write access."""
+def unqualified_approvers(
+    reviews: Iterable[Review], author: str, fork: bool, member_fork: bool = False
+) -> tuple[str, ...]:
+    """People whose latest review is an approval that does not count: the author, CodeRabbit on a fork that is not a
+    member's own, someone without write access."""
     return tuple(
         user
         for user, review in sorted(_latest_reviews(reviews).items())
-        if review.state == "APPROVED" and not _qualifies(review, author, fork)
+        if review.state == "APPROVED" and not _qualifies(review, author, fork, member_fork)
     )
 
 

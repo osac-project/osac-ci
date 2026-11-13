@@ -19,6 +19,13 @@ approval:
   trusted_bots:
     - coderabbitai[bot]
     - osac-ci[bot]
+  # Whether those bots also count on a pull request from the fork of a member of the organization: the head repository
+  # is the author's own fork and GitHub says the author is a member (or the owner) of the organization. Almost every pull
+  # request of the repositories is of that kind, so without it CodeRabbit's approval would never start an E2E. A fork of
+  # anyone else (an outside contributor, or a fork owned by another account) still needs a person with write access, and
+  # the suites refuse an outsider's fork without the `ok-to-test` label (authorize-fork-pr in osac-test-infra) whatever
+  # the approval says. Set it to `false` to go back to a person for every fork.
+  bots_count_on_member_forks: true
   # What a person's approval needs, read from their EFFECTIVE permission on the repository (not from their association
   # with the organization: a member or a collaborator can have read or triage access only). Only these three count,
   # because an approval starts a run of the pull request's code with secrets. "triage" and "read" are rejected.

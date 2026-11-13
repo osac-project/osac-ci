@@ -13,6 +13,7 @@ from osac_ci.flow import FLOW_FILE_ENV, FlowError, default_flow_path, extend, fl
 # changing this test fails the build, so a change of who may approve or what a bot may approve is always deliberate.
 PINNED_TRUSTED_BOTS = frozenset({"coderabbitai[bot]", "osac-ci[bot]"})
 PINNED_WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
+PINNED_BOTS_ON_MEMBER_FORKS = True
 PINNED_NOT_CHEAP = frozenset({"check-labels", "jira-reference", "E2E"})
 PINNED_BOTS = ("dependabot[bot]", "red-hat-konflux-kflux-prd-rh02[bot]")
 PINNED_COMMITTER = "web-flow"
@@ -37,6 +38,7 @@ version: 1
 approval:
   trusted_bots: ['coderabbitai[bot]']
   write_permissions: [admin, write]
+  bots_count_on_member_forks: true
 checks:
   not_cheap: [E2E]
 bot_approve:
@@ -58,6 +60,7 @@ def test_the_rules_file_holds_exactly_the_rules_that_were_hard_coded() -> None:
     rules = flow()
     assert rules.trusted_bots == PINNED_TRUSTED_BOTS
     assert rules.write_permissions == PINNED_WRITE_PERMISSIONS
+    assert rules.bots_count_on_member_forks is PINNED_BOTS_ON_MEMBER_FORKS
     assert rules.not_cheap == PINNED_NOT_CHEAP
     assert rules.bot_approve.bots == PINNED_BOTS
     assert rules.bot_approve.committer == PINNED_COMMITTER
@@ -68,6 +71,7 @@ def test_the_rules_file_holds_exactly_the_rules_that_were_hard_coded() -> None:
 def test_the_decisions_read_the_rules_from_the_file() -> None:
     assert e2e_start.TRUSTED_BOTS == PINNED_TRUSTED_BOTS
     assert e2e_start.WRITE_PERMISSIONS == PINNED_WRITE_PERMISSIONS
+    assert e2e_start.BOTS_ON_MEMBER_FORKS is PINNED_BOTS_ON_MEMBER_FORKS
     assert e2e_start.NOT_CHEAP == PINNED_NOT_CHEAP
     assert bot_approve.BOTS == PINNED_BOTS
     assert bot_approve.GITHUB_COMMITTER == PINNED_COMMITTER
@@ -102,6 +106,8 @@ def test_the_environment_can_name_another_file(monkeypatch: pytest.MonkeyPatch, 
         ("trusted_bots: ['coderabbitai[bot]']", "trusted_bots: [alice]", "only bot accounts"),
         ("write_permissions: [admin, write]", "write_permissions: [admin, triage]", "only"),
         ("write_permissions: [admin, write]", "write_permissions: [read]", "only"),
+        ("bots_count_on_member_forks: true", "bots_count_on_member_forks: maybe", "invalid"),
+        ("  bots_count_on_member_forks: true\n", "", "invalid"),  # the rule must be stated, never assumed
         ("not_cheap: [E2E]", "not_cheap: [E2E, E2E]", "must not repeat"),
         ("bots: ['dependabot[bot]']", "bots: [dependabot]", "only bot accounts"),
         ("dependency_file_names: [go.mod]", "dependency_file_names: [src/go.mod]", "base names"),
@@ -146,6 +152,7 @@ def test_nothing_to_add_leaves_the_rules_as_they_are() -> None:
     [
         {"approval": {"trusted_bots": ["mallory[bot]"]}},
         {"approval": {"write_permissions": ["read"]}},
+        {"approval": {"bots_count_on_member_forks": True}},
         {"bot_approve": {"dependency_file_patterns": ["*.sh"]}},
         {"bot_approve": {"bots": ["mallory[bot]"]}},
         {"checks": {"not_cheap": []}},

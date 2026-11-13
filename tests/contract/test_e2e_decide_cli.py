@@ -107,6 +107,40 @@ def test_coderabbit_does_not_approve_a_pull_request_from_a_fork_or_a_deleted_for
     assert "does not count for a pull request from a fork" in d.reason
 
 
+def member_fork_pr(**changes: Any) -> dict[str, Any]:
+    pr = {
+        "user": {"login": "alice", "type": "User"},
+        "author_association": "MEMBER",
+        "head": {"sha": SHA, "repo": {"full_name": "alice/app", "owner": {"login": "alice"}}},
+    }
+    return {**pr, **changes}
+
+
+def test_coderabbit_approves_the_own_fork_of_a_member() -> None:
+    fake = world(pr=member_fork_pr(), reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    assert inputs.fork and inputs.member_fork
+    assert decide(inputs).action is Action.START
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"author_association": "CONTRIBUTOR"},  # an outside contributor
+        {
+            "head": {"sha": SHA, "repo": {"full_name": "mallory/app", "owner": {"login": "mallory"}}}
+        },  # another account's fork
+        {"head": {"sha": SHA, "repo": None}},  # a deleted fork
+    ],
+)
+def test_coderabbit_does_not_approve_a_fork_of_anyone_else(changes: dict[str, Any]) -> None:
+    fake = world(pr=member_fork_pr(**changes), reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    assert inputs.fork and not inputs.member_fork
+    d = decide(inputs)
+    assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
+
+
 def test_the_repository_name_is_compared_without_regard_to_case() -> None:
     pr = {"head": {"sha": SHA, "repo": {"full_name": "EXAMPLE/App"}}}
     assert not fetch_inputs(world(pr=pr), POLICY, REPO, 7).fork

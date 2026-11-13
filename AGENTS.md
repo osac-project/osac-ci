@@ -145,7 +145,8 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
   must keep the shape the monitoring expects (`e2e-<suite>-full-install`), so a tier is a workflow input, not a new job
   name.
 - **Forks:** only a person with write access counts as an approver on a fork pull request; CodeRabbit and `osac-ci[bot]`
-  do not. The automatic start runs a suite of a fork only on the approved commit; an organization member can also start
+  count only on the own fork of a member of the organization (`approval.bots_count_on_member_forks` in `policy/flow.yml`:
+  the head repository is owned by the author, GitHub calls the author MEMBER or OWNER), never on a fork of anyone else. The automatic start runs a suite of a fork only on the approved commit; an organization member can also start
   suites of a fork pull request by hand, whatever its approval state (on its head commit).
 - **GitHub strips `style` and scripts from comments.** The status panel uses `<img>` icons from `docs/icons` (SVG; the
   running icon animates itself) and plain markdown. Keep an `alt` text.

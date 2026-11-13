@@ -35,6 +35,7 @@ from osac_ci.e2e_start import (
     approvals_seen,
     bot_blockers,
     line_state,
+    member_fork,
     reviews_with_roles,
     reviews_with_roles_unread,
     run_of_url,
@@ -822,14 +823,14 @@ def check_view(
 
 
 def approval_of(
-    reviews: Sequence[Review], head: str, author: str, fork: bool
+    reviews: Sequence[Review], head: str, author: str, fork: bool, member_fork: bool = False
 ) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     """Where the approval of the pull request stands on ``head``, by the rule of the decision: who may approve,
-    CodeRabbit never on a fork and never blocking, the author never. Returns the kind (changes: someone who may
-    approve asks for changes; approved: an approval on this commit; older: an approval of an older commit; waiting),
-    the logins the kind is about, and the people whose approval does not count."""
-    approvers, stale, blocking = approvals_of(reviews, head, author, fork)
-    ignored = unqualified_approvers(reviews, author, fork)
+    CodeRabbit never on a fork unless it is a member's own, and never blocking, the author never. Returns the kind
+    (changes: someone who may approve asks for changes; approved: an approval on this commit; older: an approval of an
+    older commit; waiting), the logins the kind is about, and the people whose approval does not count."""
+    approvers, stale, blocking = approvals_of(reviews, head, author, fork, member_fork)
+    ignored = unqualified_approvers(reviews, author, fork, member_fork)
     for kind, found in (("changes", blocking), ("approved", approvers), ("older", stale)):
         if found:
             return kind, found, ignored
@@ -847,15 +848,16 @@ def _base_of(pr: Mapping[str, object]) -> str:
     return str(base.get("ref", "")) if isinstance(base, Mapping) else ""
 
 
-def _facts(pr: Mapping[str, object], repo: str) -> tuple[str, str, bool]:
-    """The head commit, the author and whether the commit is a fork's, from the pull request."""
+def _facts(pr: Mapping[str, object], repo: str) -> tuple[str, str, bool, bool]:
+    """The head commit, the author, whether the commit is a fork's and whether that fork is a member's own, from the
+    pull request."""
     head = pr.get("head")
     sha = str(head.get("sha", "")) if isinstance(head, Mapping) else ""
     user = pr.get("user")
     author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
     source = head.get("repo") if isinstance(head, Mapping) else None
     fork = str(source.get("full_name", "") if isinstance(source, Mapping) else "").lower() != repo.lower()
-    return sha, author, fork
+    return sha, author, fork, member_fork(pr, repo)
 
 
 def pr_status(
@@ -869,9 +871,9 @@ def pr_status(
     """The status of the pull request from its own data, its reviews (with the reviewers' roles, read the way the
     decision reads them) and the check runs of the head commit. ``roles_known`` False when the roles could not be read:
     the approval row then says what the reviews show and that it was not checked, never "approved"."""
-    sha, author, fork = _facts(pr, repo)
+    sha, author, fork, member = _facts(pr, repo)
     if roles_known:
-        approval, approvers, ignored = approval_of(reviews, sha, author, fork)
+        approval, approvers, ignored = approval_of(reviews, sha, author, fork, member)
     else:
         approval, approvers, ignored = "unchecked", approvals_seen(reviews, sha), ()
     auto = pr.get("auto_merge")
@@ -1032,8 +1034,8 @@ def status_of(
         reviews = reviews_with_roles(client, repo, raw, author)
         status = pr_status(pr, reviews, runs, repo=repo)
         if _closed_of(pr) == "":
-            sha, writer, fork = _facts(pr, repo)
-            approvers, _, _ = approvals_of(reviews, sha, writer, fork)
+            sha, writer, fork, member = _facts(pr, repo)
+            approvers, _, _ = approvals_of(reviews, sha, writer, fork, member)
             owners, checked = code_owner_groups(client, repo, number, pr, approvers)
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
