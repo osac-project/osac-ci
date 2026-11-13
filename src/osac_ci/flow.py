@@ -48,6 +48,7 @@ def _non_empty(values: tuple[str, ...], what: str) -> tuple[str, ...]:
 class Approval(_Strict):
     trusted_bots: tuple[str, ...]
     write_permissions: tuple[str, ...]
+    bots_count_on_member_forks: bool
 
     @field_validator("trusted_bots")
     @classmethod
@@ -150,6 +151,10 @@ class Flow(_Strict):
     @property
     def write_permissions(self) -> frozenset[str]:
         return frozenset(self.approval.write_permissions)
+
+    @property
+    def bots_count_on_member_forks(self) -> bool:
+        return self.approval.bots_count_on_member_forks
 
     @property
     def not_cheap(self) -> frozenset[str]:

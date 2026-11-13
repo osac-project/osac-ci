@@ -15,6 +15,7 @@ from osac_ci.e2e_start import (
     applicable_suites,
     approvals,
     decide,
+    member_fork,
     render_markdown,
     to_json,
 )
@@ -194,6 +195,70 @@ def test_coderabbit_and_the_osac_ci_bot_do_not_count_on_a_pull_request_from_a_fo
         d = decide(inputs(fork=True, reviews=(review(bot, assoc="NONE"),)))
         assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
         assert "CodeRabbit's approval does not count for a pull request from a fork" in d.reason
+
+
+def test_coderabbit_and_the_osac_ci_bot_count_on_the_own_fork_of_a_member() -> None:
+    for bot in ("coderabbitai[bot]", "osac-ci[bot]"):
+        d = decide(inputs(fork=True, member_fork=True, reviews=(review(bot, assoc="NONE"),)))
+        assert d.action is Action.START and d.approvers == (bot,)
+
+
+def test_another_app_does_not_count_on_the_own_fork_of_a_member() -> None:
+    d = decide(
+        inputs(
+            fork=True,
+            member_fork=True,
+            reviews=(Review("some-app[bot]", "APPROVED", "NONE", HEAD, user_type="Bot", permission="write"),),
+        )
+    )
+    assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
+
+
+def test_the_wait_on_the_own_fork_of_a_member_says_that_coderabbit_counts() -> None:
+    d = decide(inputs(fork=True, member_fork=True, reviews=()))
+    assert d.action is Action.WAIT_APPROVAL
+    assert "or CodeRabbit" in d.reason and "does not count" not in d.reason
+
+
+def test_the_author_of_the_fork_still_cannot_approve_it() -> None:
+    d = decide(inputs(fork=True, member_fork=True, author="alice", reviews=(review("alice"),)))
+    assert d.action is Action.WAIT_APPROVAL
+
+
+def pull(**changes: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "user": {"login": "Alice", "type": "User"},
+        "author_association": "MEMBER",
+        "head": {"sha": HEAD, "repo": {"full_name": "alice/app", "owner": {"login": "alice"}}},
+    }
+    return {**base, **changes}  # type: ignore[dict-item]
+
+
+@pytest.mark.parametrize(
+    ("changes", "expected"),
+    [
+        ({}, True),  # the own fork of a member, the owner compared without regard to case
+        ({"author_association": "OWNER"}, True),
+        ({"author_association": "CONTRIBUTOR"}, False),  # not a member: an outsider's fork needs a person
+        ({"author_association": "COLLABORATOR"}, False),  # an outside collaborator is not a member of the organization
+        ({"author_association": "NONE"}, False),
+        ({"user": {"login": "alice", "type": "Bot"}}, False),
+        ({"head": {"sha": HEAD, "repo": None}}, False),  # a deleted fork
+        ({"head": {"sha": HEAD, "repo": {"full_name": "other-org/app", "owner": {"login": "other-org"}}}}, False),
+        ({"head": {"sha": HEAD, "repo": {"full_name": "alice/app"}}}, False),  # no owner to compare
+        (
+            {"head": {"sha": HEAD, "repo": {"full_name": "Example/App", "owner": {"login": "alice"}}}},
+            False,
+        ),  # not a fork
+    ],
+)
+def test_a_member_fork_is_the_own_fork_of_a_member_and_nothing_else(changes: dict[str, object], expected: bool) -> None:
+    assert member_fork(pull(**changes), "example/app") is expected
+
+
+def test_the_rules_can_switch_the_member_fork_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("osac_ci.e2e_start.BOTS_ON_MEMBER_FORKS", False)
+    assert member_fork(pull(), "example/app") is False
 
 
 def test_a_person_with_write_access_still_counts_on_a_pull_request_from_a_fork() -> None:

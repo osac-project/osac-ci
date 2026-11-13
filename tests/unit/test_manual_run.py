@@ -921,6 +921,19 @@ def test_on_a_fork_only_a_person_with_write_access_counts(
     assert manual_run.approval_of(reviews, HEAD, "author", True)[:2] == (kind, who)
 
 
+@pytest.mark.parametrize(
+    ("reviews", "kind", "who"),
+    [
+        ([rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot")], "approved", ("coderabbitai[bot]",)),
+        ([rv("some-app", "APPROVED", permission="write", kind="Bot")], "waiting", ()),  # another app, even with write
+    ],
+)
+def test_on_the_own_fork_of_a_member_coderabbit_counts_but_another_app_does_not(
+    reviews: list[Review], kind: str, who: tuple[str, ...]
+) -> None:
+    assert manual_run.approval_of(reviews, HEAD, "author", True, True)[:2] == (kind, who)
+
+
 def test_an_approval_that_does_not_count_is_named_so_the_row_does_not_say_approved() -> None:
     reviews = [rv("outsider", "APPROVED", permission="read"), rv("author", "APPROVED"), rv("a", "COMMENTED")]
     assert manual_run.approval_of(reviews, HEAD, "author", False) == ("waiting", (), ("author", "outsider"))
