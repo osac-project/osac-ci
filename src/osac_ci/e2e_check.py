@@ -217,6 +217,19 @@ def describe(text: str) -> str:
     return one if len(one) <= DESCRIPTION_MAX else one[: DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
+def wait_text(suites: Sequence[str], suffix: str) -> str:
+    """``Waiting: <suites><suffix>``, within a status description. The suffix is how a wait is recognised again (see
+    ``_waits_for_suites``), so a long list of suites is shortened (``a, b and 2 more``) and the suffix is never cut."""
+    names = list(suites)
+    for shown in range(len(names), 0, -1):
+        rest = len(names) - shown
+        listed = ", ".join(names[:shown]) + (f" and {rest} more" if rest else "")
+        text = f"Waiting: {listed}{suffix}"
+        if len(text) <= DESCRIPTION_MAX:
+            return text
+    return f"Waiting: {len(names)} suites{suffix}"
+
+
 # deciding -------------------------------------------------------------------------------------------------------
 
 
@@ -648,7 +661,7 @@ def finish_from_lines(
     states = {suite: line_state(latest, line) for suite, line in lines.items()}
     again = _running_again(client, repo, latest, lines, run_of_url(run_url))
     if again:
-        text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+        text = wait_text(again, AGAIN_SUFFIX)
         # in progress, not queued: a retest is going, so the check shows it (it still counts as a wait: existing_from)
         write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
         return "waiting"
@@ -688,7 +701,7 @@ def wait_for_rerun(
     again = _running_again(client, repo, _latest_lines(client, repo, sha, lines), lines, None)
     if not again:
         return "no suite is going: the check is left as it is"
-    text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+    text = wait_text(again, AGAIN_SUFFIX)
     if existing.phase is Phase.WAITING and waiting_part(existing.description) == text:
         return "the check already waits for it"
     write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
@@ -736,7 +749,7 @@ def sum_from_lines(
     if going:
         if not mine:
             return f"{', '.join(going)} still running, the E2E check is left as it is"
-        text = f"Waiting: {', '.join(going)}{RUNNING_SUFFIX}"
+        text = wait_text(going, RUNNING_SUFFIX)
         if existing is None or existing.description != text:
             write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
         return "waiting"
@@ -802,7 +815,7 @@ def finish_by_hand(
             # ended too (or another is going), so the check says how it stands now
             again = _running_again(client, repo, _latest_lines(client, repo, sha, lines), lines, run_of_url(run_url))
             if again:
-                text = f"Waiting: {', '.join(again)}{AGAIN_SUFFIX}"
+                text = wait_text(again, AGAIN_SUFFIX)
                 if text != waiting_part(existing.description):
                     write_status(client, repo, sha, Write("pending", describe(text)), run_url, kind)
                 return f"{', '.join(again)} is still being run again: the E2E check keeps waiting"
