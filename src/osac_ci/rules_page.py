@@ -25,7 +25,8 @@ def _fork_rule(bots_on_member_forks: bool) -> str:
     if bots_on_member_forks:
         return (
             "those bots count only when it is the **own fork of a member of the organization**\n"
-            "  (the head repository belongs to the author, and GitHub calls the author a member or the owner).\n"
+            "  (the head repository belongs to the author, who is a member or the owner: GitHub says so, or the\n"
+            "  organization does when asked, since a private member shows as a contributor).\n"
             "  The author of a fork controls what CodeRabbit reads, so a fork of anyone else needs a person with\n"
             "  write access, and the suites refuse an outsider's fork without the `ok-to-test` label whatever\n"
             "  the approval says. On a fork the bot's approval only **starts the E2E**: it is not a person's review,\n"
