@@ -41,7 +41,10 @@ only from:
   (the head repository belongs to the author, and GitHub calls the author a member or the owner).
   The author of a fork controls what CodeRabbit reads, so a fork of anyone else needs a person with
   write access, and the suites refuse an outsider's fork without the `ok-to-test` label whatever
-  the approval says.
+  the approval says. On a fork the bot's approval only **starts the E2E**: it is not a person's review,
+  so it does not turn on auto-merge or cross out a code owner, and a person still has to review the
+  pull request to merge it (GitHub's own rules, the code owners and the required reviews, are not met
+  by a bot).
 
 The author cannot approve their own pull request. A push after the approval dismisses it; a rebase that changes nothing
 of the pull request's own changes keeps it, a rebase with conflict resolution drops it.

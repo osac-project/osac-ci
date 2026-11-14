@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -218,6 +219,26 @@ def test_the_wait_on_the_own_fork_of_a_member_says_that_coderabbit_counts() -> N
     d = decide(inputs(fork=True, member_fork=True, reviews=()))
     assert d.action is Action.WAIT_APPROVAL
     assert "or CodeRabbit" in d.reason and "does not count" not in d.reason
+
+
+def test_a_bot_on_a_fork_starts_the_e2e_but_is_not_a_review_for_anything_else() -> None:
+    d = decide(inputs(fork=True, member_fork=True, reviews=(review("coderabbitai[bot]", assoc="NONE"),)))
+    assert d.action is Action.START and d.approvers == ("coderabbitai[bot]",)
+    assert d.merge_approvers == (), "auto-merge waits for a person"
+    both = decide(
+        inputs(fork=True, member_fork=True, reviews=(review("coderabbitai[bot]", assoc="NONE"), review("bob")))
+    )
+    assert both.approvers == ("bob", "coderabbitai[bot]") and both.merge_approvers == ("bob",)
+
+
+def test_on_a_branch_of_the_repository_a_bot_is_still_an_approval_for_auto_merge() -> None:
+    d = decide(inputs(reviews=(review("coderabbitai[bot]", assoc="NONE"),)))
+    assert d.approvers == d.merge_approvers == ("coderabbitai[bot]",)
+
+
+def test_the_decision_names_who_counts_as_a_review_in_its_json() -> None:
+    d = decide(inputs(fork=True, member_fork=True, reviews=(review("coderabbitai[bot]", assoc="NONE"),)))
+    assert json.loads(to_json(d))["merge_approvers"] == []
 
 
 def test_the_author_of_the_fork_still_cannot_approve_it() -> None:

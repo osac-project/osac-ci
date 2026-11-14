@@ -25,6 +25,8 @@ approval:
   # anyone else (an outside contributor, or a fork owned by another account) still needs a person with write access, and
   # the suites refuse an outsider's fork without the `ok-to-test` label (authorize-fork-pr in osac-test-infra) whatever
   # the approval says. Set it to `false` to go back to a person for every fork.
+  # Either way a bot's approval on a fork only STARTS the E2E. It is not a person's review: it does not turn on
+  # auto-merge, it crosses out no code owner group, and GitHub's own rules (code owners, required reviews) are not met by it.
   bots_count_on_member_forks: true
   # What a person's approval needs, read from their EFFECTIVE permission on the repository (not from their association
   # with the organization: a member or a collaborator can have read or triage access only). Only these three count,

@@ -151,6 +151,9 @@ class Decision:
     reason: str
     suites: tuple[str, ...] = ()  # the suites to start (only for ``start``)
     approvers: tuple[str, ...] = ()
+    # The approvers that count as a person's review of the pull request, for what is not the start of the E2E (turning
+    # on auto-merge): on a fork a bot starts the E2E but is not a review, so only the people are listed.
+    merge_approvers: tuple[str, ...] = ()
     stale_approvals: tuple[str, ...] = ()  # approvals left on an older commit, not counted
     changes_requested_by: tuple[str, ...] = ()
     cheap_failed: tuple[str, ...] = ()
@@ -226,6 +229,11 @@ def _qualifies(review: Review, author: str, fork: bool, member_fork: bool = Fals
         # on a fork only a person counts, not some other app that happens to hold write access
         return False
     return review.permission in WRITE_PERMISSIONS
+
+
+def people_only(logins: Iterable[str]) -> tuple[str, ...]:
+    """``logins`` without the trusted bots: a bot's approval starts the E2E, it is not a person's review."""
+    return tuple(login for login in logins if login not in TRUSTED_BOTS)
 
 
 def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -357,6 +365,7 @@ def _workflows(suites: Iterable[Suite], names: Iterable[str]) -> tuple[tuple[str
 
 def decide(inputs: Inputs) -> Decision:
     approvers, stale, blocking = approvals(inputs)
+    merge_approvers = people_only(approvers) if inputs.fork else approvers
     snapshot = Snapshot(repo="", number=inputs.number, head_sha=inputs.head_sha, check_runs=inputs.check_runs)
     gaps = unmet(snapshot, inputs.cheap, inputs.statuses)
     failed = tuple(g for g, s in gaps if s is JobStatus.FAILED)
@@ -365,6 +374,7 @@ def decide(inputs: Inputs) -> Decision:
         "number": inputs.number,
         "head_sha": inputs.head_sha,
         "approvers": approvers,
+        "merge_approvers": merge_approvers,
         "stale_approvals": stale,
         "changes_requested_by": blocking,
         "cheap_failed": failed,
@@ -869,6 +879,7 @@ def to_json(decision: Decision) -> str:
             "suites": list(decision.suites),
             "suite_checks": dict(decision.suite_checks),
             "approvers": list(decision.approvers),
+            "merge_approvers": list(decision.merge_approvers),
             "stale_approvals": list(decision.stale_approvals),
             "changes_requested_by": list(decision.changes_requested_by),
             "cheap_failed": list(decision.cheap_failed),

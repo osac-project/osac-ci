@@ -28,7 +28,10 @@ def _fork_rule(bots_on_member_forks: bool) -> str:
             "  (the head repository belongs to the author, and GitHub calls the author a member or the owner).\n"
             "  The author of a fork controls what CodeRabbit reads, so a fork of anyone else needs a person with\n"
             "  write access, and the suites refuse an outsider's fork without the `ok-to-test` label whatever\n"
-            "  the approval says."
+            "  the approval says. On a fork the bot's approval only **starts the E2E**: it is not a person's review,\n"
+            "  so it does not turn on auto-merge or cross out a code owner, and a person still has to review the\n"
+            "  pull request to merge it (GitHub's own rules, the code owners and the required reviews, are not met\n"
+            "  by a bot)."
         )
     return (
         "they never count: the author of a fork controls what CodeRabbit reads, so a fork needs a person\n"
