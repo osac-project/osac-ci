@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
@@ -32,6 +32,7 @@ from urllib.parse import quote
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
+from osac_ci.github.snapshot import is_org_member
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
 from osac_ci.planner import latest_checks
@@ -195,12 +196,15 @@ def _latest_reviews(reviews: Iterable[Review]) -> dict[str, Review]:
     return latest
 
 
-def member_fork(pr: Mapping[str, Any], repo: str) -> bool:
+def member_fork(pr: Mapping[str, Any], repo: str, is_member: Callable[[str], bool] | None = None) -> bool:
     """Whether the head commit is in the own fork of the pull request's author, who is a member of the organization, and
     the rules let a bot approval count there (``approval.bots_count_on_member_forks``). The owner of the head repository
     must be the author, so a fork owned by another account, or by an organization, does not qualify; a deleted fork
-    has no repository to read. The association is the one GitHub gives the author, not something the pull request
-    says."""
+    has no repository to read.
+
+    GitHub's association says MEMBER or OWNER for a member whose membership is public. For one whose membership is
+    private it says CONTRIBUTOR to the app that reads the pull request, so then ``is_member`` (a lookup of the
+    membership with a token that may read the organization) decides. A lookup that fails is a no: nothing is guessed."""
     if not BOTS_ON_MEMBER_FORKS:
         return False
     head = pr.get("head")
@@ -211,13 +215,22 @@ def member_fork(pr: Mapping[str, Any], repo: str) -> bool:
     owner = source.get("owner")
     owner_login = str(owner.get("login", "")) if isinstance(owner, Mapping) else ""
     author = str(user.get("login", ""))
-    return (
+    own_fork = (
         bool(owner_login)
         and owner_login.lower() == author.lower()
         and str(source.get("full_name", "")).lower() != repo.lower()
         and user.get("type") == "User"
-        and pr.get("author_association") in MEMBER_ASSOCIATIONS
     )
+    if not own_fork:
+        return False
+    if pr.get("author_association") in MEMBER_ASSOCIATIONS:
+        return True
+    if is_member is None:
+        return False
+    try:
+        return bool(is_member(author))
+    except GitHubError:
+        return False
 
 
 def _qualifies(review: Review, author: str, fork: bool, member_fork: bool = False) -> bool:
@@ -680,9 +693,11 @@ def fetch_inputs(
     request_sha: str = "",
     comment_given: bool = False,
     statuses_client: GitHubClient | None = None,
+    org_client: GitHubClient | None = None,
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
-    over many pull requests reads them once)."""
+    over many pull requests reads them once). ``org_client`` is a token that may read the organization (its members);
+    without one ``client`` is used."""
     repo = check_repo(repo)
     base = f"/repos/{repo}"
     pr = get(client, f"{base}/pulls/{number}")
@@ -755,7 +770,7 @@ def fetch_inputs(
         filters=policy.path_filters.filters,
         statuses=statuses,
         fork=str(((pr["head"].get("repo")) or {}).get("full_name", "")).lower() != repo.lower(),
-        member_fork=member_fork(pr, repo),
+        member_fork=member_fork(pr, repo, lambda login: is_org_member(org_client or client, repo.split("/")[0], login)),
         requested=requested,
         requested_by=requested_by,
         request_refused=request_refused,

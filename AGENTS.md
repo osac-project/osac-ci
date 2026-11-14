@@ -146,7 +146,8 @@ uvx zizmor@1.30.1 --no-progress .github/workflows     # workflow security lint, 
   name.
 - **Forks:** only a person with write access counts as an approver on a fork pull request; CodeRabbit and `osac-ci[bot]`
   count only on the own fork of a member of the organization (`approval.bots_count_on_member_forks` in `policy/flow.yml`:
-  the head repository is owned by the author, GitHub calls the author MEMBER or OWNER), never on a fork of anyone else. On a fork the bot only starts the E2E: `Decision.merge_approvers` (people only)
+  the head repository is owned by the author, who is a member: GitHub says MEMBER or OWNER, or, for a private
+  membership (shown as CONTRIBUTOR to the app), the organization lookup with the org token says so), never on a fork of anyone else. On a fork the bot only starts the E2E: `Decision.merge_approvers` (people only)
   is what turns on auto-merge, and a person still has to review the pull request to merge it. The automatic start runs a suite of a fork only on the approved commit; an organization member can also start
   suites of a fork pull request by hand, whatever its approval state (on its head commit).
 - **GitHub strips `style` and scripts from comments.** The status panel uses `<img>` icons from `docs/icons` (SVG; the

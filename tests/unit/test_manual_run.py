@@ -1238,6 +1238,16 @@ def test_a_pull_request_from_another_repository_is_a_fork_for_the_approval() -> 
     )
 
 
+def test_the_panel_finds_a_member_with_a_private_membership_the_way_the_decision_does() -> None:
+    coderabbit = [rv("coderabbitai[bot]", "APPROVED", permission="", kind="Bot")]
+    head = {"sha": HEAD, "repo": {"full_name": "author/r", "owner": {"login": "author"}}}
+    pr = {"head": head, "user": {"login": "author", "type": "User"}, "author_association": "CONTRIBUTOR"}
+    assert manual_run.pr_status(pr, coderabbit, [], repo=REPO).approval == "waiting", "no lookup: not a member"
+    found = manual_run.pr_status(pr, coderabbit, [], repo=REPO, is_member=lambda login: login == "author")
+    assert found.approval == "approved"
+    assert manual_run.pr_status(pr, coderabbit, [], repo=REPO, is_member=lambda login: False).approval == "waiting"
+
+
 def test_when_the_roles_cannot_be_read_the_row_says_what_the_reviews_show_and_not_approved() -> None:
     pr = {"head": {"sha": HEAD, "repo": {"full_name": REPO}}, "user": {"login": "author"}}
     status = manual_run.pr_status(

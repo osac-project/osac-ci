@@ -20,7 +20,8 @@ approval:
     - coderabbitai[bot]
     - osac-ci[bot]
   # Whether those bots also count on a pull request from the fork of a member of the organization: the head repository
-  # is the author's own fork and GitHub says the author is a member (or the owner) of the organization. Almost every pull
+  # is the author's own fork and the author is a member (or the owner) of the organization: GitHub says so, or, for a
+  # member whose membership is private (GitHub then shows a contributor), the organization does when asked. Almost every pull
   # request of the repositories is of that kind, so without it CodeRabbit's approval would never start an E2E. A fork of
   # anyone else (an outside contributor, or a fork owned by another account) still needs a person with write access, and
   # the suites refuse an outsider's fork without the `ok-to-test` label (authorize-fork-pr in osac-test-infra) whatever

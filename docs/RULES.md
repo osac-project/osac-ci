@@ -38,7 +38,8 @@ only from:
   Being a member of the organization, or a collaborator with `triage` or `read` access, is not enough.
 - on a pull request from a **branch of the repository itself**, also these bots: `coderabbitai[bot]`, `osac-ci[bot]`.
   On a pull request from a **fork** those bots count only when it is the **own fork of a member of the organization**
-  (the head repository belongs to the author, and GitHub calls the author a member or the owner).
+  (the head repository belongs to the author, who is a member or the owner: GitHub says so, or the
+  organization does when asked, since a private member shows as a contributor).
   The author of a fork controls what CodeRabbit reads, so a fork of anyone else needs a person with
   write access, and the suites refuse an outsider's fork without the `ok-to-test` label whatever
   the approval says. On a fork the bot's approval only **starts the E2E**: it is not a person's review,

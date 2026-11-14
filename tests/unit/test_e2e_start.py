@@ -20,6 +20,7 @@ from osac_ci.e2e_start import (
     render_markdown,
     to_json,
 )
+from osac_ci.github.api import GitHubError
 from osac_ci.model import CheckRun
 
 pytestmark = pytest.mark.unit
@@ -275,6 +276,48 @@ def pull(**changes: object) -> dict[str, object]:
 )
 def test_a_member_fork_is_the_own_fork_of_a_member_and_nothing_else(changes: dict[str, object], expected: bool) -> None:
     assert member_fork(pull(**changes), "example/app") is expected
+
+
+class Lookup:
+    """The membership lookup of a token that may read the organization, with the logins it was asked about."""
+
+    def __init__(self, answer: object) -> None:
+        self.answer, self.asked = answer, []  # type: ignore[var-annotated]
+
+    def __call__(self, login: str) -> bool:
+        self.asked.append(login)
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return bool(self.answer)
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [(True, True), (False, False), (GitHubError(403, "GET /orgs/o/members/alice"), False)],
+)
+def test_a_member_whose_membership_is_private_is_found_by_asking_for_it(answer: object, expected: bool) -> None:
+    """GitHub shows such an author as CONTRIBUTOR to the app: the lookup decides, and a lookup that fails is a no."""
+    lookup = Lookup(answer)
+    assert member_fork(pull(author_association="CONTRIBUTOR"), "example/app", lookup) is expected
+    assert lookup.asked == ["Alice"]
+
+
+def test_nothing_is_asked_when_the_association_says_member_or_the_fork_is_not_the_authors() -> None:
+    lookup = Lookup(True)
+    assert member_fork(pull(), "example/app", lookup) is True and lookup.asked == []
+    other = {"head": {"sha": HEAD, "repo": {"full_name": "other-org/app", "owner": {"login": "other-org"}}}}
+    assert member_fork(pull(author_association="CONTRIBUTOR", **other), "example/app", lookup) is False
+    assert (
+        member_fork(pull(author_association="CONTRIBUTOR", head={"sha": HEAD, "repo": None}), "example/app", lookup)
+        is False
+    )
+    assert (
+        member_fork(
+            pull(author_association="CONTRIBUTOR", user={"login": "alice", "type": "Bot"}), "example/app", lookup
+        )
+        is False
+    )
+    assert lookup.asked == [], "an author who is no member's own fork is not looked up"
 
 
 def test_the_rules_can_switch_the_member_fork_off(monkeypatch: pytest.MonkeyPatch) -> None:
