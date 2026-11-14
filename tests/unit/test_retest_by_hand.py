@@ -78,3 +78,62 @@ def test_an_automatic_start_is_not_changed() -> None:
     hub.status(VM, "failure", url=f"https://example.invalid/o/r/actions/runs/{OLD_RUN}/job/1", text="Failed")
     e2e_check.report(hub, REPO, [entry()], RUN, RUN_URL, "checks", lines_kind="statuses")  # type: ignore[arg-type]
     assert e2e(hub)[1].startswith("Running")  # the claim of the run, not a wait for a retest
+
+
+LONG = {f"{'long-suite-name-' + str(i):0<40}"[:40]: f"E2E / The long suite number {i}" for i in range(1, 5)}
+
+
+A, B, C, D = "a" * 40, "b" * 40, "c" * 40, "d" * 40
+
+
+@pytest.mark.parametrize(
+    ("suites", "suffix", "expected"),
+    [
+        (["vmaas"], " running again", "Waiting: vmaas running again"),
+        (["vmaas", "caas"], " running", "Waiting: vmaas, caas running"),
+        ([A, B, C], " running again", f"Waiting: {A}, {B} and 1 more running again"),
+        ([A, B, C, D], " running", f"Waiting: {A}, {B} and 2 more running"),
+        (["a" * 200], " running again", "Waiting: 1 suites running again"),
+    ],
+)
+def test_a_wait_is_shortened_by_its_list_never_by_its_suffix(suites: list[str], suffix: str, expected: str) -> None:
+    text = e2e_check.wait_text(suites, suffix)
+    assert text == expected and len(text) <= e2e_check.DESCRIPTION_MAX and text.endswith(suffix)
+
+
+def test_a_retest_by_hand_of_several_long_suite_ids_is_still_a_wait_and_ends_in_a_failure() -> None:
+    hub = Hub()
+    for line in LONG.values():
+        hub.status(line, "failure", url=f"https://example.invalid/o/r/actions/runs/{OLD_RUN}/job/1", text="Failed")
+    hub.check("E2E", "failure", link=f"https://example.invalid/o/r/actions/runs/{OLD_RUN}", title="Failed: a, b, c, d")
+    e2e_check.report(
+        hub,  # type: ignore[arg-type]
+        REPO,
+        [entry(manual=True, suites=list(LONG), suite_checks=LONG)],
+        RUN,
+        RUN_URL,
+        "checks",
+        lines_kind="statuses",
+    )
+    status, title = e2e(hub)
+    assert status == "in_progress" and title.endswith(" running again") and len(title) <= e2e_check.DESCRIPTION_MAX
+    existing = e2e_check.latest_check(hub, REPO, SHA, "checks")  # type: ignore[arg-type]
+    assert existing is not None and e2e_check._waits_for_suites(existing), "the wait is still recognised as ours"
+    for i, line in enumerate(LONG.values()):
+        done = "success" if i else "failure"
+        hub.status(line, done, url=f"https://example.invalid/o/r/actions/runs/501/job/{i}", text="Passed")
+    sum_url = "https://example.invalid/o/r/actions/runs/501"
+    assert e2e_check.sum_from_lines(hub, REPO, SHA, LONG, sum_url) == "failure"  # type: ignore[arg-type]
+    assert e2e(hub)[0] == "failure" and e2e(hub)[1].startswith("Failed")
+
+
+def test_the_sum_of_several_long_suite_ids_that_still_go_is_a_wait_that_keeps_its_suffix() -> None:
+    hub = Hub()
+    for i, line in enumerate(LONG.values()):
+        hub.status(line, "pending", url=f"https://example.invalid/o/r/actions/runs/{600 + i}/job/1", text="Running")
+    done = "https://example.invalid/o/r/actions/runs/500"
+    assert e2e_check.sum_from_lines(hub, REPO, SHA, LONG, done) == "waiting"  # type: ignore[arg-type]
+    status, title = e2e(hub)
+    assert status == "in_progress" and title.endswith(" running") and len(title) <= e2e_check.DESCRIPTION_MAX
+    existing = e2e_check.latest_check(hub, REPO, SHA, "checks")  # type: ignore[arg-type]
+    assert existing is not None and e2e_check._waits_for_suites(existing)
