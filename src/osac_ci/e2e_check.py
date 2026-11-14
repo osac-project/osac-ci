@@ -529,6 +529,9 @@ def report(
         for suite, line in lines:
             waiting = tiered("Waiting for a runner", tiers.get(suite, ""))
             post_status(client, repo, sha, line, "waiting", waiting, run_url, lines_kind or kind)
+        # A suite run again by hand after the E2E check said Failed: the check waits for it, instead of saying Failed
+        # until the retest ends (the end of the suite writes the answer). Anything else the check says stays.
+        wait_for_rerun(client, repo, sha, dict(lines), run_url, kind)
     elif outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling

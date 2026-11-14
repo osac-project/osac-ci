@@ -92,6 +92,8 @@ A suite that failed can be run again at once, while the other suites of the same
 GitHub's own "Re-run" button, which waits for the whole run to end, is not needed. The `E2E` check follows the latest
 line of each suite: when a run that failed ends, the check says `Passed` if every suite of it has passed since, waits
 while one is being run again (the run of the retest writes the answer when it ends), and says `Failed` otherwise.
+A `Failed` check turns into `Waiting: <suite> running again` the moment the retest starts, so the page does not say
+`Failed` while the suite goes; a check that passed, or that waits for something else (an approval, the CI), is left as it is.
 
 A suite whose job in the repository's policy names a `workflow` is started by the decision as a run of its own (a
 `workflow_dispatch` of that workflow, for the commit that was approved): its line links to that run, GitHub's own
