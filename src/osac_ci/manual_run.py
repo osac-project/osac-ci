@@ -36,6 +36,7 @@ from osac_ci.e2e_start import (
     bot_blockers,
     line_state,
     member_fork,
+    people_only,
     reviews_with_roles,
     reviews_with_roles_unread,
     run_of_url,
@@ -270,7 +271,9 @@ def _approval_row(status: PrStatus, sha: str) -> str:
     if status.approval == "approved":
         row = f"{lead('passed')}**Approval:** approved by {who} on `{sha[:7]}`"
         pending = any(not g.approved_by for g in status.code_owners)
-        if pending and status.owners_checked and status.closed not in ("merged", "closed"):
+        if not people_only(status.approvers):
+            row += " · a bot's approval starts the E2E only; a person still has to review the pull request to merge it"
+        elif pending and status.owners_checked and status.closed not in ("merged", "closed"):
             row += " · enough to run the E2E; the code owners below still have to approve"
         return row
     if status.approval == "older":
@@ -1036,7 +1039,7 @@ def status_of(
         if _closed_of(pr) == "":
             sha, writer, fork, member = _facts(pr, repo)
             approvers, _, _ = approvals_of(reviews, sha, writer, fork, member)
-            owners, checked = code_owner_groups(client, repo, number, pr, approvers)
+            owners, checked = code_owner_groups(client, repo, number, pr, people_only(approvers))
     except GitHubError:
         status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
     return replace(status, queue=queue, code_owners=owners, owners_checked=checked)

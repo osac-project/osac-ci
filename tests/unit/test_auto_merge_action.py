@@ -228,3 +228,32 @@ def test_the_decision_workflow_uses_the_action_right_after_the_app_token() -> No
         "head-sha": "${{ needs.decide.outputs.approved-sha }}",
     }
     assert job["permissions"] == {"pull-requests": "write"}, "only for the quiet edit of the comment"
+
+
+def approved_step(tmp_path: Path, decision: list[dict[str, Any]]) -> dict[str, str]:
+    """Run the step of the decision workflow that says whether the pull request is approved for auto-merge."""
+    steps = yaml.safe_load(DECIDE.read_text(encoding="utf-8"))["jobs"]["decide"]["steps"]
+    step = next(s for s in steps if s.get("id") == "approved")
+    file, out = tmp_path / "decision.json", tmp_path / "output"
+    file.write_text(json.dumps(decision), encoding="utf-8")
+    out.write_text("")
+    env = {"PATH": os.environ["PATH"], "DECISION": str(file), "GITHUB_OUTPUT": str(out)}
+    subprocess.run(["bash", "-c", step["run"]], env=env, check=True, capture_output=True)
+    return dict(line.split("=", 1) for line in out.read_text().splitlines())
+
+
+def decided(**changes: Any) -> list[dict[str, Any]]:
+    return [{"number": 7, "head_sha": HEAD, "approvers": ["coderabbitai[bot]"], **changes}]
+
+
+def test_a_bot_that_only_starts_the_e2e_does_not_turn_on_auto_merge(tmp_path: Path) -> None:
+    assert approved_step(tmp_path, decided(merge_approvers=[]))["yes"] == "false"
+
+
+def test_a_person_s_approval_turns_on_auto_merge(tmp_path: Path) -> None:
+    got = approved_step(tmp_path, decided(approvers=["bob", "coderabbitai[bot]"], merge_approvers=["bob"]))
+    assert got == {"yes": "true", "number": "7", "sha": HEAD}
+
+
+def test_a_decision_without_the_list_of_reviews_is_read_as_before(tmp_path: Path) -> None:
+    assert approved_step(tmp_path, decided())["yes"] == "true"

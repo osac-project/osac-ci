@@ -352,7 +352,8 @@ jobs:
         run: |
           # One pull request was evaluated (the file is a list with one decision).
           {
-            echo "yes=$(jq -r '.[0].approvers | length > 0' "${DECISION}")"
+            # a person's review, for auto-merge: on a fork a bot's approval starts the E2E but is not one
+            echo "yes=$(jq -r '(.[0].merge_approvers // .[0].approvers) | length > 0' "${DECISION}")"
             echo "number=$(jq -r '.[0].number' "${DECISION}")"
             echo "sha=$(jq -r '.[0].head_sha' "${DECISION}")"
           } >> "$GITHUB_OUTPUT"

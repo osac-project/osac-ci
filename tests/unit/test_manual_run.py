@@ -1020,6 +1020,25 @@ def test_the_approval_row_says_it_runs_the_e2e_while_a_code_owner_group_has_not_
     )
 
 
+def test_the_approval_row_says_a_bot_approval_starts_the_e2e_only() -> None:
+    def rows(**changes: Any) -> str:
+        return block_of(manual_run.render_comment(HEAD, views(), "", full_status(**changes)))
+
+    bot = rows(approvers=("coderabbitai[bot]",))
+    assert (
+        "approved by `coderabbitai[bot]` on `aaaaaaa` · a bot's approval starts the E2E only; a person still has to"
+        in bot
+    )
+    waiting = (manual_run.OwnerGroup(("@o/t",)),)
+    assert "a person still has to review" in rows(approvers=("coderabbitai[bot]",), code_owners=waiting)
+    assert "a bot's approval" not in rows(), "a person approved"
+    assert "a bot's approval" not in rows(approvers=("alice", "coderabbitai[bot]")), "a person approved as well"
+
+
+def test_a_bot_is_never_the_approval_of_a_code_owner_group() -> None:
+    assert manual_run.people_only(("alice", "coderabbitai[bot]", "osac-ci[bot]", "bob")) == ("alice", "bob")
+
+
 class OwnersGitHub:
     """A repository's CODEOWNERS (base branch), the files of a pull request and the members of two teams."""
 
