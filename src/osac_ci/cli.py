@@ -953,7 +953,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "manual-status":
         try:
-            result = manual_run.refresh_status(build_client(), args.repo, args.number, edit_client=build_edit_client())
+            result = manual_run.refresh_status(
+                build_client(), args.repo, args.number, edit_client=build_edit_client(), org_client=build_org_client()
+            )
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: manual-status failed: {exc}", file=sys.stderr)
             return 3
@@ -1218,7 +1220,7 @@ def main(argv: list[str] | None = None) -> int:
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
                 comment_given=args.manual_comment_id is not None,
-                statuses_client=build_statuses_client(),
+                statuses_client=build_statuses_client(), org_client=build_org_client(),
             )  # fmt: skip
 
         return _decide_command(

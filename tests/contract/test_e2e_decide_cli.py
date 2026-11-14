@@ -123,6 +123,26 @@ def test_coderabbit_approves_the_own_fork_of_a_member() -> None:
     assert decide(inputs).action is Action.START
 
 
+@pytest.mark.parametrize(("answer", "member"), [(204, True), (404, False), (302, False), (403, False)])
+def test_a_member_with_a_private_membership_is_found_through_the_organization_lookup(answer: int, member: bool) -> None:
+    """The pull request shows its author as CONTRIBUTOR to the app when the membership is private: the app asks."""
+    pr = member_fork_pr(author_association="CONTRIBUTOR")
+    fake = world(pr=pr, reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    fake.add("GET", "/orgs/example/members/alice", None, status=answer)
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    assert inputs.member_fork is member
+    assert decide(inputs).action is (Action.START if member else Action.WAIT_APPROVAL)
+
+
+def test_the_membership_is_asked_of_the_organization_client_when_there_is_one() -> None:
+    pr = member_fork_pr(author_association="CONTRIBUTOR")
+    main = world(pr=pr, reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    org = FakeGitHub()
+    org.add("GET", "/orgs/example/members/alice", None, status=204)
+    inputs = fetch_inputs(main, POLICY, REPO, 7, org_client=org)
+    assert inputs.member_fork and ("GET", "/orgs/example/members/alice") not in main.calls
+
+
 @pytest.mark.parametrize(
     "changes",
     [

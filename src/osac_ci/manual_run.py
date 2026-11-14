@@ -23,7 +23,7 @@ hand: see ``e2e_check.finish_by_hand``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 
 from osac_ci.e2e_start import (
@@ -851,7 +851,9 @@ def _base_of(pr: Mapping[str, object]) -> str:
     return str(base.get("ref", "")) if isinstance(base, Mapping) else ""
 
 
-def _facts(pr: Mapping[str, object], repo: str) -> tuple[str, str, bool, bool]:
+def _facts(
+    pr: Mapping[str, object], repo: str, is_member: Callable[[str], bool] | None = None
+) -> tuple[str, str, bool, bool]:
     """The head commit, the author, whether the commit is a fork's and whether that fork is a member's own, from the
     pull request."""
     head = pr.get("head")
@@ -860,7 +862,7 @@ def _facts(pr: Mapping[str, object], repo: str) -> tuple[str, str, bool, bool]:
     author = str(user.get("login", "")) if isinstance(user, Mapping) else ""
     source = head.get("repo") if isinstance(head, Mapping) else None
     fork = str(source.get("full_name", "") if isinstance(source, Mapping) else "").lower() != repo.lower()
-    return sha, author, fork, member_fork(pr, repo)
+    return sha, author, fork, member_fork(pr, repo, is_member)
 
 
 def pr_status(
@@ -870,11 +872,12 @@ def pr_status(
     *,
     repo: str,
     roles_known: bool = True,
+    is_member: Callable[[str], bool] | None = None,
 ) -> PrStatus:
     """The status of the pull request from its own data, its reviews (with the reviewers' roles, read the way the
     decision reads them) and the check runs of the head commit. ``roles_known`` False when the roles could not be read:
     the approval row then says what the reviews show and that it was not checked, never "approved"."""
-    sha, author, fork, member = _facts(pr, repo)
+    sha, author, fork, member = _facts(pr, repo, is_member)
     if roles_known:
         approval, approvers, ignored = approval_of(reviews, sha, author, fork, member)
     else:
@@ -1023,7 +1026,12 @@ def code_owner_groups(
 
 
 def status_of(
-    client: GitHubClient, repo: str, number: int, pr: Mapping[str, object], runs: Sequence[Mapping[str, object]]
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    pr: Mapping[str, object],
+    runs: Sequence[Mapping[str, object]],
+    org_client: GitHubClient | None = None,
 ) -> PrStatus:
     """The status of a pull request, reading its reviews and the role of each reviewer as the decision does. When the
     roles cannot be read (no right to), the approval row says so instead of guessing from the raw reviews."""
@@ -1033,15 +1041,20 @@ def status_of(
     queue = queue_view(client, repo, number) if _closed_of(pr) == "" else None
     owners: tuple[OwnerGroup, ...] = ()
     checked = True
+    org = repo.split("/")[0]
+
+    def is_member(login: str) -> bool:
+        return is_org_member(org_client or client, org, login)
+
     try:
         reviews = reviews_with_roles(client, repo, raw, author)
-        status = pr_status(pr, reviews, runs, repo=repo)
+        status = pr_status(pr, reviews, runs, repo=repo, is_member=is_member)
         if _closed_of(pr) == "":
-            sha, writer, fork, member = _facts(pr, repo)
+            sha, writer, fork, member = _facts(pr, repo, is_member)
             approvers, _, _ = approvals_of(reviews, sha, writer, fork, member)
             owners, checked = code_owner_groups(client, repo, number, pr, people_only(approvers))
     except GitHubError:
-        status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False)
+        status = pr_status(pr, reviews_with_roles_unread(raw), runs, repo=repo, roles_known=False, is_member=is_member)
     return replace(status, queue=queue, code_owners=owners, owners_checked=checked)
 
 
@@ -1065,7 +1078,13 @@ def edit_comment(
 
 
 def refresh_status(
-    client: GitHubClient, repo: str, number: int, *, bot: str = BOT_LOGIN, edit_client: GitHubClient | None = None
+    client: GitHubClient,
+    repo: str,
+    number: int,
+    *,
+    bot: str = BOT_LOGIN,
+    edit_client: GitHubClient | None = None,
+    org_client: GitHubClient | None = None,
 ) -> str:
     """Rewrite only the status block of the control comment from the pull request as it is now. For what changes after
     the comment was written, such as the app turning on auto-merge, or the pull request being merged or closed (the
@@ -1087,7 +1106,7 @@ def refresh_status(
         for r in paginate(client, f"/repos/{repo}/commits/{sha}/check-runs", key="check_runs")
         if isinstance(r, Mapping)
     ]
-    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs)))
+    block = "\n".join(status_block(sha, status_of(client, repo, number, pr, runs, org_client)))
     new = STATUS_BLOCK.sub(lambda _: block, body, count=1)
     if new == body:
         return "unchanged"
@@ -1135,7 +1154,11 @@ def refresh(
     lines = suite_line_runs_if_readable(client, repo, sha, [s.check for s in suites], CHECK_APP)
     every = [*runs, *lines]
     body = render_comment(
-        sha, views_for(suites, every), kept, status_of(client, repo, number, pr, runs), history_for(suites, every)
+        sha,
+        views_for(suites, every),
+        kept,
+        status_of(client, repo, number, pr, runs, org_client),
+        history_for(suites, every),
     )
     if existing is None:
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
