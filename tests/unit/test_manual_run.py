@@ -1660,6 +1660,28 @@ def test_the_full_refresh_of_a_closed_pull_request_only_updates_the_block_and_cr
     assert manual_run.refresh(none, POLICY, REPO, 7).startswith("skipped") and none.comments == []  # type: ignore[arg-type]
 
 
+class OrgSpy:
+    """A client of the organization that says every account is a member, and remembers what it was asked."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def request(self, method: str, path: str, **_: object) -> Response:
+        self.asked.append(path)
+        return Response(204, None)
+
+
+def test_the_refresh_of_a_closed_pull_request_asks_the_organization_client_for_the_membership() -> None:
+    fake = Fake([actions_check("CI")])
+    commented(fake)
+    head = {"sha": HEAD, "repo": {"full_name": "alice/r", "owner": {"login": "alice"}}}
+    private = {"head": head, "user": {"login": "alice", "type": "User"}, "author_association": "CONTRIBUTOR"}
+    fake.pr = {**fake.pr, **over(merged=True), **private}
+    org = OrgSpy()
+    assert manual_run.refresh(fake, POLICY, REPO, 7, org_client=org) == "updated"  # type: ignore[arg-type]
+    assert org.asked and set(org.asked) == {"/orgs/o/members/alice"}
+
+
 def test_a_pull_request_in_the_queue_has_auto_merge_on_even_though_github_clears_it_while_queued() -> None:
     queued = manual_run.QueueView("queued", "position 1, waiting its turn")
     rows = block_of(manual_run.render_comment(HEAD, views(), "", full_status(auto_merge="", queue=queued)))

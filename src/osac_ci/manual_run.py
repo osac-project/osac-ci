@@ -1135,7 +1135,7 @@ def refresh(
     pr = get(client, f"/repos/{repo}/pulls/{number}")
     if str(pr.get("state")) != "open":
         # Nothing to list or start any more; a comment that is there still shows where the pull request ended.
-        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client)
+        return refresh_status(client, repo, number, bot=bot, edit_client=edit_client, org_client=org_client)
     suites = suites_of(policy)
     if not suites:
         return "skipped: the policy has no E2E suite"
