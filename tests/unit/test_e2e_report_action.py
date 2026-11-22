@@ -138,6 +138,17 @@ def test_a_run_that_may_not_start_the_suites_says_false_as_a_string(tmp_path: Pa
     assert outputs(output)["start"] == "false"
 
 
+def test_the_finish_adds_up_only_the_counted_suites(tmp_path: Path) -> None:
+    lines = {"vmaas": "E2E / VMaaS", "vmaas-netris": "E2E / Netris"}
+    answer = {**ANSWER, "suite_checks": lines, "counted_suite_checks": {"vmaas": "E2E / VMaaS"}}
+    _, _, output, _, _ = run_report(tmp_path, answer=answer)
+    assert json.loads(outputs(output)["all-suite-checks"]) == {"vmaas": "E2E / VMaaS"}
+    # an answer of an older program, without the counted lines: every line, as before
+    (tmp_path / "old").mkdir()
+    _, _, output, _, _ = run_report(tmp_path / "old", answer={**ANSWER, "suite_checks": lines})
+    assert json.loads(outputs(output)["all-suite-checks"]) == lines
+
+
 def test_an_answer_with_no_pull_request_leaves_the_number_and_commit_empty(tmp_path: Path) -> None:
     answer = {**ANSWER, "state": "ignored", "start": False, "number": None, "sha": ""}
     _, _, output, _, _ = run_report(tmp_path, answer=answer)

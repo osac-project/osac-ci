@@ -198,6 +198,14 @@ with a checkbox per suite; the caller above only needs the `issue_comment` trigg
 extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.yml`; a job with `manual_only: true` is
 listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
 for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
+A job with `advisory: true` (and a `workflow`, since it always runs as a run of its own) sits between the two: when its
+`filters` hold, the decision starts it on the approval together with the suites it counts, but the `E2E` check is not the
+sum of it (the claim does not name it, `all-suite-checks` leaves it out, and its end writes only its own line), and the merge
+queue does not run it. Use it for a suite too costly to gate every change on, such as a real lab, that a change to its area
+should still run. A change that needs no counted suite starts it on the same approval (no change requested, no cheap
+check failed) while the `E2E` check says `Not affected`; then it starts once per commit, the first time (its line on the
+commit is what says it ran), and a person runs it again with `/test <id>` or GitHub's Re-run. With the changed files not
+known completely it is not started on a guess.
 A suite can also have a **variant**: a second manual box and `/test` name that starts the same suite with more tests (CaaS
 with its regression tests). In the policy it is a `manual_only` job with `variant_of: <suite id>`, a `tier` (a short
 lower-case word) and a `label` (the text of its box), and the same `check` as its suite, so it writes the line of the suite

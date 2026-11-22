@@ -109,7 +109,9 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         description: JSON object, suite id -> id of the run that was started, for the tracking of those suites; `{}` when none
         value: ${{ jobs.decide.outputs.dispatched-runs }}
       all-suite-checks:
-        description: JSON object, suite id -> line name, of every suite the decision starts, the dispatched ones too
+        description: >-
+          JSON object, suite id -> line name, of every suite the decision starts that the E2E check counts, the
+          dispatched ones too (not the advisory ones)
         value: ${{ jobs.decide.outputs.all-suite-checks }}
       tiers:
         description: >-

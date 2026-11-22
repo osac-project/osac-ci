@@ -99,6 +99,15 @@ class Job(_Strict):
             "by the decision and not part of the sum the required E2E check stands for"
         ),
     )
+    advisory: bool = Field(
+        default=False,
+        description=(
+            "A suite that the decision starts by itself when its filters hold, together with the suites it starts on "
+            "the approval, but that is not part of the sum the required E2E check stands for and is not run by the "
+            "merge queue: its own line says how it ended, and a failure of it blocks nothing. For a suite that is too "
+            "costly to gate every change on (a real lab), but that a change to its area should run"
+        ),
+    )
 
     workflow: str | None = Field(
         default=None,
@@ -139,6 +148,18 @@ class Job(_Strict):
             raise ValueError("needs_readiness is only valid for kind: e2e")
         if self.manual_only and self.kind != "e2e":
             raise ValueError("manual_only is only valid for kind: e2e")
+        return self
+
+    @model_validator(mode="after")
+    def _advisory_is_a_run_of_its_own(self) -> Job:
+        if not self.advisory:
+            return self
+        if self.kind != "e2e" or self.manual_only or self.variant_of is not None:
+            raise ValueError("advisory is only valid for a kind: e2e suite that is not manual_only and not a variant")
+        # A suite that ran as a job of the run that claimed the E2E would be part of that run's result, so it would
+        # count after all: an advisory suite is always started as a run of its own.
+        if self.workflow is None:
+            raise ValueError("an advisory suite needs a workflow (it runs as a run of its own)")
         return self
 
     @field_validator("workflow")

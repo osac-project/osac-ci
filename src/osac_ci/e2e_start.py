@@ -105,6 +105,9 @@ class Suite:
     workflow: str = (
         ""  # the file of the suite's workflow, when the suite runs as a run of its own (see policy.Job.workflow)
     )
+    # Started by the decision with the others when its filters hold, but never part of the E2E's sum (see
+    # policy.Job.advisory): its line says how it ended and blocks nothing.
+    advisory: bool = False
 
 
 @dataclass(frozen=True)
@@ -179,6 +182,12 @@ class Decision:
     # (suite, workflow file) of the suites to start that run as a run of their own: the caller does not run them as jobs
     # of its run, the decision dispatches them (see e2e_dispatch)
     workflows: tuple[tuple[str, str], ...] = ()
+    # The advisory suites among ``suites``: started with the others, but not counted in the E2E check (see
+    # ``Suite.advisory``). The report leaves them out of the claim and of the sum.
+    advisory: tuple[str, ...] = ()
+    # Only advisory suites start (the change needs no counted suite): the E2E check is "Not affected" and is not
+    # claimed; the start is written like one by hand (``manual``), so nothing sums it up.
+    advisory_only: bool = False
 
     @property
     def starts(self) -> bool:
@@ -285,8 +294,18 @@ def approvals_of(
 
 
 def automatic(suites: Iterable[Suite]) -> tuple[Suite, ...]:
-    """The suites the decision may choose: not the ones that are only started by hand."""
-    return tuple(s for s in suites if not s.manual_only)
+    """The suites the decision chooses and the E2E check counts: not the ones that are only started by hand, and not
+    the advisory ones (see ``advisory_suites``). The merge queue runs these too."""
+    return tuple(s for s in suites if not s.manual_only and not s.advisory)
+
+
+def advisory_suites(inputs: Inputs) -> tuple[Suite, ...]:
+    """The advisory suites this change touches. Unlike the counted suites, none is started on a guess when the changed
+    files are not known completely: an advisory suite guards nothing, and it is a costly run."""
+    suites = tuple(s for s in inputs.suites if s.advisory)
+    if not suites or not inputs.changed_files or not inputs.changed_files_known:
+        return ()
+    return _needed(suites, inputs.changed_files, inputs.filters)
 
 
 def applicable_suites(inputs: Inputs) -> tuple[Suite, ...]:
@@ -370,6 +389,19 @@ def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:
     return tuple(out)
 
 
+def _advisory_alone(
+    inputs: Inputs, approvers: Sequence[str], blocking: Sequence[str], failed: Sequence[str]
+) -> tuple[Suite, ...]:
+    """The advisory suites to start for a change that needs no counted suite: on the same approval, with no change
+    requested and no cheap check failed, as the counted suites. Only those with no line on this commit: with no claim of
+    the E2E to say it already ran, the line is what stops every later event for the commit from starting it again (a
+    person runs it again with /test or GitHub's Re-run)."""
+    if not approvers or blocking or failed:
+        return ()
+    latest = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP))
+    return tuple(s for s in advisory_suites(inputs) if line_state(latest, s.check) == "none")
+
+
 def _workflows(suites: Iterable[Suite], names: Iterable[str]) -> tuple[tuple[str, str], ...]:
     """(suite, workflow file) of the named suites that run as a run of their own."""
     by_name = {s.name: s for s in suites}
@@ -414,6 +446,21 @@ def decide(inputs: Inputs) -> Decision:
         return Decision(action=Action.SKIP_DRAFT, reason="the pull request is a draft", **base)
     needed = applicable_suites(inputs)
     if not needed:
+        alone = _advisory_alone(inputs, approvers, blocking, failed)
+        if alone:
+            names = tuple(s.name for s in alone)
+            return Decision(
+                action=Action.START,
+                reason=f"approved by {', '.join(approvers)}; no counted E2E suite is affected; advisory, not counted: "
+                f"{', '.join(names)}",
+                suites=names,
+                suite_checks=tuple((s.name, s.check) for s in alone),
+                manual=True,
+                workflows=_workflows(inputs.suites, names),
+                advisory=names,
+                advisory_only=True,
+                **base,
+            )
         return Decision(
             action=Action.SKIP_NOT_APPLICABLE,
             reason="no E2E suite is affected by the changed files (docs only)",
@@ -460,6 +507,15 @@ def decide(inputs: Inputs) -> Decision:
         )
     names = tuple(s.name for s in todo)
     checks = tuple((s.name, s.check) for s in todo)
+    # The advisory suites the change touches start with the others, once they start (not in the waits above, which
+    # name what the E2E check waits for). One that a person runs, or that passed on this commit, is left alone, as for
+    # the counted suites.
+    extra = tuple(
+        s
+        for s in advisory_suites(inputs)
+        if (answered or line_state(latest, s.check) != "passed")
+        and not _running_by_hand(s, latest, inputs.live_runs, claim_run)
+    )
     if blocking:
         return Decision(
             action=Action.BLOCKED_CHANGES_REQUESTED,
@@ -494,14 +550,16 @@ def decide(inputs: Inputs) -> Decision:
         action=Action.START,
         reason=f"approved by {', '.join(approvers)}"
         + (f"; CI still running: {', '.join(g.split(':')[0] for g in pending)}" if pending else "")
-        + (f"; {', '.join(s.name for s in held)} run by hand" if held else ""),
-        suites=names,
-        suite_checks=checks,
+        + (f"; {', '.join(s.name for s in held)} run by hand" if held else "")
+        + (f"; advisory, not counted: {', '.join(s.name for s in extra)}" if extra else ""),
+        suites=names + tuple(s.name for s in extra),
+        suite_checks=checks + tuple((s.name, s.check) for s in extra),
         # With a suite run by hand the E2E is not claimed by this run: it is the sum of the suites the change needs,
         # written by whichever run ends last (the same rule as a run started by hand).
         manual=bool(held),
         selected_checks=selected if held else (),
-        workflows=_workflows(inputs.suites, names),
+        workflows=_workflows(inputs.suites, names + tuple(s.name for s in extra)),
+        advisory=tuple(s.name for s in extra),
         **base,
     )
 
@@ -634,6 +692,7 @@ def suites_of(policy: Policy) -> tuple[Suite, ...]:
             job.tier or "",
             job.label or "",
             job.workflow or "",
+            job.advisory,
         )
         for name, job in policy.jobs.items()
         if job.kind == "e2e"
@@ -906,6 +965,8 @@ def to_json(decision: Decision) -> str:
             "cancel": list(decision.cancel),
             "by_hand": dict(decision.by_hand),
             "workflows": dict(decision.workflows),
+            "advisory": list(decision.advisory),
+            "advisory_only": decision.advisory_only,
             "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,

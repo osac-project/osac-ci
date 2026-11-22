@@ -153,6 +153,12 @@ class Report:
     tiers: tuple[tuple[str, str], ...] = ()  # (suite, tier) of the suites asked for through a variant
     cancel: tuple[int, ...] = ()  # the workflow runs a request by hand replaces: the caller stops them
     workflows: tuple[tuple[str, str], ...] = ()  # (suite, workflow file) of the suites that run as a run of their own
+    advisory: tuple[str, ...] = ()  # the suites that start with the others but are not counted in the E2E check
+
+    @property
+    def counted_checks(self) -> tuple[tuple[str, str], ...]:
+        """(suite, line) of the suites the E2E check is the sum of: every suite that runs but the advisory ones."""
+        return tuple((s, line) for s, line in self.suite_checks if s not in self.advisory)
 
     @property
     def inline_suites(self) -> tuple[str, ...]:
@@ -237,6 +243,26 @@ def _suites(entry: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(s) for s in entry.get("suites") or ())
 
 
+def _advisory(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """The advisory suites of the decision: each must be one it starts and run as a run of its own (a job of the run
+    that claims the E2E would be part of that run's result, and so counted after all)."""
+    raw = entry.get("advisory") or ()
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("the advisory suites must be a list")
+    started, own = set(_suites(entry)), set(entry.get("workflows") or {})
+    out = tuple(str(s) for s in raw)
+    for suite in out:
+        if suite not in started or suite not in own:
+            raise ValueError(f"advisory suite {suite!r} is not a suite the decision starts as a run of its own")
+    return out
+
+
+def _counted(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    """The suites the decision starts that the E2E check counts."""
+    advisory = set(_advisory(entry))
+    return tuple(s for s in _suites(entry) if s not in advisory)
+
+
 def _tiers(entry: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
     """The tier each suite that runs is asked for (a variant of it was ticked). It is read from data and ends up in a
     job's inputs, so each part is checked: the suite is one that runs, the tier a short lower-case word."""
@@ -304,7 +330,7 @@ def _hand_writes(entry: Mapping[str, Any], existing: Existing | None) -> tuple[W
 
 
 def _claim(entry: Mapping[str, Any]) -> Write:
-    suites = _suites(entry)
+    suites = _counted(entry)
     return Write("pending", describe(f"{RUNNING_PREFIX}: {', '.join(suites) or 'the full-install suites'}"))
 
 
@@ -370,6 +396,12 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
     if action in ("nothing-to-start", "running-by-hand"):
         return Outcome("ignored", False, note=str(entry.get("reason", "")))
     if action == "start":
+        if entry.get("advisory_only"):
+            # Only advisory suites start: the change needs no counted suite, so the E2E check says so, as it would
+            # without them, and is not claimed (the start is written like one by hand: nothing sums it up).
+            if _counted(entry) or not entry.get("manual"):
+                raise ValueError("a start of advisory suites only must start no counted suite and be written by hand")
+            return Outcome("running", True, _not_affected(existing).writes, note="advisory suites only")
         if entry.get("manual"):
             # started by hand: only the suites' lines change; the E2E check is not claimed (see finish_by_hand). A check
             # that waits says so in front of its wait, so the page does not read "waiting" while the suites run.
@@ -532,6 +564,7 @@ def report(
     if lines_kind is not None and lines_kind not in KINDS:
         raise ValueError(f"lines kind must be one of {', '.join(KINDS)}, not {lines_kind!r}")
     tiers = dict(_tiers(entry))
+    advisory = _advisory(entry)
     existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     for write in outcome.writes:
@@ -544,7 +577,7 @@ def report(
             post_status(client, repo, sha, line, "waiting", waiting, run_url, lines_kind or kind)
         # A suite run again by hand after the E2E check said Failed: the check waits for it, instead of saying Failed
         # until the retest ends (the end of the suite writes the answer). Anything else the check says stays.
-        wait_for_rerun(client, repo, sha, dict(lines), run_url, kind)
+        wait_for_rerun(client, repo, sha, {s: line for s, line in lines if s not in advisory}, run_url, kind)
     elif outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
@@ -561,7 +594,17 @@ def report(
     cancel = _cancel(entry) if outcome.start and by_hand else ()
     workflows = validate_workflows(entry.get("workflows"), _suites(entry))
     return Report(
-        sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines, _tiers(entry), cancel, workflows
+        sha,
+        number,
+        outcome.state,
+        outcome.start,
+        _suites(entry),
+        outcome.note,
+        lines,
+        _tiers(entry),
+        cancel,
+        workflows,
+        advisory,
     )
 
 
@@ -865,6 +908,9 @@ def to_json(found: Report) -> str:
             "inline_suites": list(found.inline_suites),
             "inline_suite_checks": dict(found.inline_checks),
             "dispatched": list(found.dispatched),
+            # the lines the E2E check is the sum of (the finish adds them up): the advisory suites are left out
+            "advisory": list(found.advisory),
+            "counted_suite_checks": dict(found.counted_checks),
             "note": found.note,
         },
         indent=2,

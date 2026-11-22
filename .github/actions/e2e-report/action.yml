@@ -72,7 +72,9 @@ outputs:
     description: JSON list of every suite the decision starts, the dispatched ones too
     value: ${{ steps.report.outputs.all-suites }}
   all-suite-checks:
-    description: JSON object, suite id -> line name, of every suite the decision starts, the dispatched ones too
+    description: >-
+      JSON object, suite id -> line name, of every suite the decision starts that the E2E check counts, the
+      dispatched ones too (not the advisory ones): what the finish adds up
     value: ${{ steps.report.outputs.all-suite-checks }}
   cancel:
     description: >-
@@ -151,7 +153,7 @@ runs:
           echo "suite-checks=$(jq -c '.inline_suite_checks // .suite_checks // {}' "$json")"
           echo "dispatched=$(jq -c '.dispatched // []' "$json")"
           echo "all-suites=$(jq -c '.suites' "$json")"
-          echo "all-suite-checks=$(jq -c '.suite_checks // {}' "$json")"
+          echo "all-suite-checks=$(jq -c '.counted_suite_checks // .suite_checks // {}' "$json")"
           echo "tiers=$(jq -c '.tiers // {}' "$json")"
           echo "cancel=$(jq -c '.cancel // []' "$json")"
           echo "number=$(jq -r '.number // empty' "$json")"

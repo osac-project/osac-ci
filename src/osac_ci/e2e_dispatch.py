@@ -160,6 +160,7 @@ class SuiteRun:
     number: int
     sha: str
     base: str  # the API path of the pull request
+    advisory: bool = False  # the suite is never part of the E2E's sum (see policy.Job.advisory)
 
 
 def _suite_run(client: GitHubClient, repo: str, title: str, workflow_path: str, policy: Policy) -> SuiteRun | str:
@@ -180,7 +181,7 @@ def _suite_run(client: GitHubClient, repo: str, title: str, workflow_path: str, 
     pr = get(client, base)
     if str((pr.get("head") or {}).get("sha", "")) != sha:
         return "the pull request has moved on to another commit: nothing to do"
-    return SuiteRun(suite, mine.check, number, sha, base)
+    return SuiteRun(suite, mine.check, number, sha, base, mine.advisory)
 
 
 def _needed_lines(client: GitHubClient, run: SuiteRun, policy: Policy, *, with_own: bool = True) -> dict[str, str]:
@@ -223,6 +224,9 @@ def suite_ended(
         return "a newer run of the suite owns its line: nothing to do"
     says = tiered(description, tier_of(str(current.get("description") or "")) if current else "")
     post_status(client, repo, run.sha, run.check, state, says, url, lines_kind)
+    if run.advisory:
+        # its result is on its own line only: an advisory suite never changes what the E2E check says
+        return "an advisory suite ended: only its line shows the result"
     needed = _needed_lines(client, run, policy)
     return sum_from_lines(client, repo, run.sha, needed, f"https://github.com/{repo}/actions/runs/{run_id}", "checks")
 
